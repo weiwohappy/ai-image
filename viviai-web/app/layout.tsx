@@ -13,7 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Untitled site',
+  title: 'VIVIAI — AI 图片创作工作台',
+  description: '从灵感和参考图出发，完成图片生成、爆款复刻与批量工作流。',
 };
 
 export default function RootLayout({
@@ -22,7 +23,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="zh-CN" className="dark">
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
