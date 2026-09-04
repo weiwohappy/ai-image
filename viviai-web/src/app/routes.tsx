@@ -3,7 +3,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { AppShell } from '@/src/components/shell/AppShell';
-import { CreatePreviewPage } from '@/src/features/generation/CreatePreviewPage';
+import { CreatePage } from '@/src/features/generation/CreatePage';
 import { AuthPage } from '@/src/features/auth/AuthPage';
 import { PlaceholderPage } from '@/src/features/system/PlaceholderPage';
 import { ProtectedRoute } from './ProtectedRoute';
@@ -21,7 +21,7 @@ export function AppRoutes() {
       <Route path="/register" element={<AuthPage mode="register" />} />
       <Route path="/forgot-password" element={<AuthPage mode="forgot" />} />
       <Route element={<AppShell />}>
-        <Route path="/create" element={<CreatePreviewPage />} />
+        <Route path="/create" element={<CreatePage />} />
         <Route path="/inspiration" element={<PlaceholderPage title="灵感发现" description="从经过筛选的优秀作品开始创作。" />} />
         <Route path="/remix" element={<PlaceholderPage title="爆款复刻" description="借鉴成熟视觉方法，生成属于你的新作品。" />} />
         <Route path="/remix/:templateId" element={<PlaceholderPage title="模板详情" description="查看视觉结构并开始改编。" />} />
