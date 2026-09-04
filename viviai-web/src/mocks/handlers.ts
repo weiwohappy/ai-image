@@ -12,7 +12,7 @@ import type {
   User,
   Workflow,
 } from '@/src/types/domain';
-import { loadDb, mutateDb, resetDb, settleTask } from './db';
+import { getCredentialHash, loadDb, mutateDb, resetDb, setCredentialHash, settleTask } from './db';
 
 const api = '*/api';
 
@@ -78,7 +78,7 @@ function scheduleTask(taskId: string, scenario: string): void {
 function createTask(
   input: GenerationInput,
   scenario: string,
-  context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId' | 'workflowRowId' | 'workflowColumnId'>,
+  context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId' | 'batchId' | 'workflowRowId' | 'workflowColumnId'>,
 ): GenerationTask {
   const user = sessionUser();
   if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
@@ -150,7 +150,7 @@ export const handlers = [
     const current = loadDb();
     const account = input.account.trim().toLocaleLowerCase();
     const accountValid = account === current.user.email.toLocaleLowerCase() || account === current.user.username.toLocaleLowerCase();
-    if (!accountValid || await credentialHash(input.password) !== current.credentialHash) return fail(401, 'INVALID_CREDENTIALS', '账号或密码不正确。');
+    if (!accountValid || await credentialHash(input.password) !== getCredentialHash()) return fail(401, 'INVALID_CREDENTIALS', '账号或密码不正确。');
     const db = mutateDb((draft) => {
       draft.sessionUserId = draft.user.id;
     });
@@ -170,16 +170,20 @@ export const handlers = [
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
     const passwordHash = await credentialHash(input.password);
+    const userId = `user-${crypto.randomUUID()}`;
+    const inviteCode = `VIVI-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
     const db = mutateDb((draft) => {
+      draft.user.id = userId;
       draft.user.username = input.username.trim();
       draft.user.email = input.email.trim();
+      delete draft.user.avatarUrl;
       draft.user.planId = 'free';
       draft.user.planName = '免费套餐';
       draft.user.credits = 5;
       draft.user.frozenCredits = 0;
       draft.user.concurrency = 2;
-      draft.sessionUserId = draft.user.id;
-      draft.credentialHash = passwordHash;
+      draft.user.inviteCode = inviteCode;
+      draft.sessionUserId = userId;
       draft.tasks = [];
       draft.assets = [];
       draft.deletedAssets = [];
@@ -188,6 +192,11 @@ export const handlers = [
       draft.orders = [];
       draft.invites = [];
       draft.redeemedCodes = [];
+      for (const inspiration of draft.inspirations) {
+        if (inspiration.liked) inspiration.likes = Math.max(0, inspiration.likes - 1);
+        inspiration.liked = false;
+      }
+      for (const template of draft.templates) template.favorite = false;
       draft.notifications = [{ id: `notice-${crypto.randomUUID()}`, type: 'system', title: '欢迎来到 VIVIAI', content: '注册奖励已到账，开始你的第一张作品吧。', read: false, createdAt: new Date().toISOString() }];
       draft.ledger = [{
         id: `ledger-${crypto.randomUUID()}`,
@@ -198,6 +207,7 @@ export const handlers = [
         createdAt: new Date().toISOString(),
       }];
     });
+    setCredentialHash(passwordHash);
     return ok(db.user, '注册成功');
   }),
 
@@ -215,7 +225,7 @@ export const handlers = [
     }
     if (input.email.trim().toLocaleLowerCase() !== loadDb().user.email.toLocaleLowerCase()) return fail(404, 'INVALID_INPUT', '没有找到该邮箱对应的账户。');
     const passwordHash = await credentialHash(input.password);
-    mutateDb((draft) => { draft.credentialHash = passwordHash; });
+    setCredentialHash(passwordHash);
     return ok({ success: true as const }, '密码已重置');
   }),
 
@@ -452,9 +462,10 @@ export const handlers = [
     if (current.user.credits < estimatedCredits) return fail(402, 'INSUFFICIENT_CREDITS', '积分不足，无法运行所选任务。');
     if (activeTaskCount() + inputs.length > current.user.concurrency) return fail(409, 'CONCURRENCY_LIMIT', '批量任务超过当前套餐并发上限。');
     const createdAt = new Date().toISOString();
-    const children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: workflow.id, workflowRowId: job.rowId, workflowColumnId: job.columnId }));
+    const batchId = `batch-${crypto.randomUUID()}`;
+    const children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: workflow.id, batchId, workflowRowId: job.rowId, workflowColumnId: job.columnId }));
     const batch: BatchTask = {
-      id: `batch-${crypto.randomUUID()}`,
+      id: batchId,
       workflowId: workflow.id,
       workflowName: workflow.name,
       total: rowIds.length * generationColumns.length,
@@ -586,7 +597,7 @@ export const handlers = [
     const input = (await request.json()) as { code: string; password: string };
     if (input.code !== '123456' || input.password.length < 8) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 8 位。');
     const passwordHash = await credentialHash(input.password);
-    mutateDb((draft) => { draft.credentialHash = passwordHash; });
+    setCredentialHash(passwordHash);
     return ok({ success: true as const }, '密码已更新');
   }),
   http.post(`${api}/account/redeem`, async ({ request }) => {

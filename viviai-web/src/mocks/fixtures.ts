@@ -18,7 +18,6 @@ import type {
 export interface MockDatabase {
   sessionUserId: string | null;
   user: User;
-  credentialHash: string;
   models: ModelConfig[];
   tasks: GenerationTask[];
   assets: ImageAsset[];
@@ -251,7 +250,6 @@ export function createSeedDb(): MockDatabase {
   return {
     sessionUserId: user.id,
     user,
-    credentialHash: '0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d',
     models,
     tasks: [],
     assets,

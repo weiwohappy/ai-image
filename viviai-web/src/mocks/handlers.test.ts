@@ -122,6 +122,14 @@ describe('Mock workflow and account boundaries', () => {
     expect(completedWorkflow.rows[0]).toMatchObject({ status: 'succeeded', cells: { output: expect.stringMatching(/^asset-task-/) } });
     expect(completedWorkflow.rows[1]).toMatchObject({ status: 'failed' });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 0 });
+
+    const rerun = await api.runWorkflow(saved.id, ['row-2']);
+    expect(rerun.childTaskIds).toHaveLength(1);
+    expect((await api.listGenerationTasks()).find((task) => task.id === rerun.childTaskIds[0])).toMatchObject({ batchId: rerun.id });
+    settleTask(rerun.childTaskIds[0], 'success');
+    const rerunWorkflow = await api.getWorkflow(saved.id);
+    expect(rerunWorkflow.rows[1]).toMatchObject({ status: 'succeeded', cells: { output: expect.stringMatching(/^asset-task-/) } });
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1112, frozenCredits: 0 });
   });
 
   it('rejects private endpoints after logout', async () => {
@@ -137,7 +145,22 @@ describe('Mock workflow and account boundaries', () => {
   });
 
   it('supports login after registration and after changing email and password', async () => {
+    const priorUserId = loadDb().user.id;
+    mutateDb((draft) => {
+      draft.user.avatarUrl = 'data:image/png;base64,old-avatar';
+      draft.user.inviteCode = 'OLD-CODE';
+      draft.inspirations[0].liked = true;
+      draft.templates[0].favorite = true;
+    });
     await api.register({ username: '新用户', email: 'new@example.com', password: 'initial88', code: '123456' });
+    const registered = loadDb();
+    expect(registered.user).toMatchObject({ username: '新用户', email: 'new@example.com', planId: 'free', credits: 5 });
+    expect(registered.user.id).not.toBe(priorUserId);
+    expect(registered.user.avatarUrl).toBeUndefined();
+    expect(registered.user.inviteCode).not.toBe('OLD-CODE');
+    expect(registered.inspirations.every((item) => !item.liked)).toBe(true);
+    expect(registered.templates.every((item) => !item.favorite)).toBe(true);
+    expect(JSON.parse(window.localStorage.getItem('viviai-mock-db-v1') ?? '{}')).not.toHaveProperty('credentialHash');
     await api.logout();
     await expect(api.login({ account: 'new@example.com', password: 'initial88' })).resolves.toMatchObject({ username: '新用户' });
 

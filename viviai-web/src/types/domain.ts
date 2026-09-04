@@ -75,6 +75,7 @@ export interface GenerationTask {
   remixStrength?: RemixStrength;
   toolId?: string;
   workflowId?: string;
+  batchId?: string;
   workflowRowId?: string;
   workflowColumnId?: string;
   mockLifecycle?: {

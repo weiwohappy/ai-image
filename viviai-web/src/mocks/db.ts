@@ -4,6 +4,15 @@ import { createSeedDb, getFixtureVisual, type MockDatabase } from './fixtures';
 const STORAGE_KEY = 'viviai-mock-db-v1';
 const DEMO_CREDENTIAL_HASH = '0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d';
 let memoryDb = createSeedDb();
+let memoryCredentialHash = DEMO_CREDENTIAL_HASH;
+
+export function getCredentialHash(): string {
+  return memoryCredentialHash;
+}
+
+export function setCredentialHash(hash: string): void {
+  memoryCredentialHash = hash;
+}
 
 function storageAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
@@ -22,7 +31,8 @@ export function loadDb(): MockDatabase {
     }
   }
   if (!memoryDb.redeemedCodes) { memoryDb.redeemedCodes = []; migrated = true; }
-  if (!memoryDb.credentialHash) { memoryDb.credentialHash = DEMO_CREDENTIAL_HASH; migrated = true; }
+  const legacyDb = memoryDb as MockDatabase & { credentialHash?: string };
+  if ('credentialHash' in legacyDb) { delete legacyDb.credentialHash; migrated = true; }
   if (reconcileDb(memoryDb) || migrated) {
     memoryDb = structuredClone(memoryDb);
     if (storageAvailable()) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
@@ -46,6 +56,7 @@ export function mutateDb(mutator: (draft: MockDatabase) => void): MockDatabase {
 
 export function resetDb(): MockDatabase {
   memoryDb = createSeedDb();
+  memoryCredentialHash = DEMO_CREDENTIAL_HASH;
   if (storageAvailable()) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
   }
@@ -103,7 +114,7 @@ function settleTaskInDb(db: MockDatabase, task: GenerationTask, outcome: 'succes
     const row = workflow?.rows.find((item) => item.id === task.workflowRowId);
     if (row && task.resultAssetIds[0]) row.cells[task.workflowColumnId] = task.resultAssetIds[0];
     if (row) {
-      const siblings = db.tasks.filter((item) => item.workflowId === task.workflowId && item.workflowRowId === task.workflowRowId);
+      const siblings = db.tasks.filter((item) => item.workflowId === task.workflowId && item.workflowRowId === task.workflowRowId && (task.batchId ? item.batchId === task.batchId : !item.batchId));
       const active = siblings.some((item) => item.status === 'queued' || item.status === 'processing');
       const failed = siblings.filter((item) => item.status === 'failed' || item.status === 'cancelled').length;
       const partial = siblings.some((item) => item.status === 'partial');
@@ -156,8 +167,10 @@ function reconcileWorkflowRows(db: MockDatabase): boolean {
   let changed = false;
   for (const workflow of db.workflows) {
     for (const row of workflow.rows) {
-      const tasks = db.tasks.filter((task) => task.workflowId === workflow.id && task.workflowRowId === row.id);
-      if (!tasks.length) continue;
+      const history = db.tasks.filter((task) => task.workflowId === workflow.id && task.workflowRowId === row.id);
+      if (!history.length) continue;
+      const newest = history[0];
+      const tasks = newest.batchId ? history.filter((task) => task.batchId === newest.batchId) : history.filter((task) => !task.batchId);
       for (const task of tasks) {
         if (task.workflowColumnId && task.resultAssetIds[0] && row.cells[task.workflowColumnId] !== task.resultAssetIds[0]) {
           row.cells[task.workflowColumnId] = task.resultAssetIds[0];
