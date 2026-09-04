@@ -37,12 +37,7 @@ export function Topbar() {
       ) : (
         <Button render={<NavLink to="/login" />} nativeButton={false} size="sm" className="rounded-full px-4">登录</Button>
       )}
-      <TaskDrawer activeCount={activeCount} />
-      <Button variant="ghost" size="icon" aria-label="查看通知" className="relative rounded-full" onClick={() => setNoticesOpen(true)}>
-        <Bell />
-        {notices.some((notice) => !notice.read) && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary" />}
-      </Button>
-      <NotificationSheet open={noticesOpen} onClose={() => setNoticesOpen(false)} />
+      {me && <><TaskDrawer activeCount={activeCount} /><Button variant="ghost" size="icon" aria-label="查看通知" className="relative rounded-full" onClick={() => setNoticesOpen(true)}><Bell />{notices.some((notice) => !notice.read) && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary" />}</Button><NotificationSheet open={noticesOpen} onClose={() => setNoticesOpen(false)} /></>}
     </header>
   );
 }
