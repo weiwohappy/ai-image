@@ -39,12 +39,11 @@ function apiUrl(path: string): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
   const response = await fetch(apiUrl(path), {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
+    headers,
   });
   const body = (await response.json()) as ApiEnvelope<T> & { code?: string };
   if (!response.ok) throw new ApiError(body.message, body.code ?? 'INTERNAL_ERROR', response.status);

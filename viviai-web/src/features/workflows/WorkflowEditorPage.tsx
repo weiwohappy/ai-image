@@ -14,7 +14,7 @@ import { WorkflowGrid } from './WorkflowGrid';
 import { summarizeWorkflow } from './workflowMath';
 
 function createDefaultWorkflow(id: string): Workflow {
-  const stamp = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()).replace(/[\/:\s]/g, '');
+  const stamp = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date()).replaceAll('/', '').replace(/[:\s]/g, '');
   return { id, name: `工作流${stamp}`, version: 0, saved: false, updatedAt: new Date().toISOString(), columns: [{ id: 'reference', name: '商品素材', type: 'reference' }, { id: 'generation', name: '主图生成', type: 'generation', prompt: '商业商品摄影，背景简洁，主体清晰', sourceColumnIds: ['reference'], modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1' }], rows: Array.from({ length: 3 }, (_, index) => ({ id: `row-${index + 1}`, cells: {}, selected: index < 2, status: 'idle' })) };
 }
 

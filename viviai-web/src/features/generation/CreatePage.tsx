@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowUp, ImagePlus, LoaderCircle, SlidersHorizontal, Sparkles, WandSparkles } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,8 @@ export function CreatePage() {
   const [showPaywall, setShowPaywall] = useState(false);
   const draft = useSessionStore((state) => state.generationDraft);
   const updateDraft = useSessionStore((state) => state.updateGenerationDraft);
+  const pendingGeneration = useSessionStore((state) => state.pendingGeneration);
+  const setPendingGeneration = useSessionStore((state) => state.setPendingGeneration);
   const me = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
   const models = useQuery({ queryKey: queryKeys.models, queryFn: api.listModels });
   const { tasks, assets, cancel, retry } = useGenerationTasks();
@@ -32,20 +34,27 @@ export function CreatePage() {
   const createTask = useMutation<GenerationTask, ApiError, GenerationInput>({
     mutationFn: (input) => api.createGenerationTask(input),
     onSuccess: (task) => {
+      setPendingGeneration(false);
       setError('');
       queryClient.setQueryData<GenerationTask[]>(queryKeys.tasks, (current = []) => [task, ...current.filter((item) => item.id !== task.id)]);
       queryClient.invalidateQueries({ queryKey: queryKeys.me });
     },
     onError: (failure) => {
+      setPendingGeneration(false);
       const apiError = failure as ApiError;
       setError(apiError.message || '创建任务失败。');
       setShowPaywall(apiError.code === 'INSUFFICIENT_CREDITS');
     },
   });
 
+  useEffect(() => {
+    if (pendingGeneration && me.data && draft.prompt.trim() && !createTask.isPending) createTask.mutate({ ...draft, source: 'generation' });
+  }, [pendingGeneration, me.data]);
+
   function submit() {
     if (!draft.prompt.trim()) return;
     if (!me.data) {
+      setPendingGeneration(true);
       navigate('/login?redirect=%2Fcreate');
       return;
     }

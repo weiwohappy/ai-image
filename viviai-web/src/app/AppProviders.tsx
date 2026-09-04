@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HashRouter } from 'react-router-dom';
 import { useEffect, useState, type ReactNode } from 'react';
+import { registerViviaiTools } from '@/src/webmcp/registerTools';
 
 export function AppProviders({ children }: { children: ReactNode }) {
   const [queryClient] = useState(
@@ -28,6 +29,19 @@ export function AppProviders({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!mockReady) return;
+    const refresh = () => queryClient.invalidateQueries();
+    window.addEventListener('viviai:data-changed', refresh);
+    window.addEventListener('viviai:data-reset', refresh);
+    const disposeTools = registerViviaiTools();
+    return () => {
+      disposeTools();
+      window.removeEventListener('viviai:data-changed', refresh);
+      window.removeEventListener('viviai:data-reset', refresh);
+    };
+  }, [mockReady, queryClient]);
 
   if (!mockReady) {
     return (

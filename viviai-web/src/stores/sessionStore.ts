@@ -25,7 +25,9 @@ const initialDraft: GenerationDraft = {
 
 interface SessionState {
   generationDraft: GenerationDraft;
+  pendingGeneration: boolean;
   updateGenerationDraft: (patch: Partial<GenerationDraft>) => void;
+  setPendingGeneration: (pending: boolean) => void;
   resetGenerationDraft: () => void;
 }
 
@@ -33,8 +35,10 @@ export const useSessionStore = create<SessionState>()(
   persist(
     (set) => ({
       generationDraft: initialDraft,
+      pendingGeneration: false,
       updateGenerationDraft: (patch) => set((state) => ({ generationDraft: { ...state.generationDraft, ...patch } })),
-      resetGenerationDraft: () => set({ generationDraft: initialDraft }),
+      setPendingGeneration: (pendingGeneration) => set({ pendingGeneration }),
+      resetGenerationDraft: () => set({ generationDraft: initialDraft, pendingGeneration: false }),
     }),
     { name: 'viviai-session-v1' },
   ),
