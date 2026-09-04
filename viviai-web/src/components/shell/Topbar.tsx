@@ -3,16 +3,20 @@
 import { useQuery } from '@tanstack/react-query';
 import { Bell, CircleDot, Coins, Search } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
+import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { SidebarTrigger } from '@/components/ui/sidebar';
 import { api } from '@/src/services/api';
 import { queryKeys } from '@/src/services/queryKeys';
 import { TaskDrawer } from '@/src/components/tasks/TaskDrawer';
+import { NotificationSheet } from '@/src/features/notifications/NotificationSheet';
 
 export function Topbar() {
+  const [noticesOpen, setNoticesOpen] = useState(false);
   const { data: me } = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
   const { data: tasks = [] } = useQuery({ queryKey: queryKeys.tasks, queryFn: api.listGenerationTasks });
+  const { data: notices = [] } = useQuery({ queryKey: queryKeys.notifications, queryFn: api.listNotifications });
   const activeCount = tasks.filter((task) => task.status === 'queued' || task.status === 'processing').length;
 
   return (
@@ -34,9 +38,11 @@ export function Topbar() {
         <Button render={<NavLink to="/login" />} nativeButton={false} size="sm" className="rounded-full px-4">登录</Button>
       )}
       <TaskDrawer activeCount={activeCount} />
-      <Button variant="ghost" size="icon" aria-label="查看通知" className="rounded-full">
+      <Button variant="ghost" size="icon" aria-label="查看通知" className="relative rounded-full" onClick={() => setNoticesOpen(true)}>
         <Bell />
+        {notices.some((notice) => !notice.read) && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary" />}
       </Button>
+      <NotificationSheet open={noticesOpen} onClose={() => setNoticesOpen(false)} />
     </header>
   );
 }

@@ -14,14 +14,10 @@ import { ToolsPage } from '@/src/features/tools/ToolsPage';
 import { TasksPage } from '@/src/features/tasks/TasksPage';
 import { WorkflowEditorPage } from '@/src/features/workflows/WorkflowEditorPage';
 import { WorkflowsPage } from '@/src/features/workflows/WorkflowsPage';
-import { PlaceholderPage } from '@/src/features/system/PlaceholderPage';
+import { AccountPage } from '@/src/features/account/AccountPage';
+import { PricingPage } from '@/src/features/billing/PricingPage';
+import { InvitePage } from '@/src/features/invite/InvitePage';
 import { ProtectedRoute } from './ProtectedRoute';
-
-const protectedPage = (title: string, description: string) => (
-  <ProtectedRoute>
-    <PlaceholderPage title={title} description={description} />
-  </ProtectedRoute>
-);
 
 export function AppRoutes() {
   return (
@@ -40,9 +36,9 @@ export function AppRoutes() {
         <Route path="/workflows" element={<ProtectedRoute><WorkflowsPage /></ProtectedRoute>} />
         <Route path="/workflows/:workflowId" element={<ProtectedRoute><WorkflowEditorPage /></ProtectedRoute>} />
         <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
-        <Route path="/pricing" element={<PlaceholderPage title="套餐与积分" description="按创作量选择合适的套餐。" />} />
-        <Route path="/account" element={protectedPage('个人中心', '管理套餐、积分和账户安全。')} />
-        <Route path="/invite" element={protectedPage('邀请有礼', '邀请好友一起创作，双方获得积分。')} />
+        <Route path="/pricing" element={<PricingPage />} />
+        <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
+        <Route path="/invite" element={<ProtectedRoute><InvitePage /></ProtectedRoute>} />
       </Route>
       <Route path="/" element={<Navigate to="/create" replace />} />
       <Route path="*" element={<Navigate to="/create" replace />} />
