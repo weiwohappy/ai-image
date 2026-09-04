@@ -11,6 +11,9 @@ import { RemixDetailPage } from '@/src/features/remix/RemixDetailPage';
 import { RemixLibraryPage } from '@/src/features/remix/RemixLibraryPage';
 import { ToolRunPage } from '@/src/features/tools/ToolRunPage';
 import { ToolsPage } from '@/src/features/tools/ToolsPage';
+import { TasksPage } from '@/src/features/tasks/TasksPage';
+import { WorkflowEditorPage } from '@/src/features/workflows/WorkflowEditorPage';
+import { WorkflowsPage } from '@/src/features/workflows/WorkflowsPage';
 import { PlaceholderPage } from '@/src/features/system/PlaceholderPage';
 import { ProtectedRoute } from './ProtectedRoute';
 
@@ -34,9 +37,9 @@ export function AppRoutes() {
         <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
         <Route path="/tools" element={<ProtectedRoute><ToolsPage /></ProtectedRoute>} />
         <Route path="/tools/:toolId" element={<ProtectedRoute><ToolRunPage /></ProtectedRoute>} />
-        <Route path="/workflows" element={protectedPage('工作流', '通过表格批量组织图片生产任务。')} />
-        <Route path="/workflows/:workflowId" element={protectedPage('工作流编辑器', '配置任务行、参考图和生成列。')} />
-        <Route path="/tasks" element={protectedPage('任务中心', '查看单次和批量任务的执行状态。')} />
+        <Route path="/workflows" element={<ProtectedRoute><WorkflowsPage /></ProtectedRoute>} />
+        <Route path="/workflows/:workflowId" element={<ProtectedRoute><WorkflowEditorPage /></ProtectedRoute>} />
+        <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
         <Route path="/pricing" element={<PlaceholderPage title="套餐与积分" description="按创作量选择合适的套餐。" />} />
         <Route path="/account" element={protectedPage('个人中心', '管理套餐、积分和账户安全。')} />
         <Route path="/invite" element={protectedPage('邀请有礼', '邀请好友一起创作，双方获得积分。')} />

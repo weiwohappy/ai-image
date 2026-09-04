@@ -1,0 +1,11 @@
+'use client';
+
+import { X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import type { WorkflowColumn } from '@/src/types/domain';
+
+export function ColumnConfigDialog({ column, onChange, onClose }: { column?: WorkflowColumn; onChange: (next: WorkflowColumn) => void; onClose: () => void }) {
+  if (!column) return null;
+  return <div role="dialog" aria-modal="true" aria-label="配置生成列" className="fixed inset-0 z-50 grid place-items-center bg-black/65 p-4"><section className="w-full max-w-lg rounded-[24px] border border-border bg-card p-6"><div className="flex items-center justify-between"><h2 className="text-xl font-semibold">配置生成列</h2><Button type="button" size="icon" variant="ghost" aria-label="关闭" onClick={onClose}><X /></Button></div><label className="mt-5 block text-sm">列名称<Input className="mt-2 h-11 bg-background" value={column.name} onChange={(event) => onChange({ ...column, name: event.target.value })} /></label><label className="mt-4 block text-sm">统一提示词<Input className="mt-2 h-11 bg-background" value={column.prompt ?? ''} onChange={(event) => onChange({ ...column, prompt: event.target.value })} /></label><div className="mt-4 grid grid-cols-3 gap-2"><label className="text-sm">模型<select className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-2" value={column.modelId} onChange={(event) => onChange({ ...column, modelId: event.target.value })}><option value="nano-banana-2">NanoBanana 2</option><option value="g-image-2">G-image 2</option></select></label><label className="text-sm">分辨率<select className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-2" value={column.resolution} onChange={(event) => onChange({ ...column, resolution: event.target.value as WorkflowColumn['resolution'] })}><option>1K</option><option>2K</option><option>4K</option></select></label><label className="text-sm">比例<select className="mt-2 h-10 w-full rounded-lg border border-input bg-background px-2" value={column.ratio} onChange={(event) => onChange({ ...column, ratio: event.target.value as WorkflowColumn['ratio'] })}><option>1:1</option><option>3:4</option><option>16:9</option></select></label></div><Button type="button" className="mt-6 w-full" onClick={onClose}>完成配置</Button></section></div>;
+}
