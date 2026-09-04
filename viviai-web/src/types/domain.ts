@@ -69,6 +69,9 @@ export interface GenerationTask {
   createdAt: string;
   updatedAt: string;
   resultAssetIds: string[];
+  templateId?: string;
+  toolId?: string;
+  workflowId?: string;
   errorCode?: ApiErrorCode;
   errorMessage?: string;
 }
@@ -237,6 +240,23 @@ export interface NotificationItem {
   read: boolean;
   createdAt: string;
   href?: string;
+}
+
+export interface Order {
+  id: string;
+  planId: string;
+  amount: number;
+  channel: 'alipay' | 'wechat';
+  status: 'pending' | 'processing' | 'succeeded' | 'failed' | 'cancelled';
+  createdAt: string;
+}
+
+export interface InviteRelation {
+  id: string;
+  username: string;
+  reward: number;
+  status: 'pending' | 'rewarded';
+  createdAt: string;
 }
 
 export type ApiErrorCode =

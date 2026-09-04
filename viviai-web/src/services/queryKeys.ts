@@ -1,0 +1,15 @@
+export const queryKeys = {
+  me: ['me'] as const,
+  models: ['models'] as const,
+  tasks: ['generation-tasks'] as const,
+  inspirations: ['inspirations'] as const,
+  templates: ['remix-templates'] as const,
+  assets: ['assets'] as const,
+  tools: ['tools'] as const,
+  workflows: ['workflows'] as const,
+  batches: ['batches'] as const,
+  plans: ['plans'] as const,
+  ledger: ['point-ledger'] as const,
+  notifications: ['notifications'] as const,
+  invites: ['invites'] as const,
+};
