@@ -7,14 +7,19 @@ import type { ImageAsset } from '@/src/types/domain';
 
 const suggestions = ['商业摄影', '电影光', '保留文案留白'];
 
-export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetId, onReferenceChange }: {
+export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetId, referencePreviewUrl, referenceName, onReferenceChange, onReferenceUpload }: {
   prompt: string;
   onPromptChange: (value: string) => void;
   assets: ImageAsset[];
   referenceAssetId?: string;
+  referencePreviewUrl?: string;
+  referenceName?: string;
   onReferenceChange: (value?: string) => void;
+  onReferenceUpload: (file: File) => void;
 }) {
   const reference = assets.find((asset) => asset.id === referenceAssetId);
+  const referenceUrl = reference?.thumbnailUrl ?? referencePreviewUrl;
+  const displayedName = reference?.name ?? referenceName;
   return (
     <div>
       <label htmlFor="generation-prompt" className="text-sm font-medium text-foreground">描述你想生成的画面</label>
@@ -27,19 +32,22 @@ export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetI
       </div>
       <div className="mt-4">
         <label htmlFor="reference-asset" className="text-sm font-medium">参考图（可选）</label>
-        {reference ? (
+        {referenceUrl ? (
           <div className="mt-2 flex items-center gap-3 rounded-xl border border-border bg-background p-2">
-            <img src={reference.thumbnailUrl} alt="" className="size-12 rounded-lg object-cover" />
-            <span className="min-w-0 flex-1 truncate text-sm">{reference.name}</span>
+            <img src={referenceUrl} alt="" className="size-12 rounded-lg object-cover" />
+            <span className="min-w-0 flex-1 truncate text-sm">{displayedName}</span>
             <Button type="button" variant="ghost" size="icon-sm" aria-label="移除参考图" onClick={() => onReferenceChange(undefined)}><X /></Button>
           </div>
         ) : (
-          <select id="reference-asset" className="mt-2 h-11 w-full rounded-xl border border-input bg-background px-3 text-sm" value="" onChange={(event) => onReferenceChange(event.target.value || undefined)}>
-            <option value="">从我的资产选择参考图</option>
-            {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
-          </select>
+          <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+            <select id="reference-asset" className="h-11 w-full rounded-xl border border-input bg-background px-3 text-sm" value="" onChange={(event) => onReferenceChange(event.target.value || undefined)}>
+              <option value="">从我的资产选择参考图</option>
+              {assets.map((asset) => <option key={asset.id} value={asset.id}>{asset.name}</option>)}
+            </select>
+            <label className="inline-flex h-11 cursor-pointer items-center justify-center gap-2 rounded-xl border border-input px-4 text-sm hover:bg-secondary"><ImagePlus className="size-4" />本地上传<input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" aria-label="上传本地参考图" onChange={(event) => { const file = event.target.files?.[0]; if (file) onReferenceUpload(file); event.currentTarget.value = ''; }} /></label>
+          </div>
         )}
-        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><ImagePlus className="size-3.5" />后端接入后，这里也支持本地上传。</p>
+        <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><ImagePlus className="size-3.5" />支持 PNG、JPG、WebP；当前原型在浏览器本地保存预览。</p>
       </div>
     </div>
   );

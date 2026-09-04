@@ -15,8 +15,8 @@ import { NotificationSheet } from '@/src/features/notifications/NotificationShee
 export function Topbar() {
   const [noticesOpen, setNoticesOpen] = useState(false);
   const { data: me } = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
-  const { data: tasks = [] } = useQuery({ queryKey: queryKeys.tasks, queryFn: api.listGenerationTasks });
-  const { data: notices = [] } = useQuery({ queryKey: queryKeys.notifications, queryFn: api.listNotifications });
+  const { data: tasks = [] } = useQuery({ queryKey: queryKeys.tasks, queryFn: api.listGenerationTasks, enabled: Boolean(me) });
+  const { data: notices = [] } = useQuery({ queryKey: queryKeys.notifications, queryFn: api.listNotifications, enabled: Boolean(me) });
   const activeCount = tasks.filter((task) => task.status === 'queued' || task.status === 'processing').length;
 
   return (

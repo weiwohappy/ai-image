@@ -9,13 +9,20 @@ function storageAvailable(): boolean {
 }
 
 export function loadDb(): MockDatabase {
-  if (!storageAvailable()) return memoryDb;
-  const stored = window.localStorage.getItem(STORAGE_KEY);
-  if (!stored) return memoryDb;
-  try {
-    memoryDb = JSON.parse(stored) as MockDatabase;
-  } catch {
-    window.localStorage.removeItem(STORAGE_KEY);
+  if (storageAvailable()) {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      try {
+        memoryDb = JSON.parse(stored) as MockDatabase;
+      } catch {
+        window.localStorage.removeItem(STORAGE_KEY);
+      }
+    }
+  }
+  if (!memoryDb.redeemedCodes) memoryDb.redeemedCodes = [];
+  if (reconcileDb(memoryDb)) {
+    memoryDb = structuredClone(memoryDb);
+    if (storageAvailable()) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
   }
   return memoryDb;
 }
@@ -57,13 +64,13 @@ function createAsset(task: GenerationTask, index: number): ImageAsset {
     createdAt,
     prompt: task.input.prompt,
     templateId: task.templateId,
+    templateVersion: task.templateVersion,
+    remixStrength: task.remixStrength,
   };
 }
 
-export function settleTask(taskId: string, outcome: 'success' | 'partial' | 'failure'): void {
-  mutateDb((db) => {
-    const task = db.tasks.find((candidate) => candidate.id === taskId);
-    if (!task || task.status === 'cancelled' || task.status === 'succeeded' || task.status === 'failed') return;
+function settleTaskInDb(db: MockDatabase, task: GenerationTask, outcome: 'success' | 'partial' | 'failure', now = new Date().toISOString()): void {
+    if (task.status === 'cancelled' || task.status === 'succeeded' || task.status === 'failed' || task.status === 'partial') return;
 
     const user = db.user;
     user.frozenCredits = Math.max(0, user.frozenCredits - task.estimatedCredits);
@@ -75,7 +82,7 @@ export function settleTask(taskId: string, outcome: 'success' | 'partial' | 'fai
     if (refund > 0) user.credits += refund;
     task.chargedCredits = charged;
     task.progress = 100;
-    task.updatedAt = new Date().toISOString();
+    task.updatedAt = now;
 
     if (outcome === 'failure') {
       task.status = 'failed';
@@ -108,5 +115,43 @@ export function settleTask(taskId: string, outcome: 'success' | 'partial' | 'fai
       href: '#/create',
     };
     db.notifications.unshift(notification);
+}
+
+function reconcileBatch(db: MockDatabase, batchId: string): boolean {
+  const batch = db.batches.find((candidate) => candidate.id === batchId);
+  if (!batch?.childTaskIds?.length) return false;
+  const children = batch.childTaskIds.map((id) => db.tasks.find((task) => task.id === id)).filter(Boolean) as GenerationTask[];
+  const completed = children.filter((task) => task.status === 'succeeded' || task.status === 'partial').length;
+  const processing = children.filter((task) => task.status === 'queued' || task.status === 'processing').length;
+  const failed = children.filter((task) => task.status === 'failed' || task.status === 'cancelled').length;
+  const status = processing > 0 ? 'processing' : failed === children.length ? 'failed' : failed > 0 ? 'partial' : 'succeeded';
+  if (batch.completed === completed && batch.processing === processing && batch.failed === failed && batch.status === status) return false;
+  Object.assign(batch, { completed, processing, failed, status });
+  return true;
+}
+
+function reconcileDb(db: MockDatabase): boolean {
+  const nowMs = Date.now();
+  let changed = false;
+  for (const task of db.tasks) {
+    if ((task.status !== 'queued' && task.status !== 'processing') || !task.mockLifecycle) continue;
+    if (nowMs >= Date.parse(task.mockLifecycle.completionAt)) {
+      settleTaskInDb(db, task, task.mockLifecycle.outcome, new Date().toISOString());
+      changed = true;
+    } else if (nowMs >= Date.parse(task.mockLifecycle.processingAt) && task.status === 'queued') {
+      task.status = 'processing';
+      task.progress = 52;
+      task.updatedAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  for (const batch of db.batches) changed = reconcileBatch(db, batch.id) || changed;
+  return changed;
+}
+
+export function settleTask(taskId: string, outcome: 'success' | 'partial' | 'failure'): void {
+  mutateDb((db) => {
+    const task = db.tasks.find((candidate) => candidate.id === taskId);
+    if (task) settleTaskInDb(db, task, outcome);
   });
 }

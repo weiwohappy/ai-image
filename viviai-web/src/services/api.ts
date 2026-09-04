@@ -96,6 +96,9 @@ export const api = {
   listNotifications: () => request<NotificationItem[]>('/notifications'),
   markNotificationRead: (id: string) => request<NotificationItem>(`/notifications/${id}/read`, { method: 'POST' }),
   listInvites: () => request<InviteRelation[]>('/invites'),
+  updateProfile: (input: { username: string; avatarUrl?: string }) => request<User>('/account/profile', { method: 'PATCH', body: JSON.stringify(input) }),
+  changeEmail: (input: { email: string; code: string }) => request<User>('/account/email', { method: 'POST', body: JSON.stringify(input) }),
+  changePassword: (input: { code: string; password: string }) => request<{ success: true }>('/account/password', { method: 'POST', body: JSON.stringify(input) }),
   redeemCode: (code: string) => request<User>('/account/redeem', { method: 'POST', body: JSON.stringify({ code }) }),
   resetDemoData: () => request<{ success: true }>('/mock/reset', { method: 'POST' }),
 };

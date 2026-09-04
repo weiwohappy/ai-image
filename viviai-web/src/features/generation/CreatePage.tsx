@@ -61,6 +61,15 @@ export function CreatePage() {
     createTask.mutate({ ...draft, source: 'generation' });
   }
 
+  function uploadReference(file: File) {
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      if (typeof reader.result !== 'string') return;
+      updateDraft({ referenceAssetId: `upload-${crypto.randomUUID()}`, referencePreviewUrl: reader.result, referenceName: file.name });
+    });
+    reader.readAsDataURL(file);
+  }
+
   const recentTasks = (tasks.data ?? []).slice(0, 6);
   const recentAssets = (assets.data ?? []).slice(0, 3);
 
@@ -83,7 +92,7 @@ export function CreatePage() {
 
         <aside className="flex min-h-[620px] flex-col rounded-[28px] border border-border bg-card p-5 md:p-6">
           <div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">生成设置</h2><p className="mt-1 text-xs text-muted-foreground">参数变化会实时计算积分</p></div><Button type="button" variant="ghost" size="icon" aria-label="打开高级设置" className="rounded-full"><SlidersHorizontal /></Button></div>
-          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} onReferenceChange={(referenceAssetId) => updateDraft({ referenceAssetId })} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
+          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} referencePreviewUrl={draft.referencePreviewUrl} referenceName={draft.referenceName} onReferenceChange={(referenceAssetId) => updateDraft({ referenceAssetId, referencePreviewUrl: undefined, referenceName: undefined })} onReferenceUpload={uploadReference} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
           {error && <div role="alert" className="mt-4 rounded-xl border border-destructive/30 bg-destructive/8 p-3 text-sm text-destructive">{error}{showPaywall && <NavLink to="/pricing" className="ml-2 font-semibold underline">查看套餐</NavLink>}</div>}
           <Button type="button" size="lg" className="mt-5 h-12 w-full rounded-2xl text-sm font-bold" disabled={!draft.prompt.trim() || createTask.isPending || models.isPending} onClick={submit}>{createTask.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始生成 <ArrowUp /></>}</Button>
           <p className="mt-3 text-center text-xs text-muted-foreground">提交后进入任务队列，失败自动退回积分</p>

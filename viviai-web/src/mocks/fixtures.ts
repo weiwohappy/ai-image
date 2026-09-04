@@ -32,6 +32,7 @@ export interface MockDatabase {
   ledger: PointLedgerEntry[];
   notifications: NotificationItem[];
   invites: InviteRelation[];
+  redeemedCodes: string[];
 }
 
 const now = new Date('2026-09-05T00:00:00+08:00').toISOString();
@@ -271,6 +272,7 @@ export function createSeedDb(): MockDatabase {
       { id: 'invite-1', username: 'Lin', reward: 10, status: 'rewarded', createdAt: now },
       { id: 'invite-2', username: 'Aster', reward: 10, status: 'rewarded', createdAt: now },
     ],
+    redeemedCodes: [],
   };
 }
 

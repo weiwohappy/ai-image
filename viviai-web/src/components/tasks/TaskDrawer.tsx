@@ -19,7 +19,8 @@ const statusLabel = {
 };
 
 export function TaskDrawer({ activeCount }: { activeCount: number }) {
-  const { data: tasks = [] } = useQuery({ queryKey: queryKeys.tasks, queryFn: api.listGenerationTasks });
+  const { data: me } = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
+  const { data: tasks = [] } = useQuery({ queryKey: queryKeys.tasks, queryFn: api.listGenerationTasks, enabled: Boolean(me) });
 
   return (
     <Sheet>

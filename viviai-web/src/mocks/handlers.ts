@@ -33,6 +33,10 @@ function sessionUser(): User | null {
   return db.sessionUserId ? db.user : null;
 }
 
+function authError() {
+  return sessionUser() ? null : fail(401, 'AUTH_REQUIRED', '请先登录后再访问。');
+}
+
 class MockFailure extends Error {
   constructor(
     readonly status: number,
@@ -68,7 +72,7 @@ function scheduleTask(taskId: string, scenario: string): void {
 function createTask(
   input: GenerationInput,
   scenario: string,
-  context?: Pick<GenerationTask, 'templateId' | 'toolId' | 'workflowId'>,
+  context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId'>,
 ): GenerationTask {
   const user = sessionUser();
   if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
@@ -89,7 +93,10 @@ function createTask(
   }
   if (user.credits < estimatedCredits) throw new MockFailure(402, 'INSUFFICIENT_CREDITS', '积分不足，请升级套餐。');
 
-  const createdAt = new Date().toISOString();
+  const createdAtMs = Date.now();
+  const processingDelay = scenario === 'slow' ? 1200 : 220;
+  const completionDelay = scenario === 'slow' ? 3600 : 950;
+  const createdAt = new Date(createdAtMs).toISOString();
   const task: GenerationTask = {
     id: `task-${crypto.randomUUID()}`,
     input,
@@ -100,6 +107,11 @@ function createTask(
     createdAt,
     updatedAt: createdAt,
     resultAssetIds: [],
+    mockLifecycle: {
+      processingAt: new Date(createdAtMs + processingDelay).toISOString(),
+      completionAt: new Date(createdAtMs + completionDelay).toISOString(),
+      outcome: scenario === 'partial-success' ? 'partial' : scenario === 'task-failure' ? 'failure' : 'success',
+    },
     ...context,
   };
 
@@ -110,7 +122,7 @@ function createTask(
     draft.ledger.unshift({
       id: `ledger-${crypto.randomUUID()}`,
       type: 'freeze',
-      description: input.source === 'remix' ? '爆款复刻冻结' : input.source === 'tool' ? '工具任务冻结' : '图片生成冻结',
+      description: input.source === 'remix' ? '爆款复刻冻结' : input.source === 'tool' ? '工具任务冻结' : input.source === 'workflow' ? '工作流任务冻结' : '图片生成冻结',
       delta: -estimatedCredits,
       balance: draft.user.credits,
       createdAt,
@@ -158,14 +170,23 @@ export const handlers = [
       draft.user.frozenCredits = 0;
       draft.user.concurrency = 2;
       draft.sessionUserId = draft.user.id;
-      draft.ledger.unshift({
+      draft.tasks = [];
+      draft.assets = [];
+      draft.deletedAssets = [];
+      draft.workflows = [];
+      draft.batches = [];
+      draft.orders = [];
+      draft.invites = [];
+      draft.redeemedCodes = [];
+      draft.notifications = [{ id: `notice-${crypto.randomUUID()}`, type: 'system', title: '欢迎来到 VIVIAI', content: '注册奖励已到账，开始你的第一张作品吧。', read: false, createdAt: new Date().toISOString() }];
+      draft.ledger = [{
         id: `ledger-${crypto.randomUUID()}`,
         type: 'register',
         description: '注册奖励',
         delta: 5,
         balance: 5,
         createdAt: new Date().toISOString(),
-      });
+      }];
     });
     return ok(db.user, '注册成功');
   }),
@@ -186,7 +207,10 @@ export const handlers = [
   }),
 
   http.get(`${api}/models`, () => ok(loadDb().models)),
-  http.get(`${api}/generation-tasks`, () => ok(loadDb().tasks)),
+  http.get(`${api}/generation-tasks`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().tasks);
+  }),
 
   http.post(`${api}/generation-tasks`, async ({ request }) => {
     const scenario = request.headers.get('x-mock-scenario') ?? 'happy';
@@ -200,6 +224,8 @@ export const handlers = [
   }),
 
   http.post(`${api}/generation-tasks/:id/cancel`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const db = mutateDb((draft) => {
       const task = draft.tasks.find((item) => item.id === params.id);
       if (task && (task.status === 'queued' || task.status === 'processing')) {
@@ -207,6 +233,7 @@ export const handlers = [
         task.updatedAt = new Date().toISOString();
         draft.user.credits += task.estimatedCredits;
         draft.user.frozenCredits = Math.max(0, draft.user.frozenCredits - task.estimatedCredits);
+        draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'refund', description: '任务取消退回', delta: task.estimatedCredits, balance: draft.user.credits, createdAt: task.updatedAt });
       }
     });
     const task = db.tasks.find((item) => item.id === params.id);
@@ -214,6 +241,8 @@ export const handlers = [
   }),
 
   http.post(`${api}/generation-tasks/:id/retry`, ({ params, request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const original = loadDb().tasks.find((item) => item.id === params.id);
     if (!original) return fail(404, 'INVALID_INPUT', '任务不存在。');
     try {
@@ -288,7 +317,7 @@ export const handlers = [
         referenceAssetId: input.subjectAssetId,
         source: 'remix',
       };
-      return ok(createTask(generationInput, scenario, { templateId: input.templateId }), '复刻任务已创建');
+      return ok(createTask(generationInput, scenario, { templateId: input.templateId, templateVersion: input.templateVersion, remixStrength: input.strength }), '复刻任务已创建');
     } catch (error) {
       if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
       return fail(500, 'INTERNAL_ERROR', '创建复刻任务失败。');
@@ -296,6 +325,8 @@ export const handlers = [
   }),
 
   http.post(`${api}/assets/:id/restore`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const db = mutateDb((draft) => {
       const index = draft.deletedAssets.findIndex((item) => item.id === params.id);
       if (index >= 0) {
@@ -308,6 +339,8 @@ export const handlers = [
   }),
 
   http.patch(`${api}/assets/:id`, async ({ params, request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const patch = (await request.json()) as Partial<Pick<ImageAsset, 'name' | 'favorite'>>;
     const db = mutateDb((draft) => {
       const item = draft.assets.find((candidate) => candidate.id === params.id);
@@ -318,6 +351,8 @@ export const handlers = [
   }),
 
   http.delete(`${api}/assets/:id`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     let deleted: ImageAsset | undefined;
     mutateDb((draft) => {
       const index = draft.assets.findIndex((item) => item.id === params.id);
@@ -330,6 +365,8 @@ export const handlers = [
   }),
 
   http.get(`${api}/assets`, ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const url = new URL(request.url);
     const query = url.searchParams.get('query') ?? '';
     const source = url.searchParams.get('source') ?? '';
@@ -341,6 +378,8 @@ export const handlers = [
   http.get(`${api}/tools`, () => ok(loadDb().tools)),
 
   http.post(`${api}/tool-runs`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const input = (await request.json()) as { toolId: string; assetIds: string[]; values: Record<string, string> };
     const tool = loadDb().tools.find((item) => item.id === input.toolId);
     if (!tool) return fail(404, 'INVALID_INPUT', '工具不存在。');
@@ -362,13 +401,38 @@ export const handlers = [
   }),
 
   http.post(`${api}/workflows/:id/run`, async ({ params, request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const { rowIds } = (await request.json()) as { rowIds: string[] };
     const workflow = loadDb().workflows.find((item) => item.id === params.id);
     if (!workflow || !workflow.saved) return fail(400, 'INVALID_INPUT', '请先保存工作流。');
     const generationColumns = workflow.columns.filter((column) => column.type === 'generation' && column.modelId && column.resolution);
-    if (!rowIds.length || !generationColumns.length) return fail(400, 'INVALID_INPUT', '没有可运行的任务。');
-    const estimatedCredits = rowIds.length * generationColumns.length * 4;
+    const rows = workflow.rows.filter((row) => rowIds.includes(row.id));
+    if (!rows.length || !generationColumns.length) return fail(400, 'INVALID_INPUT', '没有可运行的任务。');
+    if (rows.length !== rowIds.length) return fail(400, 'INVALID_INPUT', '包含无效的工作流行。');
+    const requiredReferenceIds = new Set(generationColumns.flatMap((column) => column.sourceColumnIds ?? []));
+    if (rows.some((row) => [...requiredReferenceIds].some((columnId) => !row.cells[columnId]))) return fail(400, 'ASSET_INVALID', '请为所选行补齐参考素材。');
+    const inputs: GenerationInput[] = rows.flatMap((row) => generationColumns.map((column) => ({
+      prompt: `${column.prompt?.trim() || column.name}${row.cells.brief ? `，${row.cells.brief}` : ''}`,
+      modelId: column.modelId!,
+      resolution: column.resolution!,
+      ratio: column.ratio ?? '1:1',
+      count: 1,
+      referenceAssetId: column.sourceColumnIds?.map((id) => row.cells[id]).find(Boolean),
+      source: 'workflow' as const,
+    })));
+    const current = loadDb();
+    let estimatedCredits = 0;
+    try {
+      estimatedCredits = inputs.reduce((total, input) => total + estimateCredits(input), 0);
+    } catch {
+      return fail(400, 'PARAMETER_UNSUPPORTED', '工作流包含不支持的模型参数。');
+    }
+    if (inputs.some((input) => !current.models.some((model) => model.id === input.modelId && model.status === 'available'))) return fail(409, 'MODEL_UNAVAILABLE', '工作流包含不可用模型。');
+    if (current.user.credits < estimatedCredits) return fail(402, 'INSUFFICIENT_CREDITS', '积分不足，无法运行所选任务。');
+    if (activeTaskCount() + inputs.length > current.user.concurrency) return fail(409, 'CONCURRENCY_LIMIT', '批量任务超过当前套餐并发上限。');
     const createdAt = new Date().toISOString();
+    const children = inputs.map((input) => createTask(input, 'happy', { workflowId: workflow.id }));
     const batch: BatchTask = {
       id: `batch-${crypto.randomUUID()}`,
       workflowId: workflow.id,
@@ -380,29 +444,24 @@ export const handlers = [
       estimatedCredits,
       status: 'processing',
       createdAt,
+      childTaskIds: children.map((task) => task.id),
     };
     mutateDb((draft) => {
       draft.batches.unshift(batch);
     });
-    window.setTimeout(() => {
-      mutateDb((draft) => {
-        const target = draft.batches.find((item) => item.id === batch.id);
-        if (target) {
-          target.completed = target.total;
-          target.processing = 0;
-          target.status = 'succeeded';
-        }
-      });
-    }, 1200);
     return ok(batch, '批量任务已创建');
   }),
 
   http.get(`${api}/workflows/:id`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const workflow = loadDb().workflows.find((item) => item.id === params.id);
     return workflow ? ok(workflow) : fail(404, 'INVALID_INPUT', '工作流不存在。');
   }),
 
   http.put(`${api}/workflows/:id`, async ({ params, request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const incoming = (await request.json()) as Workflow;
     const saved: Workflow = { ...incoming, id: String(params.id), saved: true, version: incoming.version + 1, updatedAt: new Date().toISOString() };
     mutateDb((draft) => {
@@ -413,8 +472,14 @@ export const handlers = [
     return ok(saved, '工作流已保存');
   }),
 
-  http.get(`${api}/workflows`, () => ok(loadDb().workflows.filter((item) => item.saved))),
-  http.get(`${api}/batches`, () => ok(loadDb().batches)),
+  http.get(`${api}/workflows`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().workflows.filter((item) => item.saved));
+  }),
+  http.get(`${api}/batches`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().batches);
+  }),
   http.get(`${api}/plans`, () => ok(loadDb().plans)),
 
   http.post(`${api}/orders`, async ({ request }) => {
@@ -428,6 +493,8 @@ export const handlers = [
   }),
 
   http.post(`${api}/mock/orders/:id/complete`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     let completed: Order | undefined;
     mutateDb((draft) => {
       const order = draft.orders.find((item) => item.id === params.id);
@@ -437,17 +504,26 @@ export const handlers = [
         completed = order;
         draft.user.planId = plan.id;
         draft.user.planName = plan.name;
-        draft.user.credits = plan.credits ?? draft.user.credits;
+        const grantedCredits = plan.credits ?? 0;
+        draft.user.credits += grantedCredits;
         draft.user.concurrency = plan.concurrency ?? draft.user.concurrency;
-        draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'purchase', description: `${plan.name}到账`, delta: plan.credits ?? 0, balance: draft.user.credits, createdAt: new Date().toISOString() });
+        draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'purchase', description: `${plan.name}到账`, delta: grantedCredits, balance: draft.user.credits, createdAt: new Date().toISOString() });
       }
     });
     return completed ? ok(completed, '模拟支付成功') : fail(400, 'INVALID_INPUT', '订单无法完成。');
   }),
 
-  http.get(`${api}/point-ledger`, () => ok(loadDb().ledger)),
-  http.get(`${api}/notifications`, () => ok(loadDb().notifications)),
+  http.get(`${api}/point-ledger`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().ledger);
+  }),
+  http.get(`${api}/notifications`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().notifications);
+  }),
   http.post(`${api}/notifications/:id/read`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const db = mutateDb((draft) => {
       const item = draft.notifications.find((candidate) => candidate.id === params.id);
       if (item) item.read = true;
@@ -455,11 +531,44 @@ export const handlers = [
     const item = db.notifications.find((candidate) => candidate.id === params.id);
     return item ? ok(item) : fail(404, 'INVALID_INPUT', '通知不存在。');
   }),
-  http.get(`${api}/invites`, () => ok(loadDb().invites)),
-  http.post(`${api}/account/redeem`, async ({ request }) => {
-    const { code } = (await request.json()) as { code: string };
-    if (code.trim().toUpperCase() !== 'VIVIAI2026') return fail(400, 'INVALID_INPUT', '兑换码无效或已使用。');
+  http.get(`${api}/invites`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().invites);
+  }),
+  http.patch(`${api}/account/profile`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const input = (await request.json()) as { username: string; avatarUrl?: string };
+    if (!input.username.trim()) return fail(400, 'INVALID_INPUT', '用户名不能为空。');
     const db = mutateDb((draft) => {
+      draft.user.username = input.username.trim();
+      if (input.avatarUrl !== undefined) draft.user.avatarUrl = input.avatarUrl;
+    });
+    return ok(db.user, '资料已更新');
+  }),
+  http.post(`${api}/account/email`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const input = (await request.json()) as { email: string; code: string };
+    if (!input.email.includes('@') || input.code !== '123456') return fail(400, 'INVALID_INPUT', '邮箱或验证码不正确。');
+    const db = mutateDb((draft) => { draft.user.email = input.email.trim(); });
+    return ok(db.user, '邮箱已更新');
+  }),
+  http.post(`${api}/account/password`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const input = (await request.json()) as { code: string; password: string };
+    if (input.code !== '123456' || input.password.length < 8) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 8 位。');
+    return ok({ success: true as const }, '密码已更新');
+  }),
+  http.post(`${api}/account/redeem`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const { code } = (await request.json()) as { code: string };
+    const normalized = code.trim().toUpperCase();
+    if (normalized !== 'VIVIAI2026' || loadDb().redeemedCodes.includes(normalized)) return fail(400, 'INVALID_INPUT', '兑换码无效或已使用。');
+    const db = mutateDb((draft) => {
+      draft.redeemedCodes.push(normalized);
       draft.user.credits += 100;
       draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'redeem', description: '兑换码奖励', delta: 100, balance: draft.user.credits, createdAt: new Date().toISOString() });
     });

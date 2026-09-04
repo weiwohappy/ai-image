@@ -70,8 +70,15 @@ export interface GenerationTask {
   updatedAt: string;
   resultAssetIds: string[];
   templateId?: string;
+  templateVersion?: number;
+  remixStrength?: RemixStrength;
   toolId?: string;
   workflowId?: string;
+  mockLifecycle?: {
+    processingAt: string;
+    completionAt: string;
+    outcome: 'success' | 'partial' | 'failure';
+  };
   errorCode?: ApiErrorCode;
   errorMessage?: string;
 }
@@ -91,6 +98,8 @@ export interface ImageAsset {
   createdAt: string;
   prompt?: string;
   templateId?: string;
+  templateVersion?: number;
+  remixStrength?: RemixStrength;
 }
 
 export interface Inspiration {
@@ -209,6 +218,7 @@ export interface BatchTask {
   estimatedCredits: number;
   status: TaskStatus;
   createdAt: string;
+  childTaskIds: string[];
 }
 
 export interface Plan {
