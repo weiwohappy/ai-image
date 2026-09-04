@@ -1,5 +1,12 @@
 'use client';
 
+import { AppProviders } from './AppProviders';
+import { AppRoutes } from './routes';
+
 export function App() {
-  return <a href="#/create">图片生成</a>;
+  return (
+    <AppProviders>
+      <AppRoutes />
+    </AppProviders>
+  );
 }
