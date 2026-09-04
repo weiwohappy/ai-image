@@ -9,6 +9,8 @@ import { AssetsPage } from '@/src/features/assets/AssetsPage';
 import { InspirationPage } from '@/src/features/inspiration/InspirationPage';
 import { RemixDetailPage } from '@/src/features/remix/RemixDetailPage';
 import { RemixLibraryPage } from '@/src/features/remix/RemixLibraryPage';
+import { ToolRunPage } from '@/src/features/tools/ToolRunPage';
+import { ToolsPage } from '@/src/features/tools/ToolsPage';
 import { PlaceholderPage } from '@/src/features/system/PlaceholderPage';
 import { ProtectedRoute } from './ProtectedRoute';
 
@@ -30,8 +32,8 @@ export function AppRoutes() {
         <Route path="/remix" element={<RemixLibraryPage />} />
         <Route path="/remix/:templateId" element={<RemixDetailPage />} />
         <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
-        <Route path="/tools" element={protectedPage('工具中心', '使用预设能力快速完成常见图片任务。')} />
-        <Route path="/tools/:toolId" element={protectedPage('工具执行', '配置素材与参数，生成处理结果。')} />
+        <Route path="/tools" element={<ProtectedRoute><ToolsPage /></ProtectedRoute>} />
+        <Route path="/tools/:toolId" element={<ProtectedRoute><ToolRunPage /></ProtectedRoute>} />
         <Route path="/workflows" element={protectedPage('工作流', '通过表格批量组织图片生产任务。')} />
         <Route path="/workflows/:workflowId" element={protectedPage('工作流编辑器', '配置任务行、参考图和生成列。')} />
         <Route path="/tasks" element={protectedPage('任务中心', '查看单次和批量任务的执行状态。')} />

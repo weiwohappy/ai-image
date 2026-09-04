@@ -1,0 +1,7 @@
+import { ArrowUpRight, BadgeCheck } from 'lucide-react';
+import { NavLink } from 'react-router-dom';
+import type { ToolTemplate } from '@/src/types/domain';
+
+export function ToolCard({ tool }: { tool: ToolTemplate }) {
+  return <NavLink to={`/tools/${tool.id}`} className="group overflow-hidden rounded-[22px] border border-border bg-card transition hover:-translate-y-0.5 hover:border-primary/25"><div className="relative overflow-hidden"><img src={tool.coverUrl} alt="" className="aspect-[16/10] w-full object-cover transition duration-300 group-hover:scale-[1.03]" />{tool.isNew && <span className="absolute left-3 top-3 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground">NEW</span>}</div><div className="p-4"><div className="flex items-start justify-between gap-3"><div><p className="text-xs text-primary">{tool.category}</p><h2 className="mt-1 text-lg font-semibold">{tool.name}</h2></div><span className="grid size-9 place-items-center rounded-full bg-secondary text-muted-foreground transition group-hover:bg-primary group-hover:text-primary-foreground"><ArrowUpRight className="size-4" /></span></div><p className="mt-2 min-h-10 text-sm leading-5 text-muted-foreground">{tool.description}</p><p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground"><BadgeCheck className="size-4 text-primary" />最多 {tool.maxAssets} 张{tool.assetLabel}</p></div></NavLink>;
+}
