@@ -5,6 +5,10 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from '@/src/components/shell/AppShell';
 import { CreatePage } from '@/src/features/generation/CreatePage';
 import { AuthPage } from '@/src/features/auth/AuthPage';
+import { AssetsPage } from '@/src/features/assets/AssetsPage';
+import { InspirationPage } from '@/src/features/inspiration/InspirationPage';
+import { RemixDetailPage } from '@/src/features/remix/RemixDetailPage';
+import { RemixLibraryPage } from '@/src/features/remix/RemixLibraryPage';
 import { PlaceholderPage } from '@/src/features/system/PlaceholderPage';
 import { ProtectedRoute } from './ProtectedRoute';
 
@@ -22,10 +26,10 @@ export function AppRoutes() {
       <Route path="/forgot-password" element={<AuthPage mode="forgot" />} />
       <Route element={<AppShell />}>
         <Route path="/create" element={<CreatePage />} />
-        <Route path="/inspiration" element={<PlaceholderPage title="灵感发现" description="从经过筛选的优秀作品开始创作。" />} />
-        <Route path="/remix" element={<PlaceholderPage title="爆款复刻" description="借鉴成熟视觉方法，生成属于你的新作品。" />} />
-        <Route path="/remix/:templateId" element={<PlaceholderPage title="模板详情" description="查看视觉结构并开始改编。" />} />
-        <Route path="/assets" element={protectedPage('我的资产', '管理生成、复刻、工具与工作流产出的图片。')} />
+        <Route path="/inspiration" element={<InspirationPage />} />
+        <Route path="/remix" element={<RemixLibraryPage />} />
+        <Route path="/remix/:templateId" element={<RemixDetailPage />} />
+        <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
         <Route path="/tools" element={protectedPage('工具中心', '使用预设能力快速完成常见图片任务。')} />
         <Route path="/tools/:toolId" element={protectedPage('工具执行', '配置素材与参数，生成处理结果。')} />
         <Route path="/workflows" element={protectedPage('工作流', '通过表格批量组织图片生产任务。')} />
