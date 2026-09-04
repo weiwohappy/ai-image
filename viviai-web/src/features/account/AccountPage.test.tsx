@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -22,5 +22,14 @@ describe('account page', () => {
     await user.type(screen.getByLabelText('兑换码'), 'VIVIAI2026');
     await user.click(screen.getByRole('button', { name: '兑换积分' }));
     expect(await screen.findByText('1,220')).toBeVisible();
+  });
+
+  it('clears private query data when the user logs out', async () => {
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(['assets'], [{ id: 'private-asset' }]);
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
+    await user.click(await screen.findByRole('button', { name: '退出登录' }));
+    await waitFor(() => expect(client.getQueryData(['assets'])).toBeUndefined());
   });
 });

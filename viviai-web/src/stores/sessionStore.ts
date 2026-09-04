@@ -62,6 +62,15 @@ export const useSessionStore = create<SessionState>()(
       setPendingRemixTemplateId: (pendingRemixTemplateId) => set({ pendingRemixTemplateId }),
       resetGenerationDraft: () => set({ generationDraft: initialDraft, pendingGeneration: false }),
     }),
-    { name: 'viviai-session-v1' },
+    {
+      name: 'viviai-session-v1',
+      partialize: (state) => {
+        const localUpload = state.generationDraft.referenceAssetId?.startsWith('upload-');
+        return {
+          ...state,
+          generationDraft: localUpload ? { ...state.generationDraft, referenceAssetId: undefined, referencePreviewUrl: undefined, referenceName: undefined } : state.generationDraft,
+        };
+      },
+    },
   ),
 );

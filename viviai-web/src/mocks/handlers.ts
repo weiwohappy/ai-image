@@ -37,6 +37,12 @@ function authError() {
   return sessionUser() ? null : fail(401, 'AUTH_REQUIRED', '请先登录后再访问。');
 }
 
+async function credentialHash(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 class MockFailure extends Error {
   constructor(
     readonly status: number,
@@ -72,7 +78,7 @@ function scheduleTask(taskId: string, scenario: string): void {
 function createTask(
   input: GenerationInput,
   scenario: string,
-  context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId'>,
+  context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId' | 'workflowRowId' | 'workflowColumnId'>,
 ): GenerationTask {
   const user = sessionUser();
   if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
@@ -141,8 +147,10 @@ export const handlers = [
 
   http.post(`${api}/auth/login`, async ({ request }) => {
     const input = (await request.json()) as { account: string; password: string };
-    const accountValid = ['demo@viviai.local', 'demo', 'Mia Chen'].includes(input.account.trim());
-    if (!accountValid || input.password !== 'demo1234') return fail(401, 'INVALID_CREDENTIALS', '账号或密码不正确。');
+    const current = loadDb();
+    const account = input.account.trim().toLocaleLowerCase();
+    const accountValid = account === current.user.email.toLocaleLowerCase() || account === current.user.username.toLocaleLowerCase();
+    if (!accountValid || await credentialHash(input.password) !== current.credentialHash) return fail(401, 'INVALID_CREDENTIALS', '账号或密码不正确。');
     const db = mutateDb((draft) => {
       draft.sessionUserId = draft.user.id;
     });
@@ -161,6 +169,7 @@ export const handlers = [
     if (!input.username.trim() || !input.email.includes('@') || input.password.length < 8 || !/^\d{6}$/.test(input.code)) {
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
+    const passwordHash = await credentialHash(input.password);
     const db = mutateDb((draft) => {
       draft.user.username = input.username.trim();
       draft.user.email = input.email.trim();
@@ -170,6 +179,7 @@ export const handlers = [
       draft.user.frozenCredits = 0;
       draft.user.concurrency = 2;
       draft.sessionUserId = draft.user.id;
+      draft.credentialHash = passwordHash;
       draft.tasks = [];
       draft.assets = [];
       draft.deletedAssets = [];
@@ -203,6 +213,9 @@ export const handlers = [
     if (!input.email.includes('@') || !/^\d{6}$/.test(input.code) || input.password.length < 8) {
       return fail(400, 'INVALID_INPUT', '邮箱、验证码或密码格式不正确。');
     }
+    if (input.email.trim().toLocaleLowerCase() !== loadDb().user.email.toLocaleLowerCase()) return fail(404, 'INVALID_INPUT', '没有找到该邮箱对应的账户。');
+    const passwordHash = await credentialHash(input.password);
+    mutateDb((draft) => { draft.credentialHash = passwordHash; });
     return ok({ success: true as const }, '密码已重置');
   }),
 
@@ -412,15 +425,21 @@ export const handlers = [
     if (rows.length !== rowIds.length) return fail(400, 'INVALID_INPUT', '包含无效的工作流行。');
     const requiredReferenceIds = new Set(generationColumns.flatMap((column) => column.sourceColumnIds ?? []));
     if (rows.some((row) => [...requiredReferenceIds].some((columnId) => !row.cells[columnId]))) return fail(400, 'ASSET_INVALID', '请为所选行补齐参考素材。');
-    const inputs: GenerationInput[] = rows.flatMap((row) => generationColumns.map((column) => ({
-      prompt: `${column.prompt?.trim() || column.name}${row.cells.brief ? `，${row.cells.brief}` : ''}`,
-      modelId: column.modelId!,
-      resolution: column.resolution!,
-      ratio: column.ratio ?? '1:1',
-      count: 1,
-      referenceAssetId: column.sourceColumnIds?.map((id) => row.cells[id]).find(Boolean),
-      source: 'workflow' as const,
-    })));
+    const jobs = rows.flatMap((row) => generationColumns.map((column) => {
+      const referenceAssetIds = column.sourceColumnIds?.map((id) => row.cells[id]).filter(Boolean) as string[] | undefined;
+      const input: GenerationInput = {
+        prompt: `${column.prompt?.trim() || column.name}${row.cells.brief ? `，${row.cells.brief}` : ''}`,
+        modelId: column.modelId!,
+        resolution: column.resolution!,
+        ratio: column.ratio ?? '1:1',
+        count: 1,
+        referenceAssetId: referenceAssetIds?.[0],
+        referenceAssetIds,
+        source: 'workflow',
+      };
+      return { input, rowId: row.id, columnId: column.id };
+    }));
+    const inputs = jobs.map((job) => job.input);
     const current = loadDb();
     let estimatedCredits = 0;
     try {
@@ -429,10 +448,11 @@ export const handlers = [
       return fail(400, 'PARAMETER_UNSUPPORTED', '工作流包含不支持的模型参数。');
     }
     if (inputs.some((input) => !current.models.some((model) => model.id === input.modelId && model.status === 'available'))) return fail(409, 'MODEL_UNAVAILABLE', '工作流包含不可用模型。');
+    if (inputs.some((input) => input.referenceAssetIds?.some((id) => !current.assets.some((asset) => asset.id === id)))) return fail(400, 'ASSET_INVALID', '工作流包含无效参考素材。');
     if (current.user.credits < estimatedCredits) return fail(402, 'INSUFFICIENT_CREDITS', '积分不足，无法运行所选任务。');
     if (activeTaskCount() + inputs.length > current.user.concurrency) return fail(409, 'CONCURRENCY_LIMIT', '批量任务超过当前套餐并发上限。');
     const createdAt = new Date().toISOString();
-    const children = inputs.map((input) => createTask(input, 'happy', { workflowId: workflow.id }));
+    const children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: workflow.id, workflowRowId: job.rowId, workflowColumnId: job.columnId }));
     const batch: BatchTask = {
       id: `batch-${crypto.randomUUID()}`,
       workflowId: workflow.id,
@@ -448,6 +468,12 @@ export const handlers = [
     };
     mutateDb((draft) => {
       draft.batches.unshift(batch);
+      const target = draft.workflows.find((item) => item.id === workflow.id);
+      for (const row of target?.rows ?? []) {
+        if (!rowIds.includes(row.id)) continue;
+        row.status = 'processing';
+        for (const column of generationColumns) delete row.cells[column.id];
+      }
     });
     return ok(batch, '批量任务已创建');
   }),
@@ -559,6 +585,8 @@ export const handlers = [
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { code: string; password: string };
     if (input.code !== '123456' || input.password.length < 8) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 8 位。');
+    const passwordHash = await credentialHash(input.password);
+    mutateDb((draft) => { draft.credentialHash = passwordHash; });
     return ok({ success: true as const }, '密码已更新');
   }),
   http.post(`${api}/account/redeem`, async ({ request }) => {

@@ -21,7 +21,7 @@ describe('schema driven tool runner', () => {
 
     const submit = await screen.findByRole('button', { name: '开始生成' });
     expect(submit).toBeDisabled();
-    await user.click(screen.getByRole('button', { name: '选择琥珀香氛主视觉' }));
+    await user.click(await screen.findByRole('button', { name: '选择琥珀香氛主视觉' }));
     await user.selectOptions(screen.getByLabelText('产品类型'), '护肤品');
     expect(submit).toBeEnabled();
   });

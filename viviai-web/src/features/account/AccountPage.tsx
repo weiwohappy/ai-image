@@ -53,9 +53,13 @@ export function AccountPage() {
     onSuccess: (user) => { syncUser(user); queryClient.invalidateQueries({ queryKey: queryKeys.ledger }); setMessage('兑换成功，100 积分已到账。'); setCode(''); },
     onError: (error) => setMessage(error.message),
   });
-  const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { queryClient.setQueryData(queryKeys.me, null); navigate('/login'); } });
+  const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { queryClient.clear(); navigate('/login'); } });
 
   function selectAvatar(file: File) {
+    if (file.size > 1024 * 1024) {
+      setMessage('头像不能超过 1MB。');
+      return;
+    }
     const reader = new FileReader();
     reader.addEventListener('load', () => { if (typeof reader.result === 'string') setAvatarUrl(reader.result); });
     reader.readAsDataURL(file);

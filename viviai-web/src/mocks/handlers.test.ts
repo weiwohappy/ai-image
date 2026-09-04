@@ -70,6 +70,18 @@ describe('Mock generation state machine', () => {
     expect((await api.listGenerationTasks()).find((item) => item.id === created.id)?.status).toBe('succeeded');
     await expect(api.getMe()).resolves.toMatchObject({ frozenCredits: 0 });
   });
+
+  it('migrates a legacy active task by failing it and refunding frozen credits', async () => {
+    const created = await api.createGenerationTask(baseInput, 'slow');
+    mutateDb((draft) => {
+      const task = draft.tasks.find((item) => item.id === created.id);
+      if (task) delete task.mockLifecycle;
+    });
+
+    const migrated = (await api.listGenerationTasks()).find((item) => item.id === created.id);
+    expect(migrated).toMatchObject({ status: 'failed', errorCode: 'INTERNAL_ERROR' });
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
+  });
 });
 
 describe('Mock workflow and account boundaries', () => {
@@ -97,12 +109,18 @@ describe('Mock workflow and account boundaries', () => {
     expect(batch.childTaskIds).toHaveLength(2);
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1112, frozenCredits: 8 });
     const tasks = await api.listGenerationTasks();
-    expect(tasks.filter((task) => batch.childTaskIds.includes(task.id))).toHaveLength(2);
+    const children = tasks.filter((task) => batch.childTaskIds.includes(task.id));
+    expect(children).toHaveLength(2);
+    expect(children[0]).toMatchObject({ workflowId: saved.id, workflowRowId: expect.any(String), workflowColumnId: 'output' });
+    expect(children[0].input.referenceAssetIds).toHaveLength(2);
 
     settleTask(batch.childTaskIds[0], 'success');
     settleTask(batch.childTaskIds[1], 'failure');
     expect((await api.listBatches())[0]).toMatchObject({ status: 'partial', completed: 1, processing: 0, failed: 1 });
     expect((await api.listAssets()).some((asset) => asset.source === 'workflow')).toBe(true);
+    const completedWorkflow = await api.getWorkflow(saved.id);
+    expect(completedWorkflow.rows[0]).toMatchObject({ status: 'succeeded', cells: { output: expect.stringMatching(/^asset-task-/) } });
+    expect(completedWorkflow.rows[1]).toMatchObject({ status: 'failed' });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 0 });
   });
 
@@ -116,5 +134,17 @@ describe('Mock workflow and account boundaries', () => {
     await expect(api.redeemCode('viviai2026')).resolves.toMatchObject({ credits: 1220 });
     await expect(api.redeemCode('VIVIAI2026')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
     expect(loadDb().ledger.filter((entry) => entry.type === 'redeem')).toHaveLength(1);
+  });
+
+  it('supports login after registration and after changing email and password', async () => {
+    await api.register({ username: '新用户', email: 'new@example.com', password: 'initial88', code: '123456' });
+    await api.logout();
+    await expect(api.login({ account: 'new@example.com', password: 'initial88' })).resolves.toMatchObject({ username: '新用户' });
+
+    await api.changeEmail({ email: 'changed@example.com', code: '123456' });
+    await api.changePassword({ code: '123456', password: 'changed88' });
+    await api.logout();
+    await expect(api.login({ account: 'new@example.com', password: 'initial88' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CREDENTIALS' }));
+    await expect(api.login({ account: 'changed@example.com', password: 'changed88' })).resolves.toMatchObject({ email: 'changed@example.com' });
   });
 });

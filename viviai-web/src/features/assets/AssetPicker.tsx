@@ -8,7 +8,8 @@ import { queryKeys } from '@/src/services/queryKeys';
 
 export function AssetPicker({ selected, onChange, max = 1, label = '选择素材' }: { selected: string[]; onChange: (ids: string[]) => void; max?: number; label?: string }) {
   const { data: me } = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
-  const { data: assets = [] } = useQuery({ queryKey: queryKeys.assets, queryFn: () => api.listAssets(), enabled: Boolean(me) });
+  const assetsQuery = useQuery({ queryKey: queryKeys.assets, queryFn: () => api.listAssets(), enabled: Boolean(me) });
+  const assets = me ? (assetsQuery.data ?? []) : [];
   function toggle(id: string) {
     if (selected.includes(id)) onChange(selected.filter((item) => item !== id));
     else if (selected.length < max) onChange([...selected, id]);

@@ -41,16 +41,16 @@ export function WorkflowEditorPage() {
   const queryClient = useQueryClient();
   const isNew = params.workflowId === 'new';
   const stableId = useMemo(() => isNew ? `workflow-${crypto.randomUUID()}` : params.workflowId ?? 'new', [isNew, params.workflowId]);
-  const existing = useQuery({ queryKey: [...queryKeys.workflows, stableId], queryFn: () => api.getWorkflow(stableId), enabled: !isNew });
+  const existing = useQuery({ queryKey: [...queryKeys.workflows, stableId], queryFn: () => api.getWorkflow(stableId), enabled: !isNew, refetchInterval: (query) => query.state.data?.rows.some((row) => row.status === 'queued' || row.status === 'processing') ? 600 : false });
   const assets = useQuery({ queryKey: queryKeys.assets, queryFn: () => api.listAssets() });
   const [workflow, setWorkflow] = useState<Workflow>(() => createDefaultWorkflow(stableId));
   const [configuring, setConfiguring] = useState<WorkflowColumn>();
   const [zoom, setZoom] = useState(100);
-  useEffect(() => { if (existing.data) setWorkflow(existing.data); }, [existing.data]);
+  useEffect(() => { if (existing.data) { setWorkflow(existing.data); queryClient.invalidateQueries({ queryKey: queryKeys.assets }); } }, [existing.data, queryClient]);
   const selectedIds = workflow.rows.filter((row) => row.selected).map((row) => row.id);
   const summary = summarizeWorkflow(workflow, selectedIds);
   const save = useMutation({ mutationFn: () => api.saveWorkflow(workflow), onSuccess: (saved) => { setWorkflow(saved); queryClient.invalidateQueries({ queryKey: queryKeys.workflows }); navigate(`/workflows/${saved.id}`, { replace: true }); } });
-  const run = useMutation({ mutationFn: () => api.runWorkflow(workflow.id, selectedIds), onSuccess: () => { queryClient.invalidateQueries({ queryKey: queryKeys.batches }); navigate('/tasks'); } });
+  const run = useMutation({ mutationFn: () => api.runWorkflow(workflow.id, selectedIds), onSuccess: () => { queryClient.invalidateQueries({ queryKey: queryKeys.batches }); queryClient.invalidateQueries({ queryKey: queryKeys.workflows }); navigate('/tasks'); } });
   function updateColumn(next: WorkflowColumn) { setWorkflow((current) => ({ ...current, saved: false, columns: current.columns.map((column) => column.id === next.id ? next : column) })); setConfiguring(next); }
   function addColumn(type: WorkflowColumn['type']) {
     const id = `${type}-${crypto.randomUUID()}`;

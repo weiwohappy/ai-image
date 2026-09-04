@@ -54,12 +54,13 @@ export function AuthPage({ mode }: { mode: Mode }) {
       await api.resetPassword({ email: account, code, password });
       return null;
     },
-    onSuccess: async () => {
+    onSuccess: async (user) => {
       if (mode === 'forgot') {
         navigate('/login?reset=success', { replace: true });
         return;
       }
-      await queryClient.invalidateQueries({ queryKey: queryKeys.me });
+      queryClient.clear();
+      if (user) queryClient.setQueryData(queryKeys.me, user);
       navigate(consumeAuthRedirect(redirect), { replace: true });
     },
     onError: (error) => setFormError(error instanceof ApiError || error instanceof Error ? error.message : '操作失败，请重试。'),

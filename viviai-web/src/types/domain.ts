@@ -56,6 +56,7 @@ export interface GenerationInput extends EstimateCreditsInput {
   prompt: string;
   ratio: ImageRatio;
   referenceAssetId?: string;
+  referenceAssetIds?: string[];
   source?: 'generation' | 'remix' | 'tool' | 'workflow';
 }
 
@@ -74,6 +75,8 @@ export interface GenerationTask {
   remixStrength?: RemixStrength;
   toolId?: string;
   workflowId?: string;
+  workflowRowId?: string;
+  workflowColumnId?: string;
   mockLifecycle?: {
     processingAt: string;
     completionAt: string;

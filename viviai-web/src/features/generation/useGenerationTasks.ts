@@ -13,5 +13,10 @@ export function useGenerationTasks() {
   const refresh = async () => { await Promise.all([queryClient.invalidateQueries({ queryKey: queryKeys.tasks }), queryClient.invalidateQueries({ queryKey: queryKeys.assets }), queryClient.invalidateQueries({ queryKey: queryKeys.me })]); };
   const cancel = useMutation({ mutationFn: api.cancelGenerationTask, onSuccess: refresh });
   const retry = useMutation({ mutationFn: api.retryGenerationTask, onSuccess: (task) => queryClient.setQueryData<GenerationTask[]>(queryKeys.tasks, (current = []) => [task, ...current]) });
-  return { tasks, assets, cancel, retry };
+  return {
+    tasks: me ? tasks : { ...tasks, data: [] },
+    assets: me ? assets : { ...assets, data: [] },
+    cancel,
+    retry,
+  };
 }
