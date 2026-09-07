@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
   afterAll,
@@ -77,8 +77,113 @@ function mount() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return client;
 }
 describe('official payment checkout', () => {
+  it('recovers from a cached successful session to 401 and allows real login again', async () => {
+    const user = userEvent.setup();
+    const client = mount();
+    await screen.findByText('真实账户：real@example.test');
+    server.use(
+      http.get('*/api/billing/me', () =>
+        HttpResponse.json({ message: 'Expired' }, { status: 401 }),
+      ),
+      http.post('*/api/billing/auth/login', () =>
+        envelope({ id: 'real-user', email: 'real@example.test', credits: 0 }),
+      ),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['billing', 'me'] });
+    });
+    expect(await screen.findByText('登录真实账户')).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: '购买创作积分包' }),
+    ).toBeDisabled();
+    await user.type(screen.getByLabelText('邮箱或用户名'), 'real@example.test');
+    await user.type(screen.getByLabelText('密码'), 'test-password');
+    await user.click(screen.getByRole('button', { name: '登录付款账户' }));
+    expect(
+      await screen.findByText('真实账户：real@example.test'),
+    ).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: '购买创作积分包' }),
+    ).toBeEnabled();
+  });
+  it('a checkout 401 closes the dialog and returns to real login', async () => {
+    const user = userEvent.setup();
+    server.use(
+      http.post('*/api/billing/orders', () =>
+        HttpResponse.json({ message: 'Expired' }, { status: 401 }),
+      ),
+    );
+    mount();
+    await user.click(
+      await screen.findByRole('button', { name: '购买创作积分包' }),
+    );
+    await user.click(screen.getByRole('radio', { name: '微信支付' }));
+    await user.click(screen.getByRole('button', { name: '确认下单' }));
+    expect(await screen.findByText('登录真实账户')).toBeVisible();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('paused new sales still allow the signed-in user to resume and synchronize historical orders', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem('viviai:payment-order:real-user', pending.id);
+    const client = mount();
+    await screen.findByText('真实账户：real@example.test');
+    server.use(
+      http.get('*/api/billing/catalog', () =>
+        envelope({ ...catalog, enabled: false, plans: [] }),
+      ),
+      http.post('*/api/billing/orders/:id/sync', () =>
+        envelope({
+          ...pending,
+          status: 'paid',
+          checkout: null,
+          fulfilledAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ['billing', 'catalog'] });
+    });
+    await screen.findByText('支付暂未开通');
+    await user.click(screen.getByRole('button', { name: '查看最近订单' }));
+    await screen.findByText('等待支付确认');
+    await user.click(screen.getByRole('button', { name: '查询支付结果' }));
+    expect(await screen.findByText('积分已到账')).toBeVisible();
+  });
+  it('restarting an expired recent order clears its original plan attempt', async () => {
+    const user = userEvent.setup();
+    localStorage.setItem('viviai:payment-order:real-user', pending.id);
+    localStorage.setItem(
+      'viviai:payment-attempt:real-user:credits-v1',
+      JSON.stringify({
+        key: 'old-idempotency-key',
+        channel: 'wechat',
+        orderId: pending.id,
+      }),
+    );
+    server.use(
+      http.get('*/api/billing/orders/:id', () =>
+        envelope({
+          ...pending,
+          status: 'expired',
+          expiresAt: new Date(Date.now() - 10000).toISOString(),
+        }),
+      ),
+    );
+    mount();
+    await user.click(
+      await screen.findByRole('button', { name: '查看最近订单' }),
+    );
+    await user.click(
+      await screen.findByRole('button', { name: '确认未付款，返回选择' }),
+    );
+    await user.click(screen.getByRole('button', { name: '购买创作积分包' }));
+    expect(
+      await screen.findByRole('button', { name: '确认下单' }),
+    ).toBeVisible();
+  });
   it('shows unavailable channels and cannot simulate credit purchases before activation', async () => {
     server.use(
       http.get('*/api/billing/catalog', () =>

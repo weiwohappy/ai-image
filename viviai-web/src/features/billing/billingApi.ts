@@ -34,6 +34,7 @@ export class BillingError extends Error {
     super(message);
   }
 }
+export const BILLING_AUTH_EXPIRED_EVENT = 'viviai:billing-auth-expired';
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   headers.set('Content-Type', 'application/json');
@@ -46,6 +47,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers,
     },
   );
+  if (response.status === 401)
+    window.dispatchEvent(new Event(BILLING_AUTH_EXPIRED_EVENT));
   if (!response.headers.get('content-type')?.includes('application/json'))
     throw new BillingError('支付服务尚未连接，请稍后重试。', response.status);
   const body = (await response.json()) as { data?: unknown; message?: string };

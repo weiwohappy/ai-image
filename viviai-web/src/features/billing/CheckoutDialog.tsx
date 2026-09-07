@@ -90,18 +90,23 @@ export function CheckoutDialog({
     },
   });
   const current = order.data;
+  const resolvedStorageKey =
+    'viviai:payment-attempt:' +
+    userId +
+    ':' +
+    (current?.planId ?? plan?.id ?? 'resume');
   const error = purchase.error ?? order.error ?? sync.error;
   const paid = current?.status === 'paid' && Boolean(current.fulfilledAt);
   useEffect(() => {
     if (!paid) return;
     try {
-      if (loadAttempt(storageKey)?.orderId === current?.id)
-        localStorage.removeItem(storageKey);
+      if (loadAttempt(resolvedStorageKey)?.orderId === current?.id)
+        localStorage.removeItem(resolvedStorageKey);
     } catch {
       /* The paid order remains queryable. */
     }
     void client.invalidateQueries({ queryKey: accountKey });
-  }, [paid, current?.id, storageKey, client]);
+  }, [paid, current?.id, resolvedStorageKey, client]);
   const expired =
     current && new Date(current.expiresAt).getTime() <= Date.now();
   const checkout = !paid && !expired ? current?.checkout : null;
@@ -213,8 +218,8 @@ export function CheckoutDialog({
               <Button
                 variant="ghost"
                 onClick={() => {
-                  if (loadAttempt(storageKey)?.orderId === current?.id)
-                    localStorage.removeItem(storageKey);
+                  if (loadAttempt(resolvedStorageKey)?.orderId === current?.id)
+                    localStorage.removeItem(resolvedStorageKey);
                   onClose();
                 }}
               >
