@@ -10,6 +10,8 @@
 
 ## 本地运行
 
+本次本地测试、独立审查结果与尚未验证的范围记录在 [PAYMENT-VERIFICATION.md](PAYMENT-VERIFICATION.md)。暂停新销售不隐藏真实账户登录和最近订单查询；原渠道配置应保留以处理历史订单。
+
 使用 Node 22，保留主 README 中的 PostgreSQL、Redis、邮件和存储配置，三个支付开关保持 false。
 
 ```sh
