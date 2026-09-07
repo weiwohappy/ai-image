@@ -4,7 +4,8 @@ import {
   sign as rsaSign,
   verify as rsaVerify,
 } from 'node:crypto';
-import { describe, expect, test, vi } from 'vitest';
+import { AlipaySdk } from 'alipay-sdk';
+import { describe, expect, test } from 'vitest';
 import { AlipayPaymentAdapter, type AlipaySdkPort } from '../src/modules/billing/alipay.js';
 import type {
   PaymentHttpRequest,
@@ -20,6 +21,7 @@ const ORDER_NO = 'ORDER_20260907_000001';
 const merchantKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const wechatKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const alipayKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });
+const nonRsaKeys = generateKeyPairSync('ed25519');
 
 const merchantPrivateKey = merchantKeys.privateKey
   .export({ type: 'pkcs8', format: 'pem' })
@@ -28,6 +30,8 @@ const wechatPrivateKey = wechatKeys.privateKey.export({ type: 'pkcs8', format: '
 const wechatPublicKey = wechatKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const alipayPrivateKey = alipayKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 const alipayPublicKey = alipayKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const nonRsaPrivateKey = nonRsaKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const nonRsaPublicKey = nonRsaKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 
 const WECHAT_KEY_ID = 'PUB_KEY_ID_3000000001';
 const API_V3_KEY = Buffer.from('0123456789abcdef0123456789abcdef');
@@ -183,6 +187,21 @@ describe('WechatPaymentAdapter', () => {
     await expect(unpaidAdapter.query(ORDER_NO)).resolves.toBeNull();
   });
 
+  test.each(['SUCCESS', 'NOTPAY'])(
+    'rejects a signed %s query response for another order',
+    async (tradeState) => {
+      const adapter = new WechatPaymentAdapter(
+        wechatConfig,
+        signedWechatTransport([], () => ({
+          ...wechatPaidPayment(),
+          out_trade_no: 'ORDER_20260907_DIFFERENT',
+          trade_state: tradeState,
+        })),
+      );
+      await expect(adapter.query(ORDER_NO)).rejects.toThrow();
+    },
+  );
+
   test('rejects an authenticated notification with an unknown event type', () => {
     const adapter = new WechatPaymentAdapter(wechatConfig, rejectingTransport);
     const notification = makeWechatNotification({ eventType: 'TRANSACTION.UNKNOWN' });
@@ -191,6 +210,19 @@ describe('WechatPaymentAdapter', () => {
 });
 
 describe('AlipayPaymentAdapter', () => {
+  test.each([
+    ['empty private key', { privateKey: '' }],
+    ['invalid private key', { privateKey: 'not-a-key' }],
+    ['non-RSA private key', { privateKey: nonRsaPrivateKey }],
+    ['empty public key', { alipayPublicKey: '' }],
+    ['invalid public key', { alipayPublicKey: 'not-a-key' }],
+    ['non-RSA public key', { alipayPublicKey: nonRsaPublicKey }],
+  ])('rejects %s during construction', (_name, changes) => {
+    expect(
+      () => new AlipayPaymentAdapter({ ...alipayConfig, ...changes }, makeAlipaySdkPort({})),
+    ).toThrow();
+  });
+
   test('verifies a decoded RSA2 form notification and converts 29.01 yuan to 2901 fen', () => {
     const adapter = new AlipayPaymentAdapter(alipayConfig);
     const body = makeAlipayNotification();
@@ -213,6 +245,15 @@ describe('AlipayPaymentAdapter', () => {
   test('rejects duplicate form fields even when the first value is valid', () => {
     const adapter = new AlipayPaymentAdapter(alipayConfig);
     const body = Buffer.concat([makeAlipayNotification(), Buffer.from('&total_amount=0.01')]);
+    expect(() => adapter.verifyNotification(body, {})).toThrow();
+  });
+
+  test('rejects duplicate reserved-name form fields instead of dropping them through Object.prototype', () => {
+    const adapter = new AlipayPaymentAdapter(alipayConfig);
+    const body = Buffer.concat([
+      makeAlipayNotification(),
+      Buffer.from('&__proto__=first&__proto__=second'),
+    ]);
     expect(() => adapter.verifyNotification(body, {})).toThrow();
   });
 
@@ -273,41 +314,94 @@ describe('AlipayPaymentAdapter', () => {
     ).rejects.toThrow();
   });
 
-  test('queries through SDK response verification before interpreting a paid result', async () => {
-    const exec = vi.fn<AlipaySdkPort['exec']>(async (_method, _params, options) => {
-      if (!options?.validateSign) throw new Error('unsigned response must not be interpreted');
-      return {
-        code: '10000',
-        trade_status: 'TRADE_SUCCESS',
-        out_trade_no: ORDER_NO,
-        trade_no: '202609072200100000000001',
-        total_amount: '29.01',
-        buyer_pay_amount: '29.01',
-        send_pay_date: '2026-09-07 12:01:02',
-      };
+  test('uses a bounded no-redirect HTTP boundary and verifies the raw signed query response', async () => {
+    const requests: PaymentHttpRequest[] = [];
+    const transport = signedAlipayTransport(requests, {
+      code: '10000',
+      msg: 'Success',
+      trade_status: 'TRADE_SUCCESS',
+      out_trade_no: ORDER_NO,
+      trade_no: '202609072200100000000001',
+      total_amount: '29.01',
+      buyer_pay_amount: '29.01',
+      send_pay_date: '2026-09-07 12:01:02',
     });
-    const adapter = new AlipayPaymentAdapter(alipayConfig, makeAlipaySdkPort({ exec }));
+    const adapter = new AlipayPaymentAdapter(alipayConfig, makeRealAlipaySdkPort(), transport);
 
     await expect(adapter.query(ORDER_NO)).resolves.toMatchObject({
       channel: 'alipay',
       eventId: 'alipay:query:202609072200100000000001',
       amountMinor: 2901,
     });
+
+    expect(requests).toHaveLength(1);
+    const request = requests[0]!;
+    expect(request).toMatchObject({
+      method: 'POST',
+      url: 'https://openapi.alipay.com/gateway.do',
+      timeoutMs: 10_000,
+      maxResponseBytes: 64 * 1024,
+      followRedirects: false,
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+    });
+    const params = new URLSearchParams(request.body!.toString());
+    expect(params.get('method')).toBe('alipay.trade.query');
+    expect(params.get('app_id')).toBe(alipayConfig.appId);
+    expect(params.get('sign_type')).toBe('RSA2');
+    expect(params.get('sign')).toBeTruthy();
+    expect(JSON.parse(params.get('biz_content') ?? '')).toEqual({ out_trade_no: ORDER_NO });
   });
 
-  test('rejects an oversized verified Alipay query payload', async () => {
-    const sdk = makeAlipaySdkPort({
-      exec: async () => ({
+  test.each(['TRADE_SUCCESS', 'WAIT_BUYER_PAY'])(
+    'rejects a verified %s query response for another order',
+    async (tradeStatus) => {
+      const transport = signedAlipayTransport([], {
         code: '10000',
+        msg: 'Success',
+        trade_status: tradeStatus,
+        out_trade_no: 'ORDER_20260907_DIFFERENT',
+        trade_no: '202609072200100000000001',
+        total_amount: '29.01',
+        send_pay_date: '2026-09-07 12:01:02',
+      });
+      const adapter = new AlipayPaymentAdapter(alipayConfig, makeRealAlipaySdkPort(), transport);
+      await expect(adapter.query(ORDER_NO)).rejects.toThrow();
+    },
+  );
+
+  test('rejects an oversized verified Alipay query payload', async () => {
+    const transport = signedAlipayTransport([], {
+      code: '10000',
+      msg: 'Success',
+      trade_status: 'TRADE_SUCCESS',
+      out_trade_no: ORDER_NO,
+      trade_no: '202609072200100000000001',
+      total_amount: '29.01',
+      send_pay_date: '2026-09-07 12:01:02',
+      padding: 'x'.repeat(64 * 1024),
+    });
+    const adapter = new AlipayPaymentAdapter(alipayConfig, makeRealAlipaySdkPort(), transport);
+    await expect(adapter.query(ORDER_NO)).rejects.toThrow();
+  });
+
+  test('rejects a bounded Alipay query response whose raw signed bytes were changed', async () => {
+    const transport = signedAlipayTransport(
+      [],
+      {
+        code: '10000',
+        msg: 'Success',
         trade_status: 'TRADE_SUCCESS',
         out_trade_no: ORDER_NO,
         trade_no: '202609072200100000000001',
         total_amount: '29.01',
         send_pay_date: '2026-09-07 12:01:02',
-        padding: 'x'.repeat(64 * 1024),
-      }),
-    });
-    const adapter = new AlipayPaymentAdapter(alipayConfig, sdk);
+      },
+      true,
+    );
+    const adapter = new AlipayPaymentAdapter(alipayConfig, makeRealAlipaySdkPort(), transport);
     await expect(adapter.query(ORDER_NO)).rejects.toThrow();
   });
 });
@@ -482,8 +576,53 @@ function makeAlipayNotification(changes: Record<string, string> = {}): Buffer {
 function makeAlipaySdkPort(overrides: Partial<AlipaySdkPort>): AlipaySdkPort {
   return {
     pageExecute: () => 'https://openapi.alipay.com/gateway.do',
-    exec: async () => ({ code: '40004', trade_status: 'WAIT_BUYER_PAY' }),
+    sdkExecute: () => '',
+    checkResponseSign: () => {
+      throw new Error('unexpected response verification');
+    },
     checkNotifySignV2: () => false,
     ...overrides,
+  };
+}
+
+function makeRealAlipaySdkPort(): AlipaySdkPort {
+  const sdk = new AlipaySdk({
+    appId: alipayConfig.appId,
+    privateKey: alipayConfig.privateKey,
+    alipayPublicKey: alipayConfig.alipayPublicKey,
+    signType: 'RSA2',
+    keyType: 'PKCS8',
+    gateway: 'https://openapi.alipay.com/gateway.do',
+    timeout: 10_000,
+    camelcase: false,
+  });
+  Object.defineProperty(sdk, 'exec', {
+    value: async () => {
+      throw new Error('legacy SDK exec must not be used');
+    },
+  });
+  return sdk as unknown as AlipaySdkPort;
+}
+
+function signedAlipayTransport(
+  requests: PaymentHttpRequest[],
+  response: Record<string, unknown>,
+  mutateAfterSigning = false,
+): PaymentHttpTransport {
+  return async (request) => {
+    requests.push(request);
+    const responseJson = JSON.stringify(response);
+    const signature = rsaSign(
+      'RSA-SHA256',
+      Buffer.from(responseJson),
+      alipayKeys.privateKey,
+    ).toString('base64');
+    let body = Buffer.from(
+      JSON.stringify({ alipay_trade_query_response: response, sign: signature }),
+    );
+    if (mutateAfterSigning) {
+      body = Buffer.from(body.toString().replace('29.01', '29.02'));
+    }
+    return { status: 200, headers: {}, body };
   };
 }

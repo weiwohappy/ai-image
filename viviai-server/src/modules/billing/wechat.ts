@@ -109,6 +109,11 @@ export class WechatPaymentAdapter implements PaymentAdapter {
     const path = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(orderNo)}?mchid=${encodeURIComponent(this.merchantId)}`;
     const response = await this.request('GET', path);
     const payment = this.acceptResponse(response);
+    const responseOrderNo = requireString(payment, 'out_trade_no', 32);
+    validateOrderNo(responseOrderNo);
+    if (responseOrderNo !== orderNo) {
+      throw new PaymentProtocolError('WeChat query returned a different order');
+    }
     return this.normalizePayment(payment, `wechat:query:${String(payment.transaction_id ?? '')}`);
   }
 

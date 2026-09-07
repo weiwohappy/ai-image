@@ -1,13 +1,20 @@
+import { createPrivateKey, createPublicKey } from 'node:crypto';
 import { AlipaySdk } from 'alipay-sdk';
 import type { Checkout, PaidFact, PaymentAdapter, PaymentRequest } from './contracts.js';
 import {
   PAYMENT_MAX_RESPONSE_BYTES,
+  PAYMENT_TIMEOUT_MS,
   PaymentProtocolError,
+  defaultPaymentHttpTransport,
   decodeUtf8,
   parseCnyDecimal,
+  parseJsonObject,
   requireFiniteDate,
+  requireObject,
   requireString,
   validatePaymentRequest,
+  type PaymentHttpResponse,
+  type PaymentHttpTransport,
 } from './payment-security.js';
 
 const ALIPAY_GATEWAY = 'https://openapi.alipay.com/gateway.do';
@@ -23,11 +30,17 @@ export interface AlipayPaymentConfig {
 
 export interface AlipaySdkPort {
   pageExecute(method: string, httpMethod: string, params: Record<string, unknown>): string;
-  exec(
+  sdkExecute(
     method: string,
     params: Record<string, unknown>,
-    options?: { validateSign?: boolean },
-  ): Promise<Record<string, unknown>>;
+    options?: { bizContentAutoSnakeCase?: boolean },
+  ): string;
+  checkResponseSign(
+    responseDataRaw: string,
+    responseKey: string,
+    serverSign: string,
+    traceId: string,
+  ): void;
   checkNotifySignV2(postData: Record<string, string>): boolean;
 }
 
@@ -39,17 +52,23 @@ export class AlipayPaymentAdapter implements PaymentAdapter {
   private readonly returnUrl: string;
   private readonly sdk: AlipaySdkPort;
 
-  constructor(config: AlipayPaymentConfig, sdk?: AlipaySdkPort) {
+  constructor(
+    config: AlipayPaymentConfig,
+    sdk?: AlipaySdkPort,
+    private readonly transport: PaymentHttpTransport = defaultPaymentHttpTransport,
+  ) {
     this.appId = requireDigits(config.appId, 'appId');
     this.merchantId = requireDigits(config.sellerId, 'sellerId');
     this.notifyUrl = requireHttpsUrl(config.notifyUrl, 'notifyUrl');
     this.returnUrl = requireHttpsUrl(config.returnUrl, 'returnUrl');
+    const privateKey = requireRsaPrivateKey(config.privateKey);
+    const publicKey = requireRsaPublicKey(config.alipayPublicKey);
     this.sdk =
       sdk ??
       (new AlipaySdk({
         appId: this.appId,
-        privateKey: config.privateKey.toString(),
-        alipayPublicKey: config.alipayPublicKey.toString(),
+        privateKey,
+        alipayPublicKey: publicKey,
         signType: 'RSA2',
         keyType: 'PKCS8',
         gateway: ALIPAY_GATEWAY,
@@ -82,14 +101,34 @@ export class AlipayPaymentAdapter implements PaymentAdapter {
 
   async query(orderNo: string): Promise<PaidFact | null> {
     validateOrderNo(orderNo);
-    const response = await this.sdk.exec(
-      'alipay.trade.query',
-      { bizContent: { out_trade_no: orderNo } },
-      { validateSign: true },
+    const requestBody = Buffer.from(
+      this.sdk.sdkExecute('alipay.trade.query', {
+        bizContent: { out_trade_no: orderNo },
+      }),
     );
-    assertBoundedObject(response);
+    if (requestBody.length > PAYMENT_MAX_RESPONSE_BYTES) {
+      throw new PaymentProtocolError('Alipay query request exceeded the size limit');
+    }
+    const httpResponse = await this.transport({
+      method: 'POST',
+      url: ALIPAY_GATEWAY,
+      headers: {
+        accept: 'application/json',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: requestBody,
+      timeoutMs: PAYMENT_TIMEOUT_MS,
+      maxResponseBytes: PAYMENT_MAX_RESPONSE_BYTES,
+      followRedirects: false,
+    });
+    const response = this.acceptQueryResponse(httpResponse);
     if (response.code !== '10000') {
       throw new PaymentProtocolError('Alipay query was not successful');
+    }
+    const responseOrderNo = requireString(response, 'out_trade_no', 64);
+    validateOrderNo(responseOrderNo);
+    if (responseOrderNo !== orderNo) {
+      throw new PaymentProtocolError('Alipay query returned a different order');
     }
     const status = requireString(response, 'trade_status', 32);
     if (status === 'WAIT_BUYER_PAY') return null;
@@ -98,6 +137,28 @@ export class AlipayPaymentAdapter implements PaymentAdapter {
     }
     const tradeNo = requireString(response, 'trade_no', 64);
     return this.normalizePaid(response, `alipay:query:${tradeNo}`, 'send_pay_date');
+  }
+
+  private acceptQueryResponse(response: PaymentHttpResponse): Record<string, unknown> {
+    if (response.body.length === 0 || response.body.length > PAYMENT_MAX_RESPONSE_BYTES) {
+      throw new PaymentProtocolError('Alipay query response body is invalid');
+    }
+    const rawBody = decodeUtf8(response.body);
+    const envelope = parseJsonObject(response.body);
+    const responseKey = 'alipay_trade_query_response';
+    if (!Object.hasOwn(envelope, responseKey)) {
+      throw new PaymentProtocolError('Alipay query response envelope is invalid');
+    }
+    const serverSign = requireString(envelope, 'sign', 1024);
+    try {
+      this.sdk.checkResponseSign(rawBody, responseKey, serverSign, 'payment-query');
+    } catch {
+      throw new PaymentProtocolError('Alipay query response signature is invalid');
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new PaymentProtocolError(`Alipay query failed with status ${response.status}`);
+    }
+    return requireObject(envelope[responseKey], responseKey);
   }
 
   verifyNotification(
@@ -112,11 +173,13 @@ export class AlipayPaymentAdapter implements PaymentAdapter {
       throw new PaymentProtocolError('Alipay notification body is invalid');
     }
     const params = new URLSearchParams(decodeUtf8(rawBody));
-    const fields: Record<string, string> = {};
+    const fields = Object.create(null) as Record<string, string>;
+    const seenFields = new Set<string>();
     for (const [key, value] of params) {
-      if (key.length === 0 || key.length > 64 || Object.hasOwn(fields, key)) {
+      if (key.length === 0 || key.length > 64 || seenFields.has(key)) {
         throw new PaymentProtocolError('Alipay notification contains duplicate or invalid fields');
       }
+      seenFields.add(key);
       fields[key] = value;
     }
     if (requireFormField(fields, 'sign_type', 8) !== 'RSA2') {
@@ -180,6 +243,30 @@ function requireDigits(value: string, field: string): string {
   return value;
 }
 
+function requireRsaPrivateKey(value: string | Buffer): string {
+  try {
+    const key = createPrivateKey(value.toString());
+    if (key.asymmetricKeyType !== 'rsa' || (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+      throw new Error('not an RSA-2048 key');
+    }
+    return key.export({ format: 'pem', type: 'pkcs8' }).toString();
+  } catch {
+    throw new PaymentProtocolError('Alipay private key is invalid');
+  }
+}
+
+function requireRsaPublicKey(value: string | Buffer): string {
+  try {
+    const key = createPublicKey(value.toString());
+    if (key.asymmetricKeyType !== 'rsa' || (key.asymmetricKeyDetails?.modulusLength ?? 0) < 2048) {
+      throw new Error('not an RSA-2048 key');
+    }
+    return key.export({ format: 'pem', type: 'spki' }).toString();
+  } catch {
+    throw new PaymentProtocolError('Alipay public key is invalid');
+  }
+}
+
 function validateOrderNo(value: string): void {
   if (!/^[0-9A-Za-z_\-|*]{6,64}$/.test(value)) throw new PaymentProtocolError('orderNo is invalid');
 }
@@ -234,17 +321,5 @@ function validateAlipayCheckoutUrl(value: string): void {
     url.searchParams.get('sign_type') !== 'RSA2'
   ) {
     throw new PaymentProtocolError('Alipay checkout URL is invalid');
-  }
-}
-
-function assertBoundedObject(value: Record<string, unknown>): void {
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value);
-  } catch {
-    throw new PaymentProtocolError('Alipay response is malformed');
-  }
-  if (Buffer.byteLength(serialized) > PAYMENT_MAX_RESPONSE_BYTES) {
-    throw new PaymentProtocolError('Alipay response exceeded the size limit');
   }
 }
