@@ -132,6 +132,7 @@ model GenerationItem {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
   reservation CreditReservation?
+  attempts ProviderAttempt[]
   @@unique([jobId, ordinal])
   @@index([status, nextRunAt])
 }
@@ -213,4 +214,53 @@ model OutboxEvent {
   publishedAt DateTime? @db.Timestamptz(6)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   @@index([publishedAt, availableAt])
+}
+
+model ProviderAttempt {
+  id String @id @default(uuid()) @db.Uuid
+  itemId String @db.Uuid
+  item GenerationItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  userId String @db.Uuid
+  ordinal Int
+  fence Int
+  channelId String
+  quotaScope String
+  budgetKey String
+  request Json
+  status String @default("submitting")
+  acceptance String @default("unknown")
+  billing String @default("unknown")
+  providerRequestId String?
+  stagedKey String?
+  slotActive Boolean @default(true)
+  unknownSlot Boolean @default(false)
+  estimatedCostMicros BigInt
+  usage ProviderUsageRecord?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  @@unique([itemId, ordinal])
+  @@index([userId, slotActive])
+}
+
+model ProviderUsageRecord {
+  id String @id @default(uuid()) @db.Uuid
+  attemptId String @unique @db.Uuid
+  attempt ProviderAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  simulated Boolean @default(true)
+  certainty String @default("unknown")
+  actualCostMicros BigInt?
+  lines Json
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+}
+
+model ProviderBudget {
+  id String @id
+  reservedMicros BigInt @default(0)
+  consumedMicros BigInt @default(0)
+}
+
+model ProviderQuota {
+  id String @id
+  inflight Int @default(0)
+  unknown Int @default(0)
 }

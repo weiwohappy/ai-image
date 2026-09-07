@@ -6,7 +6,18 @@ import { IdentityController } from './identity.controller.js';
 import { SessionGuard } from './session.guard.js';
 import { createMailDelivery, MAIL_DELIVERY } from './mail-delivery.js';
 import { WalletModule } from '../wallet/wallet.module.js';
-@Module({ imports: [WalletModule], controllers: [IdentityController], providers: [IdentityService, SessionGuard,
-  { provide: MAIL_DELIVERY, inject: [APP_CONFIG], useFactory: (config: AppConfig) => createMailDelivery(config) },
-], exports: [IdentityService, SessionGuard, MAIL_DELIVERY] })
+@Module({
+  imports: [WalletModule],
+  controllers: [IdentityController],
+  providers: [
+    IdentityService,
+    SessionGuard,
+    {
+      provide: MAIL_DELIVERY,
+      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig) => createMailDelivery(config),
+    },
+  ],
+  exports: [IdentityService, SessionGuard, MAIL_DELIVERY],
+})
 export class IdentityModule {}

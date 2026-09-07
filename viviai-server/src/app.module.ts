@@ -24,7 +24,11 @@ class HealthController {
       await this.database.client.$queryRaw`SELECT 1`;
       return { status: 'ready' };
     } catch {
-      throw new AppError(HttpStatus.SERVICE_UNAVAILABLE, 'DATABASE_UNAVAILABLE', 'Database is unavailable');
+      throw new AppError(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        'DATABASE_UNAVAILABLE',
+        'Database is unavailable',
+      );
     }
   }
 }
@@ -34,7 +38,13 @@ export class AppModule {
   static register(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [InfrastructureModule.register(config), IdentityModule, AssetsModule, CatalogModule, GenerationModule],
+      imports: [
+        InfrastructureModule.register(config),
+        IdentityModule,
+        AssetsModule,
+        CatalogModule,
+        GenerationModule,
+      ],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],
     };

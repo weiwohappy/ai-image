@@ -14,8 +14,8 @@ export interface SuccessEnvelope<T> {
 export class EnvelopeInterceptor<T> implements NestInterceptor<T, SuccessEnvelope<T>> {
   intercept(context: ExecutionContext, next: CallHandler<T>): Observable<SuccessEnvelope<T>> {
     const request = context.switchToHttp().getRequest();
-    return next.handle().pipe(
-      map((data) => ({ data, message: 'ok', requestId: getRequestId(request) })),
-    );
+    return next
+      .handle()
+      .pipe(map((data) => ({ data, message: 'ok', requestId: getRequestId(request) })));
   }
 }

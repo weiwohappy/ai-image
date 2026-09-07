@@ -6,9 +6,13 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 @Module({})
 export class InfrastructureModule {
   static register(config: AppConfig): DynamicModule {
-    return { module: InfrastructureModule, providers: [
-      { provide: APP_CONFIG, useValue: config },
-      { provide: DatabaseService, useFactory: () => new DatabaseService(config.databaseUrl) },
-    ], exports: [APP_CONFIG, DatabaseService] };
+    return {
+      module: InfrastructureModule,
+      providers: [
+        { provide: APP_CONFIG, useValue: config },
+        { provide: DatabaseService, useFactory: () => new DatabaseService(config.databaseUrl) },
+      ],
+      exports: [APP_CONFIG, DatabaseService],
+    };
   }
 }

@@ -18,7 +18,11 @@ export class LocalObjectStore implements ObjectStore {
     await ensureSafeParent(root, dirname(target));
     await refuseSymlink(target);
     const temporary = resolve(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`);
-    const handle = await open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    const handle = await open(
+      temporary,
+      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
+      0o600,
+    );
     try {
       await handle.writeFile(bytes);
       await handle.sync();

@@ -23,8 +23,14 @@ describe('runtime integration', () => {
     const app = await createTestApp(testDatabase.url);
     try {
       const response = await request(app.getHttpServer()).get('/api/does-not-exist').expect(404);
-      expect(response.body).toMatchObject({ data: null, code: 'NOT_FOUND', requestId: expect.any(String) });
-    } finally { await app.close(); }
+      expect(response.body).toMatchObject({
+        data: null,
+        code: 'NOT_FOUND',
+        requestId: expect.any(String),
+      });
+    } finally {
+      await app.close();
+    }
   });
 
   it('returns the public health envelope with a request ID', async () => {

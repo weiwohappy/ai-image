@@ -9,6 +9,7 @@ export interface AppConfig {
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  queueNamespace: string;
   corsOrigins: string[];
   jsonBodyLimit: string;
   formBodyLimit: string;
@@ -37,6 +38,10 @@ const environmentSchema = z
     PORT: z.coerce.number().int().min(1).max(65_535).default(3001),
     DATABASE_URL: url.refine((value) => /^postgres(ql)?:/.test(value), 'must be a PostgreSQL URL'),
     REDIS_URL: url.refine((value) => value.startsWith('redis:'), 'must be a Redis URL'),
+    QUEUE_NAMESPACE: z
+      .string()
+      .regex(/^[a-z0-9-]{3,80}$/)
+      .default('development'),
     CORS_ORIGINS: z.string().min(1).default('http://127.0.0.1:3000,http://localhost:3000'),
     JSON_BODY_LIMIT: z.string().min(1).default('1mb'),
     FORM_BODY_LIMIT: z.string().min(1).default('1mb'),
@@ -67,7 +72,11 @@ const environmentSchema = z
     if (value.STORAGE_DRIVER === 's3') {
       for (const field of ['S3_BUCKET', 'S3_REGION'] as const) {
         if (!value[field]) {
-          context.addIssue({ code: 'custom', path: [field], message: 'is required for S3 storage' });
+          context.addIssue({
+            code: 'custom',
+            path: [field],
+            message: 'is required for S3 storage',
+          });
         }
       }
     }
@@ -122,6 +131,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     port: value.PORT,
     databaseUrl: value.DATABASE_URL,
     redisUrl: value.REDIS_URL,
+    queueNamespace: value.QUEUE_NAMESPACE,
     corsOrigins: value.CORS_ORIGINS.split(',').map((origin) => origin.trim()),
     jsonBodyLimit: value.JSON_BODY_LIMIT,
     formBodyLimit: value.FORM_BODY_LIMIT,
@@ -163,6 +173,7 @@ export function validateConfig(config: AppConfig): AppConfig {
   if (!hasUrlProtocol(config.redisUrl, ['redis:', 'rediss:'])) {
     issues.push('Redis URL must be a Redis URL');
   }
+  if (!/^[a-z0-9-]{3,80}$/.test(config.queueNamespace)) issues.push('queue namespace is invalid');
   if (
     !Array.isArray(config.corsOrigins) ||
     config.corsOrigins.length === 0 ||
@@ -209,11 +220,14 @@ export function validateConfig(config: AppConfig): AppConfig {
     if (config.devMailEnabled) {
       issues.push('development mail is forbidden in production');
     }
-    if (!config.smtpUrl || !config.mailFrom) issues.push('SMTP and mail sender are required in production');
+    if (!config.smtpUrl || !config.mailFrom)
+      issues.push('SMTP and mail sender are required in production');
   }
   if (!config.devMailboxRoot) issues.push('development mailbox root is required');
-  if (config.smtpUrl && !hasUrlProtocol(config.smtpUrl, ['smtp:', 'smtps:'])) issues.push('SMTP URL is invalid');
-  if (config.mailFrom && !z.string().email().safeParse(config.mailFrom).success) issues.push('mail sender is invalid');
+  if (config.smtpUrl && !hasUrlProtocol(config.smtpUrl, ['smtp:', 'smtps:']))
+    issues.push('SMTP URL is invalid');
+  if (config.mailFrom && !z.string().email().safeParse(config.mailFrom).success)
+    issues.push('mail sender is invalid');
   if (issues.length > 0) {
     throw new Error(`Invalid configuration: ${issues.join('; ')}`);
   }

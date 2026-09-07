@@ -6,6 +6,7 @@ export async function lockWallet(tx: DbTransaction, userId: string): Promise<voi
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`wallet:${userId}`}, 0))`;
 }
 export function safeInteger(value: bigint): number {
-  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER)) throw new Error('Unsafe integer serialization');
+  if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))
+    throw new Error('Unsafe integer serialization');
   return Number(value);
 }

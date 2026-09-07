@@ -11,7 +11,10 @@ import { configureHttpSecurity } from './shared/http/security.js';
 import { getRequestId } from './shared/http/security.js';
 import type { Request, Response } from 'express';
 
-export async function createApp(configOverrides: Partial<AppConfig> = {}): Promise<INestApplication> {
+export async function createApp(
+  configOverrides: Partial<AppConfig> = {},
+  options: { shutdownHooks?: boolean } = {},
+): Promise<INestApplication> {
   const config = validateConfig({ ...loadConfig(), ...configOverrides });
   const app = await NestFactory.create<NestExpressApplication>(AppModule.register(config), {
     bodyParser: false,
@@ -21,11 +24,16 @@ export async function createApp(configOverrides: Partial<AppConfig> = {}): Promi
   configureHttpSecurity(app, config);
   app.useGlobalInterceptors(new EnvelopeInterceptor());
   app.useGlobalFilters(new GlobalExceptionFilter());
-  app.enableShutdownHooks();
+  if (options.shutdownHooks !== false) app.enableShutdownHooks();
   await app.init();
   // Adapter fallback is installed after Nest routes so unknown APIs never emit HTML.
   app.use((request: Request, response: Response) => {
-    response.status(404).json({ data: null, message: 'Not found', code: 'NOT_FOUND', requestId: getRequestId(request) });
+    response.status(404).json({
+      data: null,
+      message: 'Not found',
+      code: 'NOT_FOUND',
+      requestId: getRequestId(request),
+    });
   });
   return app;
 }
