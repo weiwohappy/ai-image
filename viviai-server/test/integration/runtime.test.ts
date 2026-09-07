@@ -16,7 +16,7 @@ describe('runtime integration', () => {
   });
 
   afterAll(async () => {
-    await testDatabase.cleanup();
+    await testDatabase?.cleanup();
   });
 
   it('returns the public health envelope with a request ID', async () => {
@@ -35,7 +35,23 @@ describe('runtime integration', () => {
     }
   });
 
-  it('reports a stable error envelope when database readiness fails', async () => {
+  it('reports ready when the injected database is reachable', async () => {
+    const app = await createTestApp(testDatabase.url);
+
+    try {
+      const response = await request(app.getHttpServer()).get('/api/health/ready').expect(200);
+
+      expect(response.body).toMatchObject({
+        data: { status: 'ready' },
+        message: 'ok',
+        requestId: expect.any(String),
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('reports a frontend-compatible error code when the database is unreachable', async () => {
     const unavailableUrl = new URL(testDatabase.url);
     unavailableUrl.port = '1';
     const app = await createApp({ databaseUrl: unavailableUrl.toString() });
@@ -47,11 +63,66 @@ describe('runtime integration', () => {
         data: null,
         message: 'Database is unavailable',
         requestId: expect.any(String),
-        error: { code: 'DATABASE_UNAVAILABLE' },
+        code: 'DATABASE_UNAVAILABLE',
       });
     } finally {
       await app.close();
     }
+  });
+
+  it('rejects unsafe production overrides through the application factory', async () => {
+    let app: Awaited<ReturnType<typeof createApp>> | undefined;
+    let caught: unknown;
+
+    try {
+      app = await createApp({
+        nodeEnv: 'production',
+        storageDriver: 'local',
+        simulationProviderEnabled: true,
+        devMailEnabled: true,
+      });
+    } catch (error) {
+      caught = error;
+    } finally {
+      await app?.close();
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/simulation.*local storage.*development mail/i);
+  });
+
+  it('rejects invalid general overrides through the application factory', async () => {
+    let app: Awaited<ReturnType<typeof createApp>> | undefined;
+    let caught: unknown;
+
+    try {
+      app = await createApp({ corsOrigins: ['*'] });
+    } catch (error) {
+      caught = error;
+    } finally {
+      await app?.close();
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/CORS origins.*explicit/i);
+  });
+
+  it('rejects partial static S3 credentials', () => {
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'test',
+        DATABASE_URL: testDatabase.url,
+        REDIS_URL: 'redis://127.0.0.1:56379',
+        CORS_ORIGINS: 'http://127.0.0.1:3000',
+        STORAGE_DRIVER: 's3',
+        S3_BUCKET: 'private-assets',
+        S3_REGION: 'us-east-1',
+        S3_ACCESS_KEY_ID: 'access',
+        S3_SECRET_ACCESS_KEY: undefined,
+        SIMULATION_PROVIDER_ENABLED: 'true',
+        DEV_MAIL_ENABLED: 'true',
+      }),
+    ).toThrow(/both.*credential/i);
   });
 
   it('rejects development-only providers, storage and mail in production', () => {
@@ -91,6 +162,22 @@ describe('runtime integration', () => {
 
       await store.delete('test/image.png');
       await expect(store.get('test/image.png')).rejects.toThrow();
+    } finally {
+      await storage.cleanup();
+    }
+  });
+
+  it('persists concurrent objects that create the same new parent', async () => {
+    const storage = await createTestStorage();
+
+    try {
+      await Promise.all([
+        storage.store.put('shared/first.png', new Uint8Array([1]), 'image/png'),
+        storage.store.put('shared/second.png', new Uint8Array([2]), 'image/png'),
+      ]);
+
+      expect(await storage.store.get('shared/first.png')).toEqual(new Uint8Array([1]));
+      expect(await storage.store.get('shared/second.png')).toEqual(new Uint8Array([2]));
     } finally {
       await storage.cleanup();
     }

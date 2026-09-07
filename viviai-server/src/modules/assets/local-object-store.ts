@@ -24,6 +24,7 @@ export class LocalObjectStore implements ObjectStore {
       await handle.sync();
       await handle.close();
       await rename(temporary, target);
+      await syncDirectory(dirname(target));
     } catch (error) {
       await handle.close().catch(() => undefined);
       await unlink(temporary).catch(() => undefined);
@@ -48,6 +49,7 @@ export class LocalObjectStore implements ObjectStore {
       const actual = await realpath(target);
       assertContained(root, actual);
       await unlink(actual);
+      await syncDirectory(dirname(actual));
     } catch (error) {
       if (isNotFound(error)) return;
       throw error;
@@ -56,8 +58,9 @@ export class LocalObjectStore implements ObjectStore {
 }
 
 async function initializeRoot(root: string): Promise<string> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  return realpath(root);
+  const absoluteRoot = resolve(root);
+  await ensureDirectory(absoluteRoot);
+  return realpath(absoluteRoot);
 }
 
 function resolveKey(root: string, key: string): string {
@@ -95,8 +98,54 @@ async function ensureSafeParent(root: string, parent: string): Promise<void> {
       }
     } catch (error) {
       if (!isNotFound(error)) throw error;
-      await mkdir(current, { mode: 0o700 });
+      try {
+        await mkdir(current, { mode: 0o700 });
+        await syncDirectory(dirname(current));
+      } catch (mkdirError) {
+        if (!isAlreadyExists(mkdirError)) throw mkdirError;
+        const stat = await lstat(current);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) {
+          throw new Error('Object path contains a non-directory or symbolic link');
+        }
+        await syncDirectory(dirname(current));
+      }
     }
+  }
+}
+
+async function ensureDirectory(directory: string): Promise<void> {
+  try {
+    const stat = await lstat(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('Storage root contains a non-directory or symbolic link');
+    }
+    return;
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+  }
+
+  const parent = dirname(directory);
+  if (parent === directory) throw new Error('Cannot create storage root');
+  await ensureDirectory(parent);
+  try {
+    await mkdir(directory, { mode: 0o700 });
+    await syncDirectory(parent);
+  } catch (error) {
+    if (!isAlreadyExists(error)) throw error;
+    const stat = await lstat(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error('Storage root contains a non-directory or symbolic link');
+    }
+    await syncDirectory(parent);
+  }
+}
+
+async function syncDirectory(directory: string): Promise<void> {
+  const handle = await open(directory, constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
@@ -111,4 +160,8 @@ async function refuseSymlink(target: string): Promise<void> {
 
 function isNotFound(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT';
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'EEXIST';
 }

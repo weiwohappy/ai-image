@@ -43,10 +43,12 @@ The default bind address is `127.0.0.1:3001`. The factory `createApp(configOverr
 - `GET /api/health` is a liveness check.
 - `GET /api/health/ready` checks PostgreSQL and returns `503 DATABASE_UNAVAILABLE` on failure.
 - Successful responses use `{ "data": ..., "message": "ok", "requestId": "..." }`.
-- Errors use `{ "data": null, "message": "...", "requestId": "...", "error": { "code": "..." } }`.
+- Errors use `{ "data": null, "message": "...", "requestId": "...", "code": "..." }` so the current frontend receives the stable code directly.
 - Credentialed CORS accepts only configured explicit origins. JSON and form bodies default to `1mb` limits.
 
-Production startup validation rejects simulation providers, local storage, and development mail. S3 storage requires a bucket and region; credentials may be omitted when workload identity supplies them. Object keys are server-owned logical keys, never client filesystem paths. Local bytes are stored under the private configured root with containment/symlink checks and atomic rename; S3 writes use the official SDK without a public ACL.
+Production startup validation rejects simulation providers, local storage, and development mail, including overrides supplied to the application factory. S3 storage requires a bucket and region; static access-key credentials must be supplied as a complete pair or omitted when workload identity supplies them. Object keys are server-owned logical keys, never client filesystem paths. Local bytes are stored under the private configured root with containment/symlink checks, file and directory synchronization, and atomic rename; S3 writes use the official SDK without a public ACL.
+
+The local driver is a development/test convenience for a trusted single-host storage root. Processes outside VIVIAI that can replace directories or symlinks inside that root are outside its portable trust boundary; production must use the S3 driver.
 
 ## Tests
 

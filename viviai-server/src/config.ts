@@ -110,7 +110,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   const value = parsed.data;
-  return {
+  return validateConfig({
     nodeEnv: value.NODE_ENV,
     host: value.HOST,
     port: value.PORT,
@@ -131,5 +131,87 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       ? {}
       : { s3SecretAccessKey: value.S3_SECRET_ACCESS_KEY }),
     s3ForcePathStyle: value.S3_FORCE_PATH_STYLE,
-  };
+  });
+}
+
+export function validateConfig(config: AppConfig): AppConfig {
+  const issues: string[] = [];
+  const hasAccessKey = config.s3AccessKeyId !== undefined;
+  const hasSecretKey = config.s3SecretAccessKey !== undefined;
+
+  if (!['development', 'test', 'production'].includes(config.nodeEnv)) {
+    issues.push('node environment is invalid');
+  }
+  if (typeof config.host !== 'string' || config.host.length === 0) {
+    issues.push('host is required');
+  }
+  if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65_535) {
+    issues.push('port must be an integer from 1 to 65535');
+  }
+  if (!hasUrlProtocol(config.databaseUrl, ['postgres:', 'postgresql:'])) {
+    issues.push('database URL must be a PostgreSQL URL');
+  }
+  if (!hasUrlProtocol(config.redisUrl, ['redis:', 'rediss:'])) {
+    issues.push('Redis URL must be a Redis URL');
+  }
+  if (
+    !Array.isArray(config.corsOrigins) ||
+    config.corsOrigins.length === 0 ||
+    config.corsOrigins.some((origin) => origin === '*' || !isHttpOrigin(origin))
+  ) {
+    issues.push('CORS origins must be explicit HTTP(S) origins');
+  }
+  if (typeof config.jsonBodyLimit !== 'string' || config.jsonBodyLimit.length === 0) {
+    issues.push('JSON body limit is required');
+  }
+  if (typeof config.formBodyLimit !== 'string' || config.formBodyLimit.length === 0) {
+    issues.push('form body limit is required');
+  }
+  if (!['local', 's3'].includes(config.storageDriver)) {
+    issues.push('storage driver is invalid');
+  }
+  if (typeof config.localStorageRoot !== 'string' || config.localStorageRoot.length === 0) {
+    issues.push('local storage root is required');
+  }
+  if (
+    typeof config.simulationProviderEnabled !== 'boolean' ||
+    typeof config.devMailEnabled !== 'boolean' ||
+    typeof config.s3ForcePathStyle !== 'boolean'
+  ) {
+    issues.push('boolean configuration flags are invalid');
+  }
+  if (config.s3Endpoint !== undefined && !hasUrlProtocol(config.s3Endpoint, ['http:', 'https:'])) {
+    issues.push('S3 endpoint must be an HTTP(S) URL');
+  }
+  if (hasAccessKey !== hasSecretKey) {
+    issues.push('S3 must provide both credential fields or neither');
+  }
+  if (config.storageDriver === 's3') {
+    if (!config.s3Bucket) issues.push('S3 bucket is required for S3 storage');
+    if (!config.s3Region) issues.push('S3 region is required for S3 storage');
+  }
+  if (config.nodeEnv === 'production') {
+    if (config.simulationProviderEnabled) {
+      issues.push('simulation providers are forbidden in production');
+    }
+    if (config.storageDriver === 'local') {
+      issues.push('local storage is forbidden in production');
+    }
+    if (config.devMailEnabled) {
+      issues.push('development mail is forbidden in production');
+    }
+  }
+  if (issues.length > 0) {
+    throw new Error(`Invalid configuration: ${issues.join('; ')}`);
+  }
+  return config;
+}
+
+function hasUrlProtocol(value: unknown, protocols: string[]): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    return protocols.includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
 }

@@ -54,7 +54,13 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   }
 
   const database = new DatabaseService(url);
-  await database.onModuleInit();
+  try {
+    await database.onModuleInit();
+  } catch (error) {
+    await database.onModuleDestroy().catch(() => undefined);
+    await dropOwnedTestSchema(baseUrl, schema);
+    throw error;
+  }
   let cleaned = false;
 
   return {

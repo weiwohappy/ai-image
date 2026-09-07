@@ -4,13 +4,13 @@ import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { pathToFileURL } from 'node:url';
 import { AppModule } from './app.module.js';
-import { loadConfig, type AppConfig } from './config.js';
+import { loadConfig, validateConfig, type AppConfig } from './config.js';
 import { EnvelopeInterceptor } from './shared/http/envelope.js';
 import { GlobalExceptionFilter } from './shared/http/errors.js';
 import { configureHttpSecurity } from './shared/http/security.js';
 
 export async function createApp(configOverrides: Partial<AppConfig> = {}): Promise<INestApplication> {
-  const config = { ...loadConfig(), ...configOverrides };
+  const config = validateConfig({ ...loadConfig(), ...configOverrides });
   const app = await NestFactory.create<NestExpressApplication>(AppModule.register(config), {
     bodyParser: false,
     logger: false,

@@ -17,7 +17,7 @@ export interface ErrorEnvelope {
   data: null;
   message: string;
   requestId: string;
-  error: { code: string };
+  code: string;
 }
 
 @Catch()
@@ -31,7 +31,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       data: null,
       message: normalized.message,
       requestId: getRequestId(request),
-      error: { code: normalized.code },
+      code: normalized.code,
     } satisfies ErrorEnvelope);
   }
 }

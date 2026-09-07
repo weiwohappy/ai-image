@@ -1,4 +1,4 @@
-import { Controller, DynamicModule, Get, HttpStatus, Module } from '@nestjs/common';
+import { Controller, DynamicModule, Get, HttpStatus, Inject, Module } from '@nestjs/common';
 import type { AppConfig } from './config.js';
 import { DatabaseService } from './shared/database/database.service.js';
 import { AppError } from './shared/http/errors.js';
@@ -7,7 +7,7 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 
 @Controller()
 class HealthController {
-  constructor(private readonly database: DatabaseService) {}
+  constructor(@Inject(DatabaseService) private readonly database: DatabaseService) {}
 
   @Get('health')
   health(): { status: string } {
