@@ -114,9 +114,10 @@ describe('private accounts', () => {
     const env = { ...process.env, DATABASE_URL: db.url, NODE_ENV: 'development', DEV_SEED_EMAIL: 'seed@example.test', DEV_SEED_USERNAME: 'seed' };
     const noPassword = await execute(process.execPath, ['--import', 'tsx', 'src/scripts/seed-dev.ts'], { env: { ...env, DEV_SEED_PASSWORD: '' } }).then(() => null, error => error);
     expect(noPassword).toBeTruthy();
-    const seeded = await execute(process.execPath, ['--import', 'tsx', 'src/scripts/seed-dev.ts'], { env: { ...env, DEV_SEED_PASSWORD: password } }).then(() => 0, error => error.code);
+    const seeded = await execute(process.execPath, ['--import', 'tsx', 'src/scripts/seed-dev.ts'], { env: { ...env, DEV_SEED_PASSWORD: password, DEV_SEED_CREDITS: '1000' } }).then(() => 0, error => error.code);
     expect(seeded).toBe(0);
-    await post('/auth/login', { account: 'seed', password }).expect(201);
+    const login = await post('/auth/login', { account: 'seed', password }).expect(201);
+    expect(login.body.data.credits).toBe(1000);
     const replacement = await execute(process.execPath, ['--import', 'tsx', 'src/scripts/seed-dev.ts'], { env: { ...env, DEV_SEED_PASSWORD: 'different seed password' } }).then(() => null, error => error);
     expect(replacement).toBeTruthy();
     await post('/auth/login', { account: 'seed', password }).expect(201);

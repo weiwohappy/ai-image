@@ -22,6 +22,9 @@ model User {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   sessions Session[]
   assets Asset[]
+  quotes GenerationQuote[]
+  jobs GenerationJob[]
+  creditLots CreditLot[]
   @@map("users")
 }
 
@@ -60,6 +63,8 @@ model Asset {
   userId String @map("user_id") @db.Uuid
   name String
   objectKey String @unique @map("object_key")
+  sha256 String @default("")
+  source String @default("upload")
   width Int
   height Int
   byteSize Int @map("byte_size")
@@ -69,6 +74,143 @@ model Asset {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  pins AssetPin[]
   @@index([userId, deletedAt, createdAt])
   @@map("assets")
+}
+
+model GenerationQuote {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  input Json
+  inputHash String
+  productVersion String
+  unitCredits BigInt
+  totalCredits BigInt
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime @db.Timestamptz(6)
+  consumedAt DateTime? @db.Timestamptz(6)
+  job GenerationJob?
+  @@index([userId, expiresAt])
+}
+
+model GenerationJob {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  quoteId String @unique @db.Uuid
+  quote GenerationQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  operation String
+  idempotencyKey String
+  requestHash String
+  input Json
+  cancelRequested Boolean @default(false)
+  retryOfJobId String? @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  queueDeadlineAt DateTime @db.Timestamptz(6)
+  deliveryDeadlineAt DateTime @db.Timestamptz(6)
+  items GenerationItem[]
+  pins AssetPin[]
+  @@unique([userId, operation, idempotencyKey])
+  @@index([userId, createdAt])
+}
+
+model GenerationItem {
+  id String @id @default(uuid()) @db.Uuid
+  jobId String @db.Uuid
+  job GenerationJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  ordinal Int
+  unitCredits BigInt
+  status String @default("queued")
+  fence Int @default(0)
+  leaseUntil DateTime? @db.Timestamptz(6)
+  nextRunAt DateTime @default(now()) @db.Timestamptz(6)
+  resultAssetId String? @unique @db.Uuid
+  errorCode String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  reservation CreditReservation?
+  @@unique([jobId, ordinal])
+  @@index([status, nextRunAt])
+}
+
+model AssetPin {
+  jobId String @db.Uuid
+  assetId String @db.Uuid
+  role String
+  snapshot Json
+  job GenerationJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  @@id([jobId, assetId])
+}
+
+model CreditLot {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sourceId String
+  issued BigInt
+  available BigInt
+  held BigInt @default(0)
+  consumed BigInt @default(0)
+  expired BigInt @default(0)
+  revoked BigInt @default(0)
+  revenueMinor BigInt @default(0)
+  expiresAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  allocations CreditAllocation[]
+  events CreditEvent[]
+  @@unique([userId, sourceId])
+  @@index([userId, expiresAt])
+}
+
+model CreditReservation {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  jobId String @db.Uuid
+  itemId String @unique @db.Uuid
+  item GenerationItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  amount BigInt
+  status String @default("held")
+  settledAt DateTime? @db.Timestamptz(6)
+  allocations CreditAllocation[]
+  @@index([userId, status])
+}
+
+model CreditAllocation {
+  reservationId String @db.Uuid
+  lotId String @db.Uuid
+  amount BigInt
+  reservation CreditReservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  lot CreditLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  @@id([reservationId, lotId])
+}
+
+model CreditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  eventKey String @unique
+  userId String @db.Uuid
+  lotId String @db.Uuid
+  lot CreditLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  type String
+  itemId String? @db.Uuid
+  availableDelta BigInt @default(0)
+  heldDelta BigInt @default(0)
+  consumedDelta BigInt @default(0)
+  expiredDelta BigInt @default(0)
+  revokedDelta BigInt @default(0)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([userId, createdAt])
+}
+
+model OutboxEvent {
+  id String @id @default(uuid()) @db.Uuid
+  eventKey String @unique
+  itemId String @db.Uuid
+  availableAt DateTime @default(now()) @db.Timestamptz(6)
+  publishedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([publishedAt, availableAt])
 }

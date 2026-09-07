@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Asset } from '../../generated/prisma/client.js';
 import { DatabaseService } from '../../shared/database/database.service.js';
@@ -10,13 +10,13 @@ export const ASSET_STORE = Symbol('ASSET_STORE');
 export type AssetRecord = Asset;
 export interface AssetDto {
   id: string; name: string; width: number; height: number; status: string;
-  previewUrl: string; imageUrl: string; thumbnailUrl: string; source: 'upload';
+  previewUrl: string; imageUrl: string; thumbnailUrl: string; source: string;
   favorite: boolean; createdAt: string; deletedAt: string | null;
 }
 export function assetDto(asset: AssetRecord): AssetDto {
   const url = `/api/assets/${asset.id}/content`;
   return { id: asset.id, name: asset.name, width: asset.width, height: asset.height, status: asset.status,
-    previewUrl: url, imageUrl: url, thumbnailUrl: url, source: 'upload', favorite: asset.favorite,
+    previewUrl: url, imageUrl: url, thumbnailUrl: url, source: asset.source, favorite: asset.favorite,
     createdAt: asset.createdAt.toISOString(), deletedAt: asset.deletedAt?.toISOString() ?? null };
 }
 const missing = () => new AppError(404, 'NOT_FOUND', 'Asset not found');
@@ -37,7 +37,7 @@ export class AssetService {
     await this.store.put(objectKey, image.bytes, image.contentType);
     try {
       const asset = await this.db.client.asset.create({ data: { id, userId, objectKey, name: cleanName,
-        width: image.width, height: image.height, byteSize: image.bytes.byteLength, contentType: image.contentType } });
+        width: image.width, height: image.height, byteSize: image.bytes.byteLength, contentType: image.contentType, sha256: createHash('sha256').update(image.bytes).digest('hex') } });
       return assetDto(asset);
     } catch (error) { await this.store.delete(objectKey).catch(() => undefined); throw error; }
   }

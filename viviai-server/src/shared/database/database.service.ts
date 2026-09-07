@@ -27,6 +27,6 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   }
 
   async transaction<T>(fn: (tx: DbTransaction) => Promise<T>): Promise<T> {
-    return this.client.$transaction(fn);
+    return this.client.$transaction(fn, { maxWait: 15_000, timeout: 15_000 });
   }
 }

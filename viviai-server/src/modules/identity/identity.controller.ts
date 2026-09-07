@@ -6,6 +6,8 @@ import { APP_CONFIG } from '../../shared/infrastructure.module.js';
 import { AppError } from '../../shared/http/errors.js';
 import { IdentityService, accountDto, SESSION_COOKIE, SESSION_MAX_AGE_MS, type PublicAccount } from './identity.service.js';
 import { SessionGuard, sessionToken, type AuthenticatedRequest } from './session.guard.js';
+import { WalletService } from '../wallet/wallet.service.js';
+import { safeInteger } from '../../shared/database/locks.js';
 const email = z.string().trim().toLowerCase().email().max(254);
 const password = z.string().min(12).max(128);
 const code = z.string().regex(/^\d{6}$/);
@@ -16,10 +18,10 @@ export function parseInput<T>(schema: z.ZodType<T>, body: unknown): T {
 }
 @Controller()
 export class IdentityController {
-  constructor(@Inject(IdentityService) private readonly identity: IdentityService, @Inject(APP_CONFIG) private readonly config: AppConfig) {}
+  constructor(@Inject(IdentityService) private readonly identity: IdentityService, @Inject(APP_CONFIG) private readonly config: AppConfig, @Inject(WalletService) private readonly wallet: WalletService) {}
   private async authenticated(user: PublicAccount, response: Response) {
     response.cookie(SESSION_COOKIE, await this.identity.createSession(user.id), { httpOnly: true, sameSite: 'lax', secure: this.config.nodeEnv === 'production', path: '/', maxAge: SESSION_MAX_AGE_MS });
-    return accountDto(user);
+    return this.publicAccount(user);
   }
   @Post('auth/send-code')
   async sendCode(@Body() body: unknown, @Req() req: Request) {
@@ -53,5 +55,9 @@ export class IdentityController {
   }
   @UseGuards(SessionGuard)
   @Get('me')
-  me(@Req() req: AuthenticatedRequest) { return accountDto(req.user); }
+  me(@Req() req: AuthenticatedRequest) { return this.publicAccount(req.user); }
+  private async publicAccount(user: PublicAccount) {
+    const balance = await this.wallet.balance(user.id);
+    return { ...accountDto(user), credits: safeInteger(balance.available), frozenCredits: safeInteger(balance.held) };
+  }
 }

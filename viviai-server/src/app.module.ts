@@ -5,6 +5,8 @@ import { AppError } from './shared/http/errors.js';
 import { InfrastructureModule } from './shared/infrastructure.module.js';
 import { IdentityModule } from './modules/identity/identity.module.js';
 import { AssetsModule } from './modules/assets/assets.module.js';
+import { CatalogModule } from './modules/catalog/catalog.module.js';
+import { GenerationModule } from './modules/generation/generation.module.js';
 export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
@@ -32,7 +34,7 @@ export class AppModule {
   static register(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [InfrastructureModule.register(config), IdentityModule, AssetsModule],
+      imports: [InfrastructureModule.register(config), IdentityModule, AssetsModule, CatalogModule, GenerationModule],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],
     };
