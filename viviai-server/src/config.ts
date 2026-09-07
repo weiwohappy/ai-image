@@ -16,6 +16,9 @@ export interface AppConfig {
   localStorageRoot: string;
   simulationProviderEnabled: boolean;
   devMailEnabled: boolean;
+  devMailboxRoot: string;
+  smtpUrl?: string;
+  mailFrom?: string;
   s3Bucket?: string;
   s3Region?: string;
   s3Endpoint?: string;
@@ -41,6 +44,9 @@ const environmentSchema = z
     LOCAL_STORAGE_ROOT: z.string().min(1).default('.data/private'),
     SIMULATION_PROVIDER_ENABLED: booleanString.default(true),
     DEV_MAIL_ENABLED: booleanString.default(true),
+    DEV_MAILBOX_ROOT: z.string().min(1).default('.data/mailbox'),
+    SMTP_URL: z.string().url().optional(),
+    MAIL_FROM: z.string().email().optional(),
     S3_BUCKET: z.string().min(1).optional(),
     S3_REGION: z.string().min(1).optional(),
     S3_ENDPOINT: url.optional(),
@@ -123,6 +129,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     localStorageRoot: value.LOCAL_STORAGE_ROOT,
     simulationProviderEnabled: value.SIMULATION_PROVIDER_ENABLED,
     devMailEnabled: value.DEV_MAIL_ENABLED,
+    devMailboxRoot: value.DEV_MAILBOX_ROOT,
+    ...(value.SMTP_URL === undefined ? {} : { smtpUrl: value.SMTP_URL }),
+    ...(value.MAIL_FROM === undefined ? {} : { mailFrom: value.MAIL_FROM }),
     ...(value.S3_BUCKET === undefined ? {} : { s3Bucket: value.S3_BUCKET }),
     ...(value.S3_REGION === undefined ? {} : { s3Region: value.S3_REGION }),
     ...(value.S3_ENDPOINT === undefined ? {} : { s3Endpoint: value.S3_ENDPOINT }),
@@ -200,7 +209,11 @@ export function validateConfig(config: AppConfig): AppConfig {
     if (config.devMailEnabled) {
       issues.push('development mail is forbidden in production');
     }
+    if (!config.smtpUrl || !config.mailFrom) issues.push('SMTP and mail sender are required in production');
   }
+  if (!config.devMailboxRoot) issues.push('development mailbox root is required');
+  if (config.smtpUrl && !hasUrlProtocol(config.smtpUrl, ['smtp:', 'smtps:'])) issues.push('SMTP URL is invalid');
+  if (config.mailFrom && !z.string().email().safeParse(config.mailFrom).success) issues.push('mail sender is invalid');
   if (issues.length > 0) {
     throw new Error(`Invalid configuration: ${issues.join('; ')}`);
   }

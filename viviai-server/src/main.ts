@@ -8,6 +8,8 @@ import { loadConfig, validateConfig, type AppConfig } from './config.js';
 import { EnvelopeInterceptor } from './shared/http/envelope.js';
 import { GlobalExceptionFilter } from './shared/http/errors.js';
 import { configureHttpSecurity } from './shared/http/security.js';
+import { getRequestId } from './shared/http/security.js';
+import type { Request, Response } from 'express';
 
 export async function createApp(configOverrides: Partial<AppConfig> = {}): Promise<INestApplication> {
   const config = validateConfig({ ...loadConfig(), ...configOverrides });
@@ -21,6 +23,10 @@ export async function createApp(configOverrides: Partial<AppConfig> = {}): Promi
   app.useGlobalFilters(new GlobalExceptionFilter());
   app.enableShutdownHooks();
   await app.init();
+  // Adapter fallback is installed after Nest routes so unknown APIs never emit HTML.
+  app.use((request: Request, response: Response) => {
+    response.status(404).json({ data: null, message: 'Not found', code: 'NOT_FOUND', requestId: getRequestId(request) });
+  });
   return app;
 }
 

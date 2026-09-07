@@ -19,6 +19,14 @@ describe('runtime integration', () => {
     await testDatabase?.cleanup();
   });
 
+  it('returns a JSON error envelope for an unknown API route', async () => {
+    const app = await createTestApp(testDatabase.url);
+    try {
+      const response = await request(app.getHttpServer()).get('/api/does-not-exist').expect(404);
+      expect(response.body).toMatchObject({ data: null, code: 'NOT_FOUND', requestId: expect.any(String) });
+    } finally { await app.close(); }
+  });
+
   it('returns the public health envelope with a request ID', async () => {
     const app = await createTestApp(testDatabase.url);
 

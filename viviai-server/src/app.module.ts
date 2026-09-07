@@ -2,8 +2,10 @@ import { Controller, DynamicModule, Get, HttpStatus, Inject, Module } from '@nes
 import type { AppConfig } from './config.js';
 import { DatabaseService } from './shared/database/database.service.js';
 import { AppError } from './shared/http/errors.js';
-
-export const APP_CONFIG = Symbol('APP_CONFIG');
+import { InfrastructureModule } from './shared/infrastructure.module.js';
+import { IdentityModule } from './modules/identity/identity.module.js';
+import { AssetsModule } from './modules/assets/assets.module.js';
+export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
 class HealthController {
@@ -30,15 +32,9 @@ export class AppModule {
   static register(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
+      imports: [InfrastructureModule.register(config), IdentityModule, AssetsModule],
       controllers: [HealthController],
-      providers: [
-        { provide: APP_CONFIG, useValue: config },
-        {
-          provide: DatabaseService,
-          useFactory: () => new DatabaseService(config.databaseUrl),
-        },
-      ],
-      exports: [APP_CONFIG, DatabaseService],
+      exports: [InfrastructureModule, IdentityModule, AssetsModule],
     };
   }
 }

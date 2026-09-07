@@ -22,6 +22,10 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Frame-Options', 'DENY');
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && (!request.headers.origin || !config.corsOrigins.includes(request.headers.origin))) {
+      response.status(403).json({ data: null, message: 'Request origin is not allowed', code: 'CSRF_ORIGIN', requestId });
+      return;
+    }
     next();
   });
   app.enableCors({
@@ -31,7 +35,7 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
         callback(null, true);
         return;
       }
-      callback(new Error('Origin is not allowed'));
+      callback(null, false);
     },
   });
 }

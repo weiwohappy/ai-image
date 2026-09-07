@@ -1,6 +1,6 @@
 # VIVIAI server
 
-This directory is the phase-A backend foundation. It currently provides a NestJS API runtime, validated shared configuration, PostgreSQL/Prisma migration bootstrap, private object-store adapters, and a real-database integration harness. Accounts, uploads, jobs, wallet accounting, providers, workers, payments, subscriptions, community features, and workflow runs are not implemented yet. The existing frontend is not connected to this API.
+This directory is the phase-A backend foundation. It provides a NestJS API runtime, real accounts and cookie sessions, private image uploads, PostgreSQL/Prisma migrations, object-store adapters, and a real-database integration harness. Jobs, wallet accounting, providers, workers, payments, subscriptions, community features, and workflow runs are not implemented yet. The existing frontend is not connected to this API.
 
 ## Requirements
 
@@ -45,6 +45,12 @@ The default bind address is `127.0.0.1:3001`. The factory `createApp(configOverr
 - Successful responses use `{ "data": ..., "message": "ok", "requestId": "..." }`.
 - Errors use `{ "data": null, "message": "...", "requestId": "...", "code": "..." }` so the current frontend receives the stable code directly.
 - Credentialed CORS accepts only configured explicit origins. JSON and form bodies default to `1mb` limits.
+- All unsafe HTTP requests require an `Origin` exactly matching `CORS_ORIGINS`, including login and registration. Sessions use HttpOnly, SameSite=Lax cookies, Secure in production, expiring after 30 days; only token hashes are stored.
+- Auth routes: `POST /api/auth/send-code`, `/register`, `/login`, `/logout`, `/reset-password` and `GET /api/me`. Send-code takes `{email,purpose}`; purpose is `register` (default) or `reset-password`. Codes expire in 10 minutes, allow five attempts and have a 60-second resend cooldown. Durable per-credential and per-IP rate limits apply across app instances.
+- Development mail is written only to `DEV_MAILBOX_ROOT` (directory mode 0700, files 0600); no SMTP is used while development mail is enabled. Production requires `SMTP_URL` and `MAIL_FROM` with development mail disabled.
+- Phase A requires login before `POST /api/remix-references`. Upload multipart `file` (JPEG/PNG/WebP, at most 5 MiB and 40 million decoded pixels, single frame). Client width/height and userId are ignored. Images are re-encoded as PNG after orientation and metadata stripping.
+- Private asset APIs: `GET /api/assets` (array, at most 200 newest; optional `favorite=true/false`, `deleted=true/false`), `GET /api/assets/:id`, `GET /api/assets/:id/content`, `PATCH /api/assets/:id` (`name`/`favorite`), `DELETE /api/assets/:id`, `POST /api/assets/:id/restore`. Every operation verifies owner identity. Soft-deleted images can be restored for seven days; no physical deletion job runs in this phase.
+- Manual account seed: set `NODE_ENV=development`, `DEV_SEED_EMAIL`, `DEV_SEED_USERNAME`, and a private `DEV_SEED_PASSWORD` (12–128 characters), then run `npm run seed:dev`. It fails if credentials are absent or an account already exists and never changes existing passwords. Accounts have no paid plan and zero credits until the wallet task supplies grants.
 
 Production startup validation rejects simulation providers, local storage, and development mail, including overrides supplied to the application factory. S3 storage requires a bucket and region; static access-key credentials must be supplied as a complete pair or omitted when workload identity supplies them. Object keys are server-owned logical keys, never client filesystem paths. Local bytes are stored under the private configured root with containment/symlink checks, file and directory synchronization, and atomic rename; S3 writes use the official SDK without a public ACL.
 
