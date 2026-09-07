@@ -15,7 +15,7 @@ export function getRequestId(request: Request): string {
 
 export function configureHttpSecurity(app: NestExpressApplication, config: AppConfig): void {
   app.useBodyParser('json', { limit: config.jsonBodyLimit });
-  app.useBodyParser('urlencoded', { extended: true, limit: config.formBodyLimit });
+  app.useBodyParser('urlencoded', { extended: false, limit: config.formBodyLimit });
   app.use((request: Request, response: Response, next: NextFunction) => {
     const requestId = getRequestId(request);
     response.setHeader('X-Request-Id', requestId);
@@ -24,6 +24,10 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
     response.setHeader('X-Frame-Options', 'DENY');
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+      !(
+        request.method === 'POST' &&
+        ['/api/webhooks/payments/wechat', '/api/webhooks/payments/alipay'].includes(request.path)
+      ) &&
       (!request.headers.origin || !config.corsOrigins.includes(request.headers.origin))
     ) {
       response.status(403).json({

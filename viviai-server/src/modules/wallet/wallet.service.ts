@@ -16,8 +16,21 @@ export class WalletService {
     sourceId: string,
     amount: bigint,
     expiresAt: Date | null,
+    payment?: { orderId: string; revenueMinor: bigint },
   ): Promise<void> {
     requireAmount(amount);
+    if (payment) {
+      requireAmount(payment.revenueMinor);
+      if (sourceId !== `payment:${payment.orderId}`)
+        throw new AppError(400, 'INVALID_GRANT', 'Payment source does not match order');
+      const order = await tx.paymentOrder.findFirst({ where: { id: payment.orderId, userId } });
+      if (
+        !order ||
+        order.credits !== Number(amount) ||
+        BigInt(order.amountMinor) !== payment.revenueMinor
+      )
+        throw new AppError(400, 'INVALID_GRANT', 'Payment grant does not match order');
+    }
     if (
       !sourceId ||
       sourceId.length > 200 ||
@@ -29,21 +42,34 @@ export class WalletService {
       where: { userId_sourceId: { userId, sourceId } },
     });
     if (previous) {
-      if (previous.issued !== amount || previous.expiresAt?.getTime() !== expiresAt?.getTime())
+      if (
+        previous.issued !== amount ||
+        previous.expiresAt?.getTime() !== expiresAt?.getTime() ||
+        previous.revenueMinor !== (payment?.revenueMinor ?? 0n) ||
+        previous.paymentOrderId !== (payment?.orderId ?? null)
+      )
         throw new AppError(409, 'GRANT_CONFLICT', 'Grant source already used');
       return;
     }
     const total = await tx.creditLot.aggregate({ where: { userId }, _sum: { issued: true } });
     safeInteger((total._sum.issued ?? 0n) + amount);
     const lot = await tx.creditLot.create({
-      data: { userId, sourceId, issued: amount, available: amount, expiresAt, revenueMinor: 0n },
+      data: {
+        userId,
+        sourceId,
+        issued: amount,
+        available: amount,
+        expiresAt,
+        revenueMinor: payment?.revenueMinor ?? 0n,
+        paymentOrderId: payment?.orderId ?? null,
+      },
     });
     await tx.creditEvent.create({
       data: {
         eventKey: `grant:${lot.id}`,
         userId,
         lotId: lot.id,
-        type: 'promotional_grant',
+        type: payment ? 'paid_grant' : 'promotional_grant',
         availableDelta: amount,
       },
     });

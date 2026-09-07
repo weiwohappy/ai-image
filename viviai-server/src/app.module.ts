@@ -7,6 +7,7 @@ import { IdentityModule } from './modules/identity/identity.module.js';
 import { AssetsModule } from './modules/assets/assets.module.js';
 import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { GenerationModule } from './modules/generation/generation.module.js';
+import { BillingModule } from './modules/billing/billing.module.js';
 export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
@@ -44,6 +45,7 @@ export class AppModule {
         AssetsModule,
         CatalogModule,
         GenerationModule,
+        BillingModule,
       ],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],

@@ -25,6 +25,7 @@ model User {
   quotes GenerationQuote[]
   jobs GenerationJob[]
   creditLots CreditLot[]
+  paymentOrders PaymentOrder[]
   @@map("users")
 }
 
@@ -159,12 +160,61 @@ model CreditLot {
   expired BigInt @default(0)
   revoked BigInt @default(0)
   revenueMinor BigInt @default(0)
+  paymentOrderId String? @unique @db.Uuid
+  paymentOrder PaymentOrder? @relation(fields: [paymentOrderId], references: [id], onDelete: Restrict)
   expiresAt DateTime? @db.Timestamptz(6)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   allocations CreditAllocation[]
   events CreditEvent[]
   @@unique([userId, sourceId])
   @@index([userId, expiresAt])
+}
+
+model PaymentOrder {
+  id String @id @default(uuid()) @db.Uuid
+  userId String @db.Uuid
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  idempotencyKey String
+  requestHash String
+  orderNo String @unique
+  planId String
+  name String
+  amountMinor Int
+  currency String @default("CNY")
+  credits Int
+  durationDays Int
+  channel String
+  merchantId String
+  appId String
+  status String @default("creating")
+  checkout Json?
+  tradeNo String?
+  paidAt DateTime? @db.Timestamptz(6)
+  fulfilledAt DateTime? @db.Timestamptz(6)
+  expiresAt DateTime @db.Timestamptz(6)
+  nextSyncAt DateTime @default(now()) @db.Timestamptz(6)
+  syncLeaseUntil DateTime? @db.Timestamptz(6)
+  lastError String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  lot CreditLot?
+  events PaymentEvent[]
+  @@unique([userId, idempotencyKey])
+  @@unique([channel, merchantId, tradeNo])
+  @@index([status, nextSyncAt])
+  @@index([userId, createdAt])
+}
+
+model PaymentEvent {
+  id String @id @default(uuid()) @db.Uuid
+  channel String
+  merchantId String
+  eventId String
+  digest String
+  orderId String @db.Uuid
+  order PaymentOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  processedAt DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([channel, merchantId, eventId])
 }
 
 model CreditReservation {

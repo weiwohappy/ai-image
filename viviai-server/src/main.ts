@@ -18,6 +18,7 @@ export async function createApp(
   const config = validateConfig({ ...loadConfig(), ...configOverrides });
   const app = await NestFactory.create<NestExpressApplication>(AppModule.register(config), {
     bodyParser: false,
+    rawBody: true,
     logger: false,
   });
   app.setGlobalPrefix('api');

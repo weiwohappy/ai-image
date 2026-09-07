@@ -1,10 +1,28 @@
 import { expect, test } from '@playwright/test';
 
-test('simulates payment and updates account entitlements', async ({ page }) => {
+test('cannot purchase before merchant activation', async ({ page }) => {
+  await page.route('**/api/billing/catalog', (route) =>
+    route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        data: {
+          enabled: false,
+          plans: [],
+          channels: [
+            { channel: 'wechat', enabled: false },
+            { channel: 'alipay', enabled: false },
+          ],
+        },
+        message: 'ok',
+        requestId: 'test',
+      }),
+    }),
+  );
   await page.goto('/#/pricing');
-  await page.getByRole('button', { name: '购买高级版月卡' }).click();
-  await page.getByRole('radio', { name: '支付宝' }).check();
-  await page.getByRole('button', { name: '模拟支付成功' }).click();
-  await expect(page.getByText('高级版月卡已到账')).toBeVisible();
-  await expect(page.getByText('2,000 积分')).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: '支付暂未开通' }),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '模拟支付成功' })).toHaveCount(
+    0,
+  );
 });

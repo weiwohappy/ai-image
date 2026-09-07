@@ -70,7 +70,7 @@ export class IdentityController {
     await this.identity.rateLimit('register', input.email, req.ip ?? 'unknown');
     return this.authenticated(await this.identity.register(input), response);
   }
-  @Post('auth/login')
+  @Post(['auth/login', 'billing/auth/login'])
   async login(
     @Body() body: unknown,
     @Req() req: Request,
@@ -92,7 +92,7 @@ export class IdentityController {
     await this.identity.rateLimit('reset-password', input.email, req.ip ?? 'unknown');
     return this.identity.resetPassword(input.email, input.code, input.password);
   }
-  @Post('auth/logout')
+  @Post(['auth/logout', 'billing/auth/logout'])
   async logout(@Req() req: Request, @Res({ passthrough: true }) response: Response) {
     await this.identity.logout(sessionToken(req));
     response.clearCookie(SESSION_COOKIE, {
@@ -104,7 +104,7 @@ export class IdentityController {
     return { success: true };
   }
   @UseGuards(SessionGuard)
-  @Get('me')
+  @Get(['me', 'billing/me'])
   me(@Req() req: AuthenticatedRequest) {
     return this.publicAccount(req.user);
   }

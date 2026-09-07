@@ -1,0 +1,9 @@
+[
+  {
+    "id": "example-credits-v1",
+    "name": "配置示例积分包（非正式报价）",
+    "amountMinor": 2900,
+    "credits": 1000,
+    "durationDays": 30
+  }
+]
