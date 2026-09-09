@@ -1,0 +1,313 @@
+import { Inject, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import type { AppConfig } from '../../config.js';
+import type { AdminAccount, AdminSession } from '../../generated/prisma/client.js';
+import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
+import { APP_CONFIG } from '../../shared/infrastructure.module.js';
+import { AppError } from '../../shared/http/errors.js';
+import { AdminAuditService } from './audit.service.js';
+import {
+  decryptSecret,
+  digest,
+  encryptSecret,
+  hashPassword,
+  newSecret,
+  recoveryCodes,
+  token,
+  verifyPassword,
+  verifyTotp,
+} from './crypto.js';
+import { permissions } from './permissions.js';
+import type { AdminActor } from './contracts.js';
+export const ADMIN_COOKIE = 'viviai_admin_session';
+export const CHALLENGE_COOKIE = 'viviai_admin_challenge';
+export const denied = () =>
+  new AppError(401, 'ADMIN_AUTH_REQUIRED', 'Administrator authentication required');
+export async function lockAdmin(tx: DbTransaction, id: string) {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`admin:${id}`}, 0))`;
+}
+export function actor(account: AdminAccount, session: AdminSession): AdminActor {
+  return {
+    id: account.id,
+    email: account.email,
+    displayName: account.displayName,
+    roles: account.roles,
+    permissions: permissions(account.roles, account.extraPermissions),
+    sessionExpiresAt: session.expiresAt.toISOString(),
+  };
+}
+export interface AdminContext {
+  actor: AdminActor;
+  sessionId: string;
+}
+@Injectable()
+export class AdminAuthService {
+  constructor(
+    @Inject(DatabaseService) readonly db: DatabaseService,
+    @Inject(APP_CONFIG) readonly config: AppConfig,
+    @Inject(AdminAuditService) private readonly audit: AdminAuditService,
+  ) {}
+  enabled() {
+    if (!this.config.admin?.enabled) throw denied();
+  }
+  async rate(ip: string, credential: string, limit = 10) {
+    const ok = await this.db.transaction(async (tx) => {
+      let allowed = true;
+      for (const [name, max] of [
+        [`ip:${digest(ip)}`, 100],
+        [`credential:${digest(credential)}`, limit],
+      ] as const) {
+        const key = `admin:${name}`;
+        await lockAdmin(tx, key);
+        const old = await tx.authRateBucket.findUnique({ where: { key } });
+        const now = new Date();
+        const count = old && old.expiresAt > now ? old.count + 1 : 1;
+        await tx.authRateBucket.upsert({
+          where: { key },
+          create: { key, count, expiresAt: new Date(Date.now() + 600000) },
+          update: {
+            count,
+            ...(!old || old.expiresAt <= now ? { expiresAt: new Date(Date.now() + 600000) } : {}),
+          },
+        });
+        if (count > max) allowed = false;
+      }
+      if (!allowed) await this.audit.write(tx, 'auth.rate', 'denied');
+      return allowed;
+    });
+    if (!ok) throw new AppError(429, 'ADMIN_RATE_LIMIT', 'Too many authentication attempts');
+  }
+  private async challenge(tx: DbTransaction, account: AdminAccount) {
+    const raw = token();
+    const expiresAt = new Date(Date.now() + 600000);
+    await tx.adminChallenge.create({
+      data: {
+        tokenHash: digest(raw),
+        accountId: account.id,
+        authVersion: account.authVersion,
+        expiresAt,
+      },
+    });
+    const secret =
+      account.status === 'pending'
+        ? decryptSecret(account.encryptedMfaSecret, this.config.admin!.encryptionKey!, account.id)
+        : undefined;
+    return {
+      raw,
+      data: {
+        next: secret ? ('enroll' as const) : ('mfa' as const),
+        expiresAt: expiresAt.toISOString(),
+        ...(secret
+          ? {
+              secret,
+              otpauthUri: `otpauth://totp/ViviAI:${encodeURIComponent(account.email)}?secret=${secret}&issuer=ViviAI&algorithm=SHA1&digits=6&period=30`,
+            }
+          : {}),
+      },
+    };
+  }
+  async login(email: string, password: string, ip: string) {
+    this.enabled();
+    await this.rate(ip, email);
+    const result = await this.db.transaction(async (tx) => {
+      await lockAdmin(tx, `email:${email}`);
+      const initial = await tx.adminAccount.findUnique({ where: { email } });
+      if (initial) await lockAdmin(tx, initial.id);
+      const account = initial
+        ? await tx.adminAccount.findUnique({ where: { id: initial.id } })
+        : null;
+      const valid = await verifyPassword(password, account?.passwordHash);
+      if (
+        !account ||
+        !valid ||
+        !['active', 'pending'].includes(account.status) ||
+        !permissions(account.roles, account.extraPermissions).length
+      ) {
+        await this.audit.write(tx, 'auth.login', 'denied', account?.id);
+        return null;
+      }
+      await this.audit.write(tx, 'auth.login', 'allowed', account.id);
+      return this.challenge(tx, account);
+    });
+    if (!result) throw denied();
+    return result;
+  }
+  async accept(
+    input: { token: string; email: string; displayName: string; password: string },
+    ip: string,
+  ) {
+    this.enabled();
+    await this.rate(ip, input.email);
+    const passwordHash = await hashPassword(input.password);
+    const result = await this.db.transaction(async (tx) => {
+      await lockAdmin(tx, `email:${input.email}`);
+      await lockAdmin(tx, `invitation:${digest(input.token)}`);
+      const invite = await tx.adminInvitation.findUnique({
+        where: { tokenHash: digest(input.token) },
+      });
+      if (
+        !invite ||
+        invite.email !== input.email ||
+        invite.consumedAt ||
+        invite.expiresAt <= new Date() ||
+        (await tx.adminAccount.findUnique({ where: { email: input.email } }))
+      ) {
+        await this.audit.write(tx, 'invitation.accept', 'denied');
+        return null;
+      }
+      const id = randomUUID();
+      const account = await tx.adminAccount.create({
+        data: {
+          id,
+          email: input.email,
+          displayName: input.displayName,
+          passwordHash,
+          status: 'pending',
+          roles: invite.roles,
+          extraPermissions: invite.extraPermissions,
+          encryptedMfaSecret: encryptSecret(newSecret(), this.config.admin!.encryptionKey!, id),
+        },
+      });
+      await tx.adminInvitation.update({
+        where: { id: invite.id },
+        data: { consumedAt: new Date() },
+      });
+      await this.audit.write(tx, 'invitation.accept', 'allowed', id, undefined, invite.id);
+      return this.challenge(tx, account);
+    });
+    if (!result) throw denied();
+    return result;
+  }
+  async verify(raw: string, method: 'totp' | 'recovery', code: string, ip: string) {
+    this.enabled();
+    await this.rate(ip, `mfa:${digest(raw)}`, 30);
+    const initial = /^[\w-]{43}$/.test(raw)
+      ? await this.db.client.adminChallenge.findUnique({ where: { tokenHash: digest(raw) } })
+      : null;
+    if (!initial) throw denied();
+    const result = await this.db.transaction(async (tx) => {
+      await lockAdmin(tx, initial.accountId);
+      const challenge = await tx.adminChallenge.findUnique({ where: { id: initial.id } });
+      const account = await tx.adminAccount.findUnique({ where: { id: initial.accountId } });
+      if (
+        !account ||
+        !challenge ||
+        challenge.expiresAt <= new Date() ||
+        challenge.attempts >= 5 ||
+        challenge.authVersion !== account.authVersion ||
+        !['active', 'pending'].includes(account.status)
+      ) {
+        await this.audit.write(tx, 'mfa.verify', 'denied', initial.accountId);
+        return null;
+      }
+      let valid = false;
+      if (method === 'totp') {
+        const counter = verifyTotp(
+          decryptSecret(account.encryptedMfaSecret, this.config.admin!.encryptionKey!, account.id),
+          code,
+          Date.now(),
+          account.lastTotpCounter,
+        );
+        if (counter !== null) {
+          await tx.adminAccount.update({
+            where: { id: account.id },
+            data: { lastTotpCounter: counter },
+          });
+          valid = true;
+        }
+      } else if (account.status === 'active' && /^[a-f0-9]{32}$/.test(code)) {
+        const consumed = await tx.adminRecoveryCode.updateMany({
+          where: { accountId: account.id, codeHash: digest(code), consumedAt: null },
+          data: { consumedAt: new Date() },
+        });
+        valid = consumed.count === 1;
+      }
+      if (!valid) {
+        await tx.adminChallenge.update({
+          where: { id: challenge.id },
+          data: { attempts: { increment: 1 } },
+        });
+        await this.audit.write(tx, 'mfa.verify', 'denied', account.id);
+        return null;
+      }
+      let codes: string[] | undefined;
+      if (account.status === 'pending') {
+        codes = recoveryCodes();
+        await tx.adminRecoveryCode.createMany({
+          data: codes.map((code) => ({ accountId: account.id, codeHash: digest(code) })),
+        });
+        await tx.adminAccount.update({ where: { id: account.id }, data: { status: 'active' } });
+      }
+      const sessionRaw = token();
+      const session = await tx.adminSession.create({
+        data: {
+          tokenHash: digest(sessionRaw),
+          accountId: account.id,
+          authVersion: account.authVersion,
+          expiresAt: new Date(Date.now() + 8 * 3600000),
+        },
+      });
+      await tx.adminChallenge.deleteMany({ where: { accountId: account.id } });
+      await this.audit.write(tx, 'mfa.verify', 'allowed', account.id, session.id);
+      return {
+        raw: sessionRaw,
+        data: { account: actor(account, session), ...(codes ? { recoveryCodes: codes } : {}) },
+      };
+    });
+    if (!result) throw denied();
+    return result;
+  }
+  async resolve(raw: string): Promise<AdminContext> {
+    this.enabled();
+    if (!/^[\w-]{43}$/.test(raw)) throw denied();
+    const session = await this.db.client.adminSession.findUnique({
+      where: { tokenHash: digest(raw) },
+    });
+    if (!session) throw denied();
+    return this.db.transaction(async (tx) => {
+      await lockAdmin(tx, session.accountId);
+      const context = await this.reauthorize(tx, session.id, session.accountId);
+      await tx.adminSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
+      return context;
+    });
+  }
+  async reauthorize(
+    tx: DbTransaction,
+    sessionId: string,
+    accountId: string,
+  ): Promise<AdminContext> {
+    const session = await tx.adminSession.findUnique({ where: { id: sessionId } });
+    const account = await tx.adminAccount.findUnique({ where: { id: accountId } });
+    if (
+      !session ||
+      !account ||
+      session.accountId !== account.id ||
+      account.status !== 'active' ||
+      session.authVersion !== account.authVersion ||
+      session.expiresAt <= new Date() ||
+      session.createdAt.getTime() + 8 * 3600000 <= Date.now() ||
+      session.lastSeenAt.getTime() + 30 * 60000 <= Date.now() ||
+      !permissions(account.roles, account.extraPermissions).length
+    )
+      throw denied();
+    return { actor: actor(account, session), sessionId };
+  }
+  async logout(sessionRaw: string, challengeRaw: string) {
+    this.enabled();
+    await this.db.transaction(async (tx) => {
+      const session = await tx.adminSession.findUnique({
+        where: { tokenHash: digest(sessionRaw) },
+      });
+      if (session) {
+        await lockAdmin(tx, session.accountId);
+        await this.audit.write(tx, 'auth.logout', 'allowed', session.accountId, session.id);
+      }
+      await tx.adminSession.updateMany({
+        where: { tokenHash: digest(sessionRaw) },
+        data: { expiresAt: new Date(0) },
+      });
+      await tx.adminChallenge.deleteMany({ where: { tokenHash: digest(challengeRaw) } });
+    });
+    return { success: true };
+  }
+}

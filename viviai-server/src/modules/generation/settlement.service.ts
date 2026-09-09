@@ -8,6 +8,7 @@ import { WalletService } from '../wallet/wallet.service.js';
 import { recordCost, releaseConfirmedSlot } from '../providers/accounting.js';
 import type { CompletedResult, NormalizedImageRequest } from '../providers/contracts.js';
 import { TERMINAL } from './job-serializer.js';
+import { recordLifecycle } from '../admin/lifecycle.js';
 
 export class SettlementService {
   constructor(
@@ -24,6 +25,7 @@ export class SettlementService {
     const current = await tx.generationItem.findUniqueOrThrow({ where: { id: itemId } });
     if (TERMINAL.includes(current.status)) return;
     await this.wallet.settle(tx, itemId, 'release', now);
+    await recordLifecycle(tx, itemId, cancelled ? 'cancelled' : 'failed', now);
     await tx.generationItem.update({
       where: { id: itemId },
       data: {
@@ -48,6 +50,8 @@ export class SettlementService {
         await this.fail(tx, item.id, 'DELIVERY_DEADLINE');
         return false;
       }
+      await recordLifecycle(tx, item.id, 'accepted');
+      await recordLifecycle(tx, item.id, 'materializing');
       await tx.providerAttempt.update({
         where: { id: attempt.id },
         data: {
@@ -126,6 +130,7 @@ export class SettlementService {
         });
         const settled = await this.wallet.settle(tx, item.id, 'consume', new Date());
         if (!settled) throw new Error('Credit settlement was already terminal');
+        await recordLifecycle(tx, item.id, 'delivered');
         await tx.generationItem.update({
           where: { id: item.id },
           data: { status: 'succeeded', resultAssetId: asset.id, leaseUntil: null, errorCode: null },

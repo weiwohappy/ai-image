@@ -23,6 +23,7 @@ import { ProviderRegistry, type Channel } from '../providers/registry.js';
 import { candidates, providerContext } from '../providers/router.js';
 import { SettlementService } from './settlement.service.js';
 import { TERMINAL } from './job-serializer.js';
+import { recordLifecycle } from '../admin/lifecycle.js';
 
 interface Claim {
   mode: 'submit' | 'query' | 'materialize';
@@ -249,6 +250,7 @@ export class DispatchService {
           leaseUntil: new Date(now.getTime() + (p.responseTimeoutMs ?? 0) + 30_000),
         },
       });
+      await recordLifecycle(tx, itemId, 'dispatched', now);
       return { mode: 'submit', attempt, fence, channel: reserved.channel, cancelRequested: false };
     });
   }
@@ -352,6 +354,7 @@ export class DispatchService {
       }
       if (TERMINAL.includes(item.status) || item.fence !== fence) return;
       if (result.kind === 'accepted' || result.kind === 'pending') {
+        await recordLifecycle(tx, item.id, 'accepted');
         await tx.providerAttempt.update({
           where: { id: attempt.id },
           data: { status: 'pending', acceptance: 'accepted' },

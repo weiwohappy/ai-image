@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { loadAdminConfig, validateAdminConfig, type AdminConfig } from './modules/admin/config.js';
 import {
   loadOfficialConfig,
   validateOfficialConfig,
@@ -9,6 +10,7 @@ export type NodeEnvironment = 'development' | 'test' | 'production';
 export type StorageDriver = 'local' | 's3';
 
 export interface AppConfig {
+  admin?: AdminConfig;
   officialImages?: OfficialConfig;
   nodeEnv: NodeEnvironment;
   host: string;
@@ -132,6 +134,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   const value = parsed.data;
   return validateConfig({
+    admin: loadAdminConfig(env),
     officialImages: loadOfficialConfig(env),
     nodeEnv: value.NODE_ENV,
     host: value.HOST,
@@ -161,6 +164,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 export function validateConfig(config: AppConfig): AppConfig {
+  validateAdminConfig(config.admin, config.nodeEnv);
   if (config.officialImages) validateOfficialConfig(config.officialImages);
   const issues: string[] = [];
   const hasAccessKey = config.s3AccessKeyId !== undefined;

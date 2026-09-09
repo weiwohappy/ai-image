@@ -316,3 +316,94 @@ model ProviderQuota {
   inflight Int @default(0)
   unknown Int @default(0)
 }
+
+model AdminAccount {
+  id String @id @default(uuid()) @db.Uuid
+  email String @unique
+  displayName String
+  passwordHash String
+  status String @default("pending")
+  roles String[]
+  extraPermissions String[] @default([])
+  encryptedMfaSecret String
+  lastTotpCounter BigInt?
+  authVersion Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AdminInvitation {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  email String @unique
+  roles String[]
+  extraPermissions String[] @default([])
+  expiresAt DateTime @db.Timestamptz(6)
+  consumedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AdminChallenge {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  accountId String @db.Uuid
+  authVersion Int
+  attempts Int @default(0)
+  expiresAt DateTime @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([accountId])
+}
+model AdminSession {
+  id String @id @default(uuid()) @db.Uuid
+  tokenHash String @unique
+  accountId String @db.Uuid
+  authVersion Int
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt DateTime @db.Timestamptz(6)
+  @@index([accountId])
+}
+model AdminRecoveryCode {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  codeHash String @unique
+  consumedAt DateTime? @db.Timestamptz(6)
+  @@index([accountId])
+}
+model AdminAuditEvent {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String? @db.Uuid
+  sessionId String? @db.Uuid
+  action String
+  resourceId String?
+  outcome String
+  reasonDigest String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([createdAt, id])
+}
+model AdminSensitiveGrant {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  sessionId String @db.Uuid
+  jobId String @db.Uuid
+  reasonDigest String
+  reason String @db.VarChar(500)
+  expiresAt DateTime @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AdminAlert {
+  id String @id @default(uuid()) @db.Uuid
+  sourceKey String @unique
+  category String
+  kind String
+  resourceId String
+  firstSeenAt DateTime @default(now()) @db.Timestamptz(6)
+  lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
+  resolved Boolean @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([createdAt, id])
+}
+model GenerationLifecycleEvent {
+  id String @id @default(uuid()) @db.Uuid
+  itemId String @db.Uuid
+  event String
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([itemId, event])
+}

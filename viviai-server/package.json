@@ -20,6 +20,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "seed:dev": "tsx src/scripts/seed-dev.ts",
+    "admin:bootstrap": "tsx src/scripts/admin-bootstrap.ts",
     "pretest": "prisma generate",
     "test": "vitest run"
   },

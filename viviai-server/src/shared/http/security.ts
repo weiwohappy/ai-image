@@ -22,13 +22,20 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Frame-Options', 'DENY');
+    if (request.path === '/api/admin' || request.path.startsWith('/api/admin/'))
+      response.setHeader('Cache-Control', 'no-store');
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
       !(
         request.method === 'POST' &&
         ['/api/webhooks/payments/wechat', '/api/webhooks/payments/alipay'].includes(request.path)
       ) &&
-      (!request.headers.origin || !config.corsOrigins.includes(request.headers.origin))
+      (!request.headers.origin ||
+        !(
+          request.path === '/api/admin' || request.path.startsWith('/api/admin/')
+            ? (config.admin?.origins ?? [])
+            : config.corsOrigins
+        ).includes(request.headers.origin))
     ) {
       response.status(403).json({
         data: null,
@@ -43,7 +50,7 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
   app.enableCors({
     credentials: true,
     origin(origin, callback) {
-      if (!origin || config.corsOrigins.includes(origin)) {
+      if (!origin || [...config.corsOrigins, ...(config.admin?.origins ?? [])].includes(origin)) {
         callback(null, true);
         return;
       }
