@@ -81,6 +81,7 @@ describe('official model specifications and fail-closed configuration', () => {
       }),
     ).toMatchObject({ ratio: '16:9' });
     for (const input of [
+      { modelId: 'gemini-3.1-flash-image', resolution: '0.5K', ratio: '21:9' },
       { modelId: 'gpt-image-2', resolution: '4K', ratio: '1:1' },
       { modelId: 'gemini-2.5-flash-image', resolution: '2K', ratio: '1:1' },
       { modelId: 'gemini-3.1-flash-lite-image', resolution: '1K', ratio: '16:9' },

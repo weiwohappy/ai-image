@@ -20,6 +20,8 @@
 
 Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536；以官方表格为准，不自行重算“更标准”的比例。Lite 官方只明确了 1K 方图像素，不能直接套用 Flash/Pro 表格。
 
+例外：官方 Flash 0.5K「21:9」一行写 792×168，与比例明显矛盾，因此暂时禁用这一组合，等待官方澄清；没有擅自换成 792×336。该型号其他档位的 21:9 不受影响。
+
 已发现的官方文档差异：Lite 模型页写 `1024px`，Interactions 的 image_size 枚举只有 `512/1K/2K/4K`，模型枚举也尚未列 Lite。因此 Lite 代码按图像指南给出的精确型号接入，但省略可选 image_size（固定 1K），仅指定方形并验证返回 1024×1024；真实端点可用性列为必测，不声称已经打通。Interactions 输出 mime_type 枚举只列 JPEG，故 Google 请求省略 mime_type，要求 inline，接受明确标注且真实格式匹配的 PNG/JPEG/WebP；落盘转 PNG，不缩放。OpenAI 仍显式请求 PNG。
 
 依据：[Google 生成指南](https://ai.google.dev/gemini-api/docs/image-generation)、[Lite 模型页](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image)、[OpenAI 生成接口](https://developers.openai.com/api/reference/typescript/resources/images/methods/generate)、[GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)。核验日期 2026-09-09。
@@ -53,7 +55,7 @@ API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JS
 
 报价和任务存储执行/价格快照，包含配置摘要而非 Key；变更配置后旧任务不会改用新型号。未执行任务遇配置不匹配会退款，未消费报价要求重报。不要在仍有大量排队任务时删配置。
 
-上游 token 用量完整且价格覆盖时才计算 actualCostMicros；缺失/不完整使用量保留 unknown 和预算预留。缓存、工具用量或不认识的维度不被悄悄省略。当前无运营待对账处理界面，上线前需实现供应商账单核对、差异更正与人工解锁；未对账成本不是利润。
+只有费用确定为 billable、上游 token 用量完整且价格覆盖时才计算 actualCostMicros；缺失/不完整使用量保留 unknown 和预算预留。畸形或拒绝的响应即使含 token 用量，也只作为对账证据，不能据此断言供应商最终收费；费用确定性与计量完整性分开记录。缓存、工具用量或不认识的维度不被悄悄省略。当前无运营待对账处理界面，上线前需实现供应商账单核对、差异更正与人工解锁；未对账成本不是利润。
 
 HTTP 单次最长 180 秒，不自动重试，租约为 210 秒。每个任务 15 分钟交付截止。请求发送后网络断开可能已经计费：标记 unknown，不自动重发，截止释放用户积分，供应商费用继续待核对。同步接口没有可靠可恢复查询，本轮不宣称 exactly-once 上游执行。
 

@@ -93,7 +93,9 @@ export function officialSpecs(modelId: string): OfficialOutputSpec[] {
   if (modelId === 'gemini-3.1-flash-image' || modelId === 'gemini-3-pro-image')
     return googleRows.flatMap(([ratio, ...sizes]) =>
       sizes.flatMap((size, i) =>
-        i === 0 && modelId === 'gemini-3-pro-image'
+        // Official 0.5K 21:9 row says 792×168, inconsistent with its ratio.
+        // Withhold it until clarified; do not silently invent a corrected size.
+        i === 0 && (modelId === 'gemini-3-pro-image' || ratio === '21:9')
           ? []
           : [spec(['0.5K', '1K', '2K', '4K'][i]!, ratio, size, ['512', '1K', '2K', '4K'][i])],
       ),
