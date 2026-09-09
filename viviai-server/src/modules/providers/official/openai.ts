@@ -131,6 +131,7 @@ export class OpenAIImageProvider implements ProviderAdapter {
           !root ||
           (root.output_format !== undefined && root.output_format !== 'png') ||
           (root.size !== undefined && root.size !== `${spec.width}x${spec.height}`) ||
+          (root.quality !== undefined && root.quality !== 'medium') ||
           !Array.isArray(root.data) ||
           root.data.length !== 1
         )

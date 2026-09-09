@@ -117,6 +117,7 @@ export async function fetchOnce(
 }
 
 export function classifyHttpFailure(response: Response): SubmitResult {
+  cancelBody(response.body);
   const status = response.status;
   if (status === 401 || status === 403)
     return rejectedFailure('auth', 'Provider authentication failed');
@@ -147,14 +148,17 @@ export async function readBoundedJson(response: Response, signal: AbortSignal): 
   if (!reader) throw new ResponseBoundaryError('Missing response body');
   const chunks: Uint8Array[] = [];
   let size = 0;
+  let finished = false;
   try {
     while (true) {
       const { done, value } = await readWithAbort(reader, signal);
-      if (done) break;
+      if (done) {
+        finished = true;
+        break;
+      }
       if (!value) continue;
       size += value.byteLength;
       if (size > MAX_RESPONSE_JSON_BYTES) {
-        await reader.cancel();
         throw new ResponseBoundaryError('Response exceeds limit');
       }
       chunks.push(value);
@@ -163,7 +167,24 @@ export async function readBoundedJson(response: Response, signal: AbortSignal): 
   } catch (error) {
     if (error instanceof ResponseBoundaryError) throw error;
     throw new ResponseBoundaryError('Invalid provider response');
+  } finally {
+    if (finished) {
+      try {
+        reader.releaseLock();
+      } catch {}
+    } else {
+      try {
+        void reader.cancel().catch(() => {});
+      } catch {}
+    }
   }
+}
+
+function cancelBody(body: ReadableStream<Uint8Array> | null) {
+  if (!body) return;
+  try {
+    void body.cancel().catch(() => {});
+  } catch {}
 }
 
 async function readWithAbort(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal) {

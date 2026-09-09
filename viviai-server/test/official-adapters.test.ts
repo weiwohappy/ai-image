@@ -657,6 +657,31 @@ describe('OpenAI Images REST adapter', () => {
       usageComplete: true,
     });
   });
+
+  it('rejects optional response quality metadata that contradicts the fixed medium request', async () => {
+    const http = fakeFetch(() =>
+      jsonResponse({ ...openaiSuccess(squarePng), quality: 'low' }, 200, {
+        'x-request-id': 'openai-quality-mismatch-1',
+      }),
+    );
+
+    const result = await new OpenAIImageProvider(new PrivateStore(), 'key', http.fetcher).submit(
+      request('gpt-image-2'),
+      context(),
+    );
+
+    expect(result).toMatchObject({
+      kind: 'rejected',
+      ref: { providerRequestId: 'openai-quality-mismatch-1' },
+      failure: {
+        code: 'invalid_output',
+        acceptance: 'accepted',
+        billing: 'unknown',
+        usageComplete: true,
+      },
+    });
+    expect(http.calls).toHaveLength(1);
+  });
 });
 
 describe.each([
@@ -703,6 +728,26 @@ describe.each([
       expect(http.calls).toHaveLength(1);
     },
   );
+
+  it.each([401, 429, 500])('cancels the unread HTTP %s response body', async (status) => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const http = fakeFetch(() => new Response(body, { status }));
+    const provider =
+      _name === 'google'
+        ? new GoogleImageProvider(new PrivateStore(), 'key', http.fetcher)
+        : new OpenAIImageProvider(new PrivateStore(), 'key', http.fetcher);
+
+    await provider.submit(makeRequest(), context());
+
+    expect(cancelled).toBe(true);
+    expect(http.calls).toHaveLength(1);
+  });
 
   it('does not call fetch when already aborted, but treats an abort after send as unknown', async () => {
     const before = new AbortController();
@@ -764,6 +809,28 @@ describe.each([
       failure: { code: 'timeout', acceptance: 'unknown', billing: 'unknown' },
     });
     expect(hanging.calls).toHaveLength(1);
+  });
+
+  it('cancels a stalled successful response body when responseTimeoutMs expires', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {},
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const http = fakeFetch(() => new Response(body, { status: 200 }));
+    const provider =
+      _name === 'google'
+        ? new GoogleImageProvider(new PrivateStore(), 'key', http.fetcher)
+        : new OpenAIImageProvider(new PrivateStore(), 'key', http.fetcher);
+
+    expect(await provider.submit(makeRequest(), context(undefined, 5))).toMatchObject({
+      kind: 'unknown',
+      failure: { code: 'timeout', acceptance: 'unknown', billing: 'unknown' },
+    });
+    expect(cancelled).toBe(true);
+    expect(http.calls).toHaveLength(1);
   });
 });
 
