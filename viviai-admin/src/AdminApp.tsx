@@ -14,6 +14,7 @@ export default function AdminApp() {
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
   const [logoutError, setLogoutError] = useState('');
+  const [logoutPending, setLogoutPending] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     client.onUnauthorized = () => setActor(null);
@@ -72,7 +73,10 @@ export default function AdminApp() {
     async function focus() {
       try {
         const next = await client.get<AdminActor>('/me', controller.signal);
-        if (!controller.signal.aborted) setActor(next);
+        if (!controller.signal.aborted) {
+          if (authContext(next) !== authContext(actor!)) client.invalidate();
+          setActor(next);
+        }
       } catch {
         if (!controller.signal.aborted) {
           client.invalidate();
@@ -91,6 +95,8 @@ export default function AdminApp() {
     };
   }, [actor, client]);
   async function logout() {
+    if (logoutPending) return;
+    setLogoutPending(true);
     // Hide cached UI before waiting for network, but report a failed server revocation.
     client.invalidate();
     setActor(null);
@@ -100,6 +106,8 @@ export default function AdminApp() {
       await client.post('/auth/logout', {}, undefined, false);
     } catch {
       setLogoutError('本页内容已清除，但服务端会话撤销未确认。请重试退出；不要直接离开共享设备。');
+    } finally {
+      setLogoutPending(false);
     }
   }
   if (loading || error || !status?.enabled)
@@ -120,6 +128,18 @@ export default function AdminApp() {
           </p>
           {!loading && <Button onClick={() => setRetry((value) => value + 1)}>重新检查连接</Button>}
           <div className="auth-note">没有模拟数据，也不会回退到用户端登录。</div>
+        </main>
+      </div>
+    );
+  if (logoutPending)
+    return (
+      <div className="auth-layout">
+        <header className="auth-header">
+          <Brand />
+        </header>
+        <main className="auth-card" role="status">
+          <h1>正在退出登录</h1>
+          <p className="muted">正在撤销服务端会话，请稍候…</p>
         </main>
       </div>
     );
@@ -147,11 +167,15 @@ export default function AdminApp() {
     );
   return (
     <ConsoleShell
-      key={`${actor.id}:${actor.permissions.slice().sort().join(',')}`}
+      key={authContext(actor)}
       actor={actor}
       client={client}
       environment={status.environment}
       onLogout={logout}
     />
   );
+}
+
+function authContext(actor: AdminActor) {
+  return JSON.stringify([actor.id, actor.roles.slice().sort(), actor.permissions.slice().sort()]);
 }

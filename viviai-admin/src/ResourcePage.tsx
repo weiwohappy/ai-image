@@ -14,6 +14,98 @@ import { AdminClient } from './http';
 import { useAdminQuery } from './useQuery';
 import { DataTable } from './DataTable';
 
+type FilterConfig = {
+  dated?: boolean;
+  user?: boolean;
+  model?: boolean;
+  statuses?: [string, string][];
+  sources?: [string, string][];
+};
+const routeFilters: Record<string, FilterConfig> = {
+  '/users': { dated: true },
+  '/credit-lots': { dated: true },
+  '/credit-events': {
+    dated: true,
+    statuses: [
+      ['paid_grant', '购买发放'],
+      ['promotional_grant', '赠送发放'],
+      ['freeze', '冻结'],
+      ['consume', '消费'],
+      ['release', '释放'],
+      ['expire', '过期'],
+    ],
+  },
+  '/orders': {
+    dated: true,
+    user: true,
+    statuses: [
+      ['creating', '创建中'],
+      ['pending', '待支付'],
+      ['paid', '已支付'],
+      ['fulfilled', '已发放积分'],
+    ],
+    sources: [
+      ['wechat', '微信支付'],
+      ['alipay', '支付宝'],
+    ],
+  },
+  '/jobs': {
+    dated: true,
+    user: true,
+    model: true,
+    statuses: [
+      ['queued', '排队中'],
+      ['submitting', '提交中'],
+      ['pending', '等待上游'],
+      ['unknown', '结果未知'],
+      ['materializing', '图片入库中'],
+      ['succeeded', '已成功'],
+      ['failed', '失败'],
+      ['cancelled', '已取消'],
+    ],
+    sources: [
+      ['create', '文生图'],
+      ['remix', '爆款复刻'],
+    ],
+  },
+  '/models': {
+    statuses: [
+      ['enabled', '已启用'],
+      ['disabled', '未启用'],
+    ],
+  },
+  '/provider-accounts': {},
+  '/alerts': {
+    dated: true,
+    statuses: [
+      ['active', '待处理'],
+      ['resolved', '已解除'],
+    ],
+    sources: [
+      ['unknown_attempt', '上游结果未知'],
+      ['overdue_reservation', '积分冻结超时'],
+      ['missing_materialization', '图片入库异常'],
+      ['budget_80_percent', '成本预算预警'],
+    ],
+  },
+  '/audit-events': {
+    dated: true,
+    statuses: [
+      ['allowed', '允许'],
+      ['denied', '拒绝'],
+    ],
+  },
+  '/administrators': {
+    dated: true,
+    statuses: [
+      ['pending', '待激活'],
+      ['active', '已激活'],
+      ['disabled', '已禁用'],
+    ],
+  },
+  '/roles': {},
+};
+
 export function ResourcePage(props: { path: string; client: AdminClient; permissions: string[] }) {
   return <ResourceQuery key={props.path} {...props} />;
 }
@@ -40,9 +132,15 @@ function ResourceQuery({
   const [revision, setRevision] = useState(0);
   const [validation, setValidation] = useState('');
   const searchable = true;
-  const dated =
-    ['/users', '/orders', '/jobs', '/alerts', '/audit-events', '/administrators'].includes(path) ||
-    path.includes('/credit-');
+  const filterConfig =
+    routeFilters[
+      path.endsWith('/credit-events')
+        ? '/credit-events'
+        : path.endsWith('/credit-lots')
+          ? '/credit-lots'
+          : path
+    ] ?? {};
+  const dated = filterConfig.dated;
   const cursor = cursors[cursors.length - 1];
   const query = useAdminQuery<AdminTable>(
     client,
@@ -52,50 +150,9 @@ function ResourceQuery({
   const detailResource = ['/users', '/orders', '/jobs', '/models'].includes(path)
     ? path
     : undefined;
-  const statuses =
-    path === '/models'
-      ? [
-          { value: 'enabled', label: '已启用' },
-          { value: 'disabled', label: '未启用' },
-        ]
-      : (path === '/jobs'
-          ? [
-              ['queued', '排队中'],
-              ['submitting', '提交中'],
-              ['pending', '等待上游'],
-              ['unknown', '结果未知'],
-              ['materializing', '图片入库中'],
-              ['succeeded', '已成功'],
-              ['failed', '失败'],
-              ['cancelled', '已取消'],
-            ]
-          : path === '/orders'
-            ? [
-                ['creating', '创建中'],
-                ['pending', '待支付'],
-                ['paid', '已支付'],
-                ['fulfilled', '已发放积分'],
-              ]
-            : path === '/alerts'
-              ? [
-                  ['active', '待处理'],
-                  ['resolved', '已解除'],
-                ]
-              : []
-        ).map(([value, label]) => ({ value, label }));
-  const sources =
-    path === '/jobs'
-      ? [
-          ['create', '文生图'],
-          ['remix', '爆款复刻'],
-        ]
-      : path === '/orders'
-        ? [
-            ['wechat', '微信支付'],
-            ['alipay', '支付宝'],
-          ]
-        : [];
-  const userFilter = ['/orders', '/jobs'].includes(path);
+  const statuses = (filterConfig.statuses ?? []).map(([value, label]) => ({ value, label }));
+  const sources = filterConfig.sources ?? [];
+  const userFilter = filterConfig.user;
   function search(event: FormEvent) {
     event.preventDefault();
     setValidation('');
@@ -107,7 +164,7 @@ function ResourceQuery({
     if (searchable && draft.q.trim()) params.set('q', draft.q.trim());
     if (statuses.length && draft.status) params.set('status', draft.status);
     if (userFilter && draft.userId.trim()) params.set('userId', draft.userId.trim());
-    if (path === '/jobs' && draft.modelId.trim()) params.set('modelId', draft.modelId.trim());
+    if (filterConfig.model && draft.modelId.trim()) params.set('modelId', draft.modelId.trim());
     if (sources.length && draft.source) params.set('source', draft.source);
     if (dated && draft.from)
       params.set('from', new Date(`${draft.from}T00:00:00+08:00`).toISOString());
@@ -178,7 +235,7 @@ function ResourceQuery({
             onChange={(e) => setDraft({ ...draft, userId: e.target.value })}
           />
         )}
-        {path === '/jobs' && (
+        {filterConfig.model && (
           <Input
             className="scope-filter"
             aria-label="模型 ID"

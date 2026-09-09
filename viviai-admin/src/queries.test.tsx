@@ -33,6 +33,20 @@ it('shows navigation based on actual permissions rather than role names', () => 
       (item) => item.path,
     ),
   ).toEqual(['/models']);
+  const finance = availableNavigation({
+    ...actor,
+    roles: ['finance'],
+    permissions: [
+      'dashboard.read',
+      'users.read',
+      'orders.read',
+      'credits.read',
+      'jobs.read',
+      'costs.read',
+    ],
+  }).map((item) => item.path);
+  expect(finance).toEqual(['/dashboard', '/users', '/orders', '/jobs']);
+  expect(availableNavigation(actor).map((item) => item.path)).toContain('/alerts');
 });
 it('renders the native matrix and leaves missing cells unsupported', () => {
   render(
@@ -118,4 +132,42 @@ it('supports scoped job filters without putting a prompt in the query', async ()
   expect(fetcher.mock.calls[1][0]).toContain('userId=6cfa1770-9a1b-4d82-937a-f29d9360f508');
   expect(fetcher.mock.calls[1][0]).toContain('modelId=official-model');
   expect(fetcher.mock.calls[1][0]).not.toContain('prompt');
+});
+
+it('renders a safe resource error and recovers after refresh without inventing rows', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(json(null, 503))
+    .mockResolvedValueOnce(json({ ...emptyTable, rows: [{ id: 'recovered-record' }] }));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ResourcePage path="/users" client={new AdminClient()} permissions={actor.permissions} />);
+  expect(screen.getByRole('status')).toHaveTextContent('正在读取');
+  expect(await screen.findByRole('alert')).toHaveTextContent('服务暂时不可用');
+  expect(screen.queryByText('没有符合条件的记录')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+  expect(await screen.findByText('recovered-record')).toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+it.each([
+  [
+    '/users/6cfa1770-9a1b-4d82-937a-f29d9360f508/credit-events',
+    '状态筛选',
+    '消费',
+    'status=consume',
+  ],
+  ['/audit-events', '状态筛选', '拒绝', 'status=denied'],
+  ['/administrators', '状态筛选', '待激活', 'status=pending'],
+  ['/alerts', '来源筛选', '成本预算预警', 'source=budget_80_percent'],
+])('submits the supported route-specific filter for %s', async (path, field, option, query) => {
+  const fetcher = vi.fn().mockResolvedValue(json(emptyTable));
+  vi.stubGlobal('fetch', fetcher);
+  render(<ResourcePage path={path} client={new AdminClient()} permissions={actor.permissions} />);
+  await screen.findByText('没有符合条件的记录');
+  fireEvent.click(screen.getByRole('combobox', { name: field }));
+  const selected = await screen.findByRole('option', { name: option });
+  fireEvent.pointerDown(selected, { pointerType: 'mouse' });
+  fireEvent.click(selected);
+  fireEvent.click(screen.getByRole('button', { name: '查询' }));
+  await waitFor(() => expect(fetcher.mock.calls[1]?.[0]).toContain(query));
 });
