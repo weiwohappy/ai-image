@@ -1,0 +1,125 @@
+import {
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+  TableCaption,
+} from '@/components/ui/table';
+import type { AdminTable } from './contracts';
+import { formatValue, safeRoute } from './format';
+import { routePermission } from './navigation';
+
+const statusLabels: Record<string, string> = {
+  queued: '排队中',
+  running: '执行中',
+  succeeded: '已成功',
+  failed: '失败',
+  cancelled: '已取消',
+  unknown: '结果未知',
+  active: '有效',
+  disabled: '已停用',
+  pending: '待处理',
+  paid: '已支付',
+  unpaid: '未支付',
+  closed: '已关闭',
+  expired: '已过期',
+  enabled: '已启用',
+  open: '待处理',
+  resolved: '已解除',
+  pending_mfa: '待绑定 MFA',
+};
+export function Notices({ items }: { items: string[] }) {
+  return items.length ? (
+    <div className="notices">
+      {items.map((notice, i) => (
+        <p key={i}>{notice}</p>
+      ))}
+    </div>
+  ) : null;
+}
+export function DataTable({
+  table,
+  permissions = [],
+  detailResource,
+}: {
+  table: AdminTable;
+  permissions?: string[];
+  detailResource?: string;
+}) {
+  return (
+    <div className="data-block">
+      <Notices items={table.notices} />
+      <Table>
+        <TableCaption>
+          {table.title} · 数据截至 {formatValue(table.asOf, 'datetime')}（上海时间）
+        </TableCaption>
+        <TableHeader>
+          <TableRow>
+            {table.columns.map((column) => (
+              <TableHead key={column.key}>{column.label}</TableHead>
+            ))}
+            {detailResource && (
+              <TableHead>
+                <span className="sr-only">详情</span>
+              </TableHead>
+            )}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {table.rows.length ? (
+            table.rows.map((row) => (
+              <TableRow key={row.id}>
+                {table.columns.map((column) => {
+                  const value = row[column.key];
+                  const text = formatValue(value, column.kind);
+                  const path =
+                    column.link && typeof value === 'string'
+                      ? safeRoute(`/${column.link}/${value}`)
+                      : null;
+                  const permission = path ? routePermission(path) : null;
+                  return (
+                    <TableCell key={column.key}>
+                      {path && permission && permissions.includes(permission) ? (
+                        <a href={`#${path}`} className="record-link">
+                          {text}
+                        </a>
+                      ) : column.kind === 'status' ? (
+                        <span
+                          className={`status-pill status-${String(value).replace(/[^a-z]/g, '')}`}
+                        >
+                          {statusLabels[String(value)] ?? text}
+                        </span>
+                      ) : (
+                        text
+                      )}
+                    </TableCell>
+                  );
+                })}
+                {detailResource && (
+                  <TableCell>
+                    <a
+                      href={`#${detailResource}/${encodeURIComponent(row.id)}`}
+                      aria-label={`查看 ${row.id} 详情`}
+                    >
+                      查看详情
+                    </a>
+                  </TableCell>
+                )}
+              </TableRow>
+            ))
+          ) : (
+            <TableRow>
+              <TableCell colSpan={table.columns.length + (detailResource ? 1 : 0)}>
+                <div className="empty-state">
+                  没有符合条件的记录<p>可调整筛选条件或稍后刷新。</p>
+                </div>
+              </TableCell>
+            </TableRow>
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
+}

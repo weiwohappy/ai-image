@@ -27,7 +27,7 @@
 
 ## Fixed frontend/backend HTTP contract
 
-All paths below are relative to `/api/admin`, wrapped by existing `{data,message,code,requestId}` envelope; binary private media is unwrapped. New types are defined in backend `contracts.ts` and mirrored without server imports in frontend `src/contracts.ts`.
+All paths below are relative to `/api/admin`, wrapped by the existing success `{data,message,requestId}` envelope; errors additionally contain `code`. The original plan incorrectly assumed `code` existed on every success; inspection of the unchanged serializer corrected this during integration. Binary private media is unwrapped. New types are defined in backend `contracts.ts` and mirrored without server imports in frontend `src/contracts.ts`.
 
 ```ts
 type Cell = string | number | boolean | null;
