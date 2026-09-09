@@ -3,10 +3,10 @@ import type { ProviderAttempt } from '../../generated/prisma/client.js';
 import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
 import { lockWallet } from '../../shared/database/locks.js';
 import type { ObjectStore } from '../assets/object-store.js';
-import { validateImage, MAX_IMAGE_BYTES } from '../assets/image-validation.js';
+import { validateImage, MAX_GENERATED_IMAGE_BYTES } from '../assets/image-validation.js';
 import { WalletService } from '../wallet/wallet.service.js';
-import { recordCost } from '../providers/accounting.js';
-import type { CompletedResult } from '../providers/contracts.js';
+import { recordCost, releaseConfirmedSlot } from '../providers/accounting.js';
+import type { CompletedResult, NormalizedImageRequest } from '../providers/contracts.js';
 import { TERMINAL } from './job-serializer.js';
 
 export class SettlementService {
@@ -37,7 +37,8 @@ export class SettlementService {
   async complete(attempt: ProviderAttempt, fence: number, result: CompletedResult) {
     const allowed = await this.db.transaction(async (tx) => {
       await lockWallet(tx, attempt.userId);
-      await recordCost(tx, attempt, 'billable', result.usage);
+      await recordCost(tx, attempt, 'billable', result.usage, result.usageComplete);
+      await releaseConfirmedSlot(tx, attempt);
       const item = await tx.generationItem.findUniqueOrThrow({
         where: { id: attempt.itemId },
         include: { job: true },
@@ -57,26 +58,46 @@ export class SettlementService {
       });
       await tx.generationItem.update({
         where: { id: item.id },
-        data: { status: 'materializing', leaseUntil: new Date(Date.now() + 30_000) },
+        data: { status: 'materializing', leaseUntil: new Date(Date.now() + 60_000) },
       });
       return true;
     });
     if (!allowed) return;
+    let validated = false;
     try {
       if (result.outputs.length !== 1 || result.outputs[0]?.kind !== 'stream')
-        throw new Error('Unsupported simulation output');
+        throw new Error('Unsupported provider output');
       const chunks: Uint8Array[] = [];
       let size = 0;
       for await (const chunk of result.outputs[0].content) {
         size += chunk.byteLength;
-        if (size > MAX_IMAGE_BYTES) throw new Error('Output too large');
+        if (size > MAX_GENERATED_IMAGE_BYTES) throw new Error('Output too large');
         chunks.push(chunk);
       }
-      const image = await validateImage(Buffer.concat(chunks));
-      if (image.width !== 1024 || image.height !== 1024)
+      const image = await validateImage(Buffer.concat(chunks), MAX_GENERATED_IMAGE_BYTES);
+      const request = attempt.request as unknown as NormalizedImageRequest;
+      if (
+        !request.output.allowedNativeDimensions.some(
+          (d) => d.width === image.width && d.height === image.height,
+        )
+      )
         throw new Error('Output dimensions differ from quote');
-      const objectKey = `results/${attempt.userId}/${attempt.id}/${fence}.png`;
-      await this.store.put(objectKey, image.bytes, image.contentType);
+      validated = true;
+      const objectKey =
+        attempt.stagedKey ?? `results/${attempt.userId}/${attempt.id}/${attempt.fence}.png`;
+      if (!attempt.stagedKey) {
+        await this.store.put(objectKey, image.bytes, image.contentType);
+        // Separate durable checkpoint; final wallet transaction can safely retry locally.
+        await this.db.transaction(async (tx) => {
+          await lockWallet(tx, attempt.userId);
+          const item = await tx.generationItem.findUniqueOrThrow({ where: { id: attempt.itemId } });
+          if (item.fence !== fence || TERMINAL.includes(item.status)) return;
+          await tx.providerAttempt.update({
+            where: { id: attempt.id },
+            data: { stagedKey: objectKey },
+          });
+        });
+      }
       await this.db.transaction(async (tx) => {
         await lockWallet(tx, attempt.userId);
         const item = await tx.generationItem.findUniqueOrThrow({
@@ -92,9 +113,10 @@ export class SettlementService {
           data: {
             id: randomUUID(),
             userId: attempt.userId,
-            name: `模拟图片 ${item.ordinal + 1}`,
+            name: `${request.productModelVersionId === 'simulation-image-v1' ? '模拟图片' : '生成图片'} ${item.ordinal + 1}`,
             objectKey,
-            source: 'simulation',
+            source:
+              request.productModelVersionId === 'simulation-image-v1' ? 'simulation' : 'generation',
             width: image.width,
             height: image.height,
             byteSize: image.bytes.byteLength,
@@ -106,7 +128,7 @@ export class SettlementService {
         if (!settled) throw new Error('Credit settlement was already terminal');
         await tx.generationItem.update({
           where: { id: item.id },
-          data: { status: 'succeeded', resultAssetId: asset.id, leaseUntil: null },
+          data: { status: 'succeeded', resultAssetId: asset.id, leaseUntil: null, errorCode: null },
         });
         await tx.providerAttempt.update({
           where: { id: attempt.id },
@@ -114,9 +136,25 @@ export class SettlementService {
         });
       });
     } catch {
-      // Recover through the same queryable Attempt. Never generate a replacement.
+      // Recover a persisted output locally, or query the same simulated attempt.
       await this.db.transaction(async (tx) => {
         await lockWallet(tx, attempt.userId);
+        const current = await tx.generationItem.findUniqueOrThrow({
+          where: { id: attempt.itemId },
+        });
+        if (current.fence !== fence || TERMINAL.includes(current.status)) return;
+        const record = await tx.providerAttempt.findUniqueOrThrow({
+          where: { id: attempt.id },
+          include: { usage: true },
+        });
+        if ((!validated && !record.stagedKey) || (!record.stagedKey && !record.usage?.simulated)) {
+          await this.fail(
+            tx,
+            attempt.itemId,
+            validated ? 'OUTPUT_STORAGE_FAILED' : 'INVALID_PROVIDER_OUTPUT',
+          );
+          return;
+        }
         await tx.generationItem.updateMany({
           where: { id: attempt.itemId, fence, status: 'materializing' },
           data: {
@@ -127,5 +165,22 @@ export class SettlementService {
         });
       });
     }
+  }
+  async resume(attempt: ProviderAttempt, fence: number) {
+    const store = this.store;
+    await this.complete(attempt, fence, {
+      kind: 'completed',
+      usage: [],
+      usageComplete: false,
+      outputs: [
+        {
+          kind: 'stream',
+          mimeType: 'image/png',
+          content: (async function* () {
+            yield await store.get(attempt.stagedKey!);
+          })(),
+        },
+      ],
+    });
   }
 }

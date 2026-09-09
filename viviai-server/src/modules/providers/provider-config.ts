@@ -1,8 +1,12 @@
 import type { ImageRole } from './contracts.js';
+import type { PriceSnapshot } from './pricing.js';
 export interface ChannelProfile {
   id: string;
   enabled: boolean;
-  simulated: true;
+  simulated: boolean;
+  baseUrl?: string;
+  responseTimeoutMs?: number;
+  pricing?: PriceSnapshot;
   productVersion: string;
   upstreamModelId: string;
   outputSpecId: string;

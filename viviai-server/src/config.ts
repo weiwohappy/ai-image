@@ -1,9 +1,15 @@
 import { z } from 'zod';
+import {
+  loadOfficialConfig,
+  validateOfficialConfig,
+  type OfficialConfig,
+} from './modules/providers/official-config.js';
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 export type StorageDriver = 'local' | 's3';
 
 export interface AppConfig {
+  officialImages?: OfficialConfig;
   nodeEnv: NodeEnvironment;
   host: string;
   port: number;
@@ -126,6 +132,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   const value = parsed.data;
   return validateConfig({
+    officialImages: loadOfficialConfig(env),
     nodeEnv: value.NODE_ENV,
     host: value.HOST,
     port: value.PORT,
@@ -154,6 +161,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 export function validateConfig(config: AppConfig): AppConfig {
+  if (config.officialImages) validateOfficialConfig(config.officialImages);
   const issues: string[] = [];
   const hasAccessKey = config.s3AccessKeyId !== undefined;
   const hasSecretKey = config.s3SecretAccessKey !== undefined;

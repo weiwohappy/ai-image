@@ -4,6 +4,7 @@ import { DatabaseService } from '../../shared/database/database.service.js';
 import { lockWallet } from '../../shared/database/locks.js';
 import type { ObjectStore } from '../assets/object-store.js';
 import { normalizeInput } from '../catalog/input-schema.js';
+import type { ExecutionSnapshot } from '../providers/official-config.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import {
   markUnknown,
@@ -24,10 +25,10 @@ import { SettlementService } from './settlement.service.js';
 import { TERMINAL } from './job-serializer.js';
 
 interface Claim {
-  mode: 'submit' | 'query';
+  mode: 'submit' | 'query' | 'materialize';
   attempt: ProviderAttempt;
   fence: number;
-  channel: Channel;
+  channel?: Channel;
   cancelRequested: boolean;
 }
 const uncertain: ProviderFailure = {
@@ -109,7 +110,26 @@ export class DispatchService {
           await this.settlement.fail(tx, itemId, 'ATTEMPT_MISSING');
           return null;
         }
-        const channel = this.registry.get(latest.channelId);
+        if (item.status === 'materializing' && latest.stagedKey) {
+          await tx.generationItem.update({
+            where: { id: itemId },
+            data: { fence, leaseUntil: new Date(now.getTime() + 60_000) },
+          });
+          return {
+            mode: 'materialize',
+            attempt: latest,
+            fence,
+            cancelRequested: item.job.cancelRequested,
+          };
+        }
+        const channel = this.registry.channels.find((c) => c.profile.id === latest.channelId);
+        if (!channel) {
+          await tx.generationItem.update({
+            where: { id: itemId },
+            data: { nextRunAt: new Date(now.getTime() + 30_000) },
+          });
+          return null;
+        }
         const caps = channel.adapter.capabilities(providerContext(channel, latest.id));
         if (!latest.providerRequestId || !caps.supportsQuery || !channel.adapter.query) {
           await tx.generationItem.update({
@@ -148,27 +168,41 @@ export class DispatchService {
         return null;
       }
       const input = normalizeInput(item.job.input);
+      const execution = item.job.execution as unknown as ExecutionSnapshot | null;
+      if (
+        input.modelId !== 'simulation-image-v1' &&
+        (!execution || execution.upstreamModelId !== input.modelId)
+      ) {
+        await this.settlement.fail(tx, itemId, 'MODEL_SNAPSHOT_MISSING');
+        return null;
+      }
       const attemptId = randomUUID();
       const normalized: NormalizedImageRequest = {
         jobId: item.jobId,
         itemId,
         attemptId,
         productModelVersionId: input.modelId,
-        upstreamModelId: 'deterministic-png-v1',
-        outputSpecId: 'png-1024-square-v1',
+        upstreamModelId: execution?.upstreamModelId ?? 'deterministic-png-v1',
+        outputSpecId: execution?.id ?? 'png-1024-square-v1',
+        ...(execution
+          ? { channelId: execution.channelId, providerRegion: 'global', pricing: execution.pricing }
+          : {}),
         prompt:
           input.source === 'remix'
             ? `Adaptation strength: ${input.strength}. Preserve image roles.\n${input.prompt}`
             : input.prompt,
-        promptTemplateVersion: 'simulation-prompt-v1',
+        promptTemplateVersion: execution ? 'official-remix-v1' : 'simulation-prompt-v1',
         images: item.job.pins
           .map((pin) => pin.snapshot as unknown as InputImage)
           .sort((a, b) => a.order - b.order),
         output: {
-          width: 1024,
-          height: 1024,
+          width: execution?.width ?? 1024,
+          height: execution?.height ?? 1024,
           format: 'png',
-          allowedNativeDimensions: [{ width: 1024, height: 1024 }],
+          ...(execution?.provider === 'openai' ? { quality: 'medium' as const } : {}),
+          allowedNativeDimensions: [
+            { width: execution?.width ?? 1024, height: execution?.height ?? 1024 },
+          ],
         },
         count: 1,
         executionMode: 'interactive',
@@ -204,12 +238,16 @@ export class DispatchService {
           budgetKey: reserved.budgetKey,
           estimatedCostMicros: p.estimatedCostMicros,
           request: normalized as unknown as Prisma.InputJsonValue,
-          usage: { create: { lines: [] } },
+          usage: { create: { lines: [], simulated: p.simulated } },
         },
       });
       await tx.generationItem.update({
         where: { id: itemId },
-        data: { status: 'submitting', fence, leaseUntil: new Date(now.getTime() + 30_000) },
+        data: {
+          status: 'submitting',
+          fence,
+          leaseUntil: new Date(now.getTime() + (p.responseTimeoutMs ?? 0) + 30_000),
+        },
       });
       return { mode: 'submit', attempt, fence, channel: reserved.channel, cancelRequested: false };
     });
@@ -218,6 +256,11 @@ export class DispatchService {
     const claim = await this.claim(itemId);
     if (!claim) return;
     const { channel, attempt } = claim;
+    if (claim.mode === 'materialize') {
+      await this.settlement.resume(attempt, claim.fence);
+      return;
+    }
+    if (!channel) return;
     const context = providerContext(channel, attempt.id);
     let result: SubmitResult | QueryResult;
     try {
@@ -293,7 +336,16 @@ export class DispatchService {
                   : {}),
               }
             : null;
-      if (failure) await recordCost(tx, attempt, failure.billing, failure.usage ?? []);
+      if (failure)
+        await recordCost(
+          tx,
+          attempt,
+          failure.billing,
+          failure.usage ?? [],
+          'usageComplete' in failure && failure.usageComplete === true,
+        );
+      if (failure?.acceptance === 'accepted' && result.kind === 'rejected')
+        await releaseConfirmedSlot(tx, attempt);
       if (result.kind === 'cancelled') {
         await recordCost(tx, attempt, result.billing, result.usage ?? []);
         await releaseConfirmedSlot(tx, attempt);

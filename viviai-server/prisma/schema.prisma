@@ -85,6 +85,7 @@ model GenerationQuote {
   userId String @db.Uuid
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
   input Json
+  execution Json?
   inputHash String
   productVersion String
   unitCredits BigInt
@@ -106,6 +107,7 @@ model GenerationJob {
   idempotencyKey String
   requestHash String
   input Json
+  execution Json?
   cancelRequested Boolean @default(false)
   retryOfJobId String? @db.Uuid
   createdAt DateTime @default(now()) @db.Timestamptz(6)

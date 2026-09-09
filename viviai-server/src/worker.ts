@@ -5,21 +5,21 @@ import { DatabaseService } from './shared/database/database.service.js';
 import { ASSET_STORE } from './modules/assets/assets.service.js';
 import type { ObjectStore } from './modules/assets/object-store.js';
 import { WalletService } from './modules/wallet/wallet.service.js';
-import { ProviderRegistry } from './modules/providers/registry.js';
+import { buildProviderRegistry } from './modules/providers/official-runtime.js';
 import { DispatchService } from './modules/generation/dispatch.service.js';
 import { QueueRuntime } from './shared/queue/queue-runtime.js';
 
 export async function startWorker(overrides: Partial<AppConfig> = {}) {
   const config = validateConfig({ ...loadConfig(), ...overrides });
-  if (!config.simulationProviderEnabled || config.nodeEnv === 'production')
-    throw new Error('Phase A worker only supports explicitly enabled local simulations');
+  if (!config.simulationProviderEnabled && !config.officialImages?.models.length)
+    throw new Error('No explicitly enabled image provider');
   // Worker owns shutdown ordering: stop scheduling, drain work, then close DB.
   const app = await createApp(config, { shutdownHooks: false });
   const db = app.get(DatabaseService);
   const store = app.get<ObjectStore>(ASSET_STORE);
   const runtime = new QueueRuntime(
     db,
-    new DispatchService(db, new WalletService(db), store, new ProviderRegistry(store)),
+    new DispatchService(db, new WalletService(db), store, buildProviderRegistry(config, store)),
     config.redisUrl,
     config.queueNamespace,
   );
@@ -41,7 +41,9 @@ export async function startWorker(overrides: Partial<AppConfig> = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   startWorker().then(
     (worker) => {
-      console.info('VIVIAI simulation worker started; no paid model calls enabled');
+      console.info(
+        'VIVIAI image worker started; provider availability follows server configuration',
+      );
       let stopping = false;
       for (const signal of ['SIGINT', 'SIGTERM'] as const)
         process.once(signal, () => {

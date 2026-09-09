@@ -15,6 +15,9 @@ export interface InputImage {
 }
 
 export interface NormalizedImageRequest {
+  channelId?: string;
+  providerRegion?: string;
+  pricing?: import('./pricing.js').PriceSnapshot;
   jobId: string;
   itemId: string;
   attemptId: string;
@@ -100,7 +103,7 @@ export interface ProviderFailure {
 export type SubmitResult =
   | CompletedResult
   | { kind: 'accepted'; ref: ProviderRef; pollAfterMs: number }
-  | { kind: 'rejected'; failure: ProviderFailure }
+  | { kind: 'rejected'; ref?: ProviderRef; failure: ProviderFailure }
   | { kind: 'unknown'; ref?: ProviderRef; failure: ProviderFailure };
 
 export type QueryResult =

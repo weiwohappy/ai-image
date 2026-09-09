@@ -47,9 +47,15 @@ export class GenerationService {
           throw new AppError(409, 'IDEMPOTENCY_CONFLICT', 'Key was used for a different request');
         return replay;
       }
-      this.catalog.requireAvailable();
+      const execution = this.catalog.execution(input);
       const quote = await tx.generationQuote.findFirst({ where: { id: quoteId, userId } });
       if (!quote) throw new AppError(404, 'NOT_FOUND', 'Quote not found');
+      if (digest(quote.execution ?? null) !== digest(execution ?? null))
+        throw new AppError(
+          409,
+          'MODEL_CONFIG_CHANGED',
+          'Model configuration changed; request a new quote',
+        );
       if (quote.consumedAt) throw new AppError(409, 'QUOTE_USED', 'Quote has already been used');
       if (quote.expiresAt.getTime() <= Date.now())
         throw new AppError(409, 'QUOTE_EXPIRED', 'Please request a new quote');
@@ -89,6 +95,7 @@ export class GenerationService {
           idempotencyKey: key,
           requestHash,
           input,
+          ...(quote.execution ? { execution: quote.execution } : {}),
           ...(retryOfJobId ? { retryOfJobId } : {}),
           queueDeadlineAt: new Date(now.getTime() + 300_000),
           deliveryDeadlineAt: new Date(now.getTime() + 900_000),

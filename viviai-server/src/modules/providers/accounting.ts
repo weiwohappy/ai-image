@@ -1,6 +1,7 @@
 import type { ProviderAttempt, Prisma } from '../../generated/prisma/client.js';
 import type { DbTransaction } from '../../shared/database/database.service.js';
-import type { BillingCertainty, UsageLine } from './contracts.js';
+import type { BillingCertainty, NormalizedImageRequest, UsageLine } from './contracts.js';
+import { actualCost } from './pricing.js';
 import type { Channel } from './registry.js';
 export const budgetKey = (scope: string, now: Date) => `${scope}:${now.toISOString().slice(0, 10)}`;
 export async function lockScopes(tx: DbTransaction, keys: string[]) {
@@ -76,6 +77,7 @@ export async function recordCost(
   attempt: ProviderAttempt,
   billing: BillingCertainty,
   lines: UsageLine[] = [],
+  usageComplete = false,
 ) {
   await lockScopes(tx, [`quota:${attempt.quotaScope}`, `budget:${attempt.budgetKey}`]);
   const current = await tx.providerAttempt.findUniqueOrThrow({
@@ -84,9 +86,27 @@ export async function recordCost(
   });
   // A later incomplete observation must never erase known accounting evidence.
   if (current.usage?.certainty !== 'unknown' && billing === 'unknown') return;
-  if (billing === 'unknown') return;
   if (current.usage?.certainty !== 'unknown') return;
-  const cost = billing === 'billable' ? current.estimatedCostMicros : 0n;
+  const normalized = current.request as unknown as NormalizedImageRequest;
+  const cost =
+    billing === 'not_billable'
+      ? 0n
+      : billing === 'billable'
+        ? current.usage?.simulated
+          ? current.estimatedCostMicros
+          : actualCost(normalized.pricing, lines, usageComplete)
+        : null;
+  if (cost === null) {
+    // Evidence of completion is not evidence of a zero bill. Retain budget reserve.
+    if (lines.length)
+      await tx.providerUsageRecord.update({
+        where: { attemptId: current.id },
+        data: { lines: lines as unknown as Prisma.InputJsonValue },
+      });
+    if (billing !== 'unknown')
+      await tx.providerAttempt.update({ where: { id: current.id }, data: { billing } });
+    return;
+  }
   await tx.providerBudget.update({
     where: { id: current.budgetKey },
     data: {

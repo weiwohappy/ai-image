@@ -5,12 +5,12 @@ export function providerContext(channel: Channel, requestKey: string): ProviderC
     channelId: channel.profile.id,
     credentialVersionRef: channel.profile.credentialVersion,
     capabilityVersionId: channel.profile.capabilityVersion,
-    baseUrl: 'simulation://local',
+    baseUrl: channel.profile.baseUrl ?? 'simulation://local',
     region: channel.profile.region,
     requestKey,
     connectTimeoutMs: 1000,
-    responseTimeoutMs: 30_000,
-    signal: AbortSignal.timeout(30_000),
+    responseTimeoutMs: channel.profile.responseTimeoutMs ?? 30_000,
+    signal: AbortSignal.timeout(channel.profile.responseTimeoutMs ?? 30_000),
   };
 }
 export function candidates(
@@ -29,7 +29,8 @@ export function candidates(
         p.productVersion !== request.productModelVersionId ||
         p.upstreamModelId !== request.upstreamModelId ||
         p.outputSpecId !== request.outputSpecId ||
-        p.region !== 'local' ||
+        p.region !== (request.providerRegion ?? 'local') ||
+        (request.channelId !== undefined && p.id !== request.channelId) ||
         p.width !== request.output.width ||
         p.height !== request.output.height ||
         !caps.executionModes.includes(request.executionMode) ||

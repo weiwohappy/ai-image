@@ -19,13 +19,12 @@ export class ProviderRegistry {
       throw new Error('Duplicate channel identity');
     for (const { profile } of this.channels)
       if (
-        !profile.simulated ||
         profile.estimatedCostMicros <= 0n ||
         profile.dailyBudgetMicros < 0n ||
         profile.concurrency < 1 ||
         profile.maxUnknown < 1
       )
-        throw new Error('Invalid simulation profile');
+        throw new Error('Invalid provider profile');
   }
   get(id: string): Channel {
     const channel = this.channels.find((c) => c.profile.id === id);

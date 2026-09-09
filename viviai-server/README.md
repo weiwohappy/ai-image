@@ -1,24 +1,25 @@
-# VIVIAI 后端 · 阶段 A
+# VIVIAI 后端
 
-这是可本地运行的后端基础闭环：真实账号、私有图片、报价、积分账本、任务、Outbox、Redis Worker 和两个模拟提供方。创作前端仍使用 Mock；付款页已独立连接后端，支付默认关闭。微信/支付宝接入与开通说明见 [PAYMENTS.md](PAYMENTS.md)。
+这是可本地运行的后端闭环：真实账号、私有图片、报价、积分账本、任务、Outbox、Redis Worker、两个模拟提供方及五款官方图片模型适配器。创作前端仍使用 Mock；付款页已独立连接后端，支付默认关闭。微信/支付宝说明见 [PAYMENTS.md](PAYMENTS.md)，官方模型配置及尺寸矩阵见 [OFFICIAL_MODELS.md](OFFICIAL_MODELS.md)。
 
-**当前不是生产就绪版本。** 本阶段不调用任何付费模型；独立代码审查因执行代理的账户用量限制尚未完成，不能把自动化测试通过等同于审查批准。
+**当前不是生产就绪版本。** 官方模型和支付默认关闭，测试不调用付费 API，真实 Key、模型账户权限和账单仍待联调。测试通过不代表已完成生产验收。
 
 ## 已实现与未实现
 
-| 范围                                               | 当前状态                                                           |
-| -------------------------------------------------- | ------------------------------------------------------------------ |
-| 账号、邮箱验证码、Cookie 会话、密码重置            | PostgreSQL 持久化；开发邮件写私有本地目录                          |
-| 上传、下载、收藏、重命名、回收站                   | 逐次校验所有者；删除后七天可恢复                                   |
-| 文生图 / 用户参考图复刻                            | 报价锁定参数及图片角色，复刻支持参考图 + 可选主体图                |
-| 积分                                               | bigint 批次守恒、每张冻结、交付后结算、失败释放、过期退款归入过期  |
-| 任务                                               | 幂等受理、列表详情、取消、失败项使用新报价重试                     |
-| 多渠道网关                                         | 统一协议、能力过滤、预算和项目级配额；同步 / 异步模拟渠道          |
-| 恢复                                               | 防重复派发、持久化上游尝试、查询、存储重试、超时退款、队列丢失恢复 |
-| 微信 Native / 支付宝电脑网站支付                   | 代码已接入，默认关闭；无商户凭据，未做真实联调                     |
-| 真实模型 API、订阅周期、现金退款、社区、工作流运行 | 未实现 / 未开通，属于后续阶段                                      |
+| 范围                                    | 当前状态                                                                         |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| 账号、邮箱验证码、Cookie 会话、密码重置 | PostgreSQL 持久化；开发邮件写私有本地目录                                        |
+| 上传、下载、收藏、重命名、回收站        | 逐次校验所有者；删除后七天可恢复                                                 |
+| 文生图 / 用户参考图复刻                 | 报价锁定参数及图片角色，复刻支持参考图 + 可选主体图                              |
+| 积分                                    | bigint 批次守恒、每张冻结、交付后结算、失败释放、过期退款归入过期                |
+| 任务                                    | 幂等受理、列表详情、取消、失败项使用新报价重试                                   |
+| 多渠道网关                              | 统一协议、精确型号/尺寸过滤、账号共享预算与配额；官方 Google / OpenAI 及模拟渠道 |
+| 恢复                                    | 防重复派发、持久化上游尝试、查询、存储重试、超时退款、队列丢失恢复               |
+| 微信 Native / 支付宝电脑网站支付        | 代码已接入，默认关闭；无商户凭据，未做真实联调                                   |
+| 真实模型 API                            | 五款型号代码已实现，默认关闭；真实 Key 与账单联调后补                            |
+| 订阅周期、现金退款、社区、工作流运行    | 未实现，属于后续阶段                                                             |
 
-唯一可用产品是 `simulation-image-v1`，展示为“模拟图片（非 AI）”：1024 × 1024 PNG，每张 30 测试积分，1–4 张。输出图上也标注 SIMULATION / NOT AI GENERATED。模拟成本只是测试单位，不能用于实际采购成本或利润测算。
+默认仅开放 `simulation-image-v1`，展示为“模拟图片（非 AI）”：1024 × 1024 PNG，每张 30 测试积分，1–4 张。输出图上也标注 SIMULATION / NOT AI GENERATED。模拟成本只是测试单位，不能用于实际采购成本或利润测算。官方型号须配置凭据、规格售价与采购价格后才出现在目录。
 
 ## 本地启动
 
@@ -69,24 +70,24 @@ NODE_ENV=development npm run seed:dev
 
 成功：`{data,message,requestId}`。错误另带顶层 `code`。浏览器写请求（包括登录）必须携带精确匹配 `CORS_ORIGINS` 的 `Origin`。仅两个精确支付回调路径例外，使用渠道验签和原生确认响应。登录后使用 Cookie；不要传 body.userId 作为身份。
 
-| 方法与路径（前缀 /api）                       | 用途                                                    |
-| --------------------------------------------- | ------------------------------------------------------- |
-| GET /health、/health/ready                    | 存活与 PostgreSQL 就绪；不表示外部模型已开通            |
-| POST /auth/send-code                          | `{email,purpose:"register"或"reset-password"}`          |
-| POST /auth/register                           | `{email,username,password,code}`                        |
-| POST /auth/login                              | `{account,password}`，account 可用邮箱或用户名          |
-| POST /auth/logout、/auth/reset-password       | 注销 / `{email,password,code}`                          |
-| GET /me、/point-ledger                        | 实际可用 / 冻结余额和最多 200 条最新流水                |
-| POST /remix-references                        | 已登录用户 multipart 的 file 字段                       |
-| GET /assets、/assets/:id、/assets/:id/content | 图片列表、元数据、私有原图                              |
-| PATCH /assets/:id                             | `{name?,favorite?}`                                     |
-| DELETE /assets/:id、POST /assets/:id/restore  | 回收站 / 七天内恢复                                     |
-| GET /models                                   | 仅显示当前启用的模拟产品                                |
-| POST /generation-quotes                       | 报价有效期五分钟，输入见下例                            |
-| POST /generation-tasks、/remix-tasks          | `{quoteId,input}`，必须有 Idempotency-Key               |
-| GET /generation-tasks、/generation-tasks/:id  | 当前用户任务；列表最多 100 条                           |
-| POST /generation-tasks/:id/cancel             | 排队项释放积分；执行项记录取消意图并向提供方确认        |
-| POST /generation-tasks/:id/retry              | 新 `{quoteId,input}` 和新 Key，count 等于原任务失败项数 |
+| 方法与路径（前缀 /api）                       | 用途                                                         |
+| --------------------------------------------- | ------------------------------------------------------------ |
+| GET /health、/health/ready                    | 存活与 PostgreSQL 就绪；不表示外部模型已开通                 |
+| POST /auth/send-code                          | `{email,purpose:"register"或"reset-password"}`               |
+| POST /auth/register                           | `{email,username,password,code}`                             |
+| POST /auth/login                              | `{account,password}`，account 可用邮箱或用户名               |
+| POST /auth/logout、/auth/reset-password       | 注销 / `{email,password,code}`                               |
+| GET /me、/point-ledger                        | 实际可用 / 冻结余额和最多 200 条最新流水                     |
+| POST /remix-references                        | 已登录用户 multipart 的 file 字段                            |
+| GET /assets、/assets/:id、/assets/:id/content | 图片列表、元数据、私有原图                                   |
+| PATCH /assets/:id                             | `{name?,favorite?}`                                          |
+| DELETE /assets/:id、POST /assets/:id/restore  | 回收站 / 七天内恢复                                          |
+| GET /models                                   | 当前启用产品；官方 specs 列出分辨率/比例的有效组合及精确像素 |
+| POST /generation-quotes                       | 报价有效期五分钟，输入见下例                                 |
+| POST /generation-tasks、/remix-tasks          | `{quoteId,input}`，必须有 Idempotency-Key                    |
+| GET /generation-tasks、/generation-tasks/:id  | 当前用户任务；列表最多 100 条                                |
+| POST /generation-tasks/:id/cancel             | 排队项释放积分；执行项记录取消意图并向提供方确认             |
+| POST /generation-tasks/:id/retry              | 新 `{quoteId,input}` 和新 Key，count 等于原任务失败项数      |
 
 报价输入例子（文生图用 source=create 并移除图片与 strength 字段）：
 
@@ -106,7 +107,7 @@ NODE_ENV=development npm run seed:dev
 }
 ```
 
-未知参数、未开通模型、非 1K 方图、外部用户图片会被拒绝，不静默降级。上传接受单帧 JPEG / PNG / WebP，输入 ≤5 MiB、解码 ≤4000 万像素；旋转到正确方向并去除 EXIF，存储 PNG。匿名上传暂不支持。
+未知参数、未开通模型、型号不支持或未定价的尺寸组合、外部用户图片会被拒绝，不静默降级。模拟型号仍仅支持 1K 方图。上传接受单帧 JPEG / PNG / WebP，输入及规范化文件 ≤5 MiB、解码 ≤4000 万像素；旋转到正确方向并去除 EXIF，存储 PNG。匿名上传暂不支持。
 
 任务公共状态：queued / processing / succeeded / partial / failed / cancelled；stage 额外说明 submitting、pending、unknown、materializing 等阶段。上游字段、对象存储 Key、密码/会话哈希不会进入公共 DTO。
 
@@ -117,11 +118,11 @@ NODE_ENV=development npm run seed:dev
 - 所有账务及任务修改先取得用户钱包事务锁，再操作 Item、预约和积分批次；渠道预算和配额使用固定顺序锁。
 - 每个 Item 最多两次提供方尝试。只有明确未受理且不收费的可重试错误才允许等价切换；内容拒绝不自动换渠道。
 - 提交状态失去租约变成 unknown，不直接重提。普通排队截止五分钟、交付截止十五分钟。
-- 图片字节校验并持久化之后，才在同一事务发布资产、扣分及标记成功；存储失败查询同一个 Attempt，不重新生成。
+- 图片字节校验并持久化之后，才在同一事务发布资产、扣分及标记成功；已存结果从 stagedKey 恢复，模拟渠道还能查询同一个 Attempt。官方同步请求首次存储失败不重新生成。
 - 超时退款不抹去供应商费用预留；迟到结果可以补记成本，不能重启终态或重新扣分。
 - unknown 成本可能长期保留预算；未知执行仍占用对应配额。当前没有运营对账 / 人工解锁后台，上线前必须补齐。
 - 已确认取消但费用未知时，释放执行名额，费用预留继续保留。
-- 模拟渠道的配置是版本化代码常量；动态渠道发布、凭据轮换、真实合同价格与利润准入尚需后续实现。
+- 模拟渠道配置为代码常量；官方配置在进程启动加载，报价/任务保存版本化快照。动态渠道发布、自动凭据轮换、利润准入与运营对账后台仍待实现。
 
 ## 验证
 
@@ -141,8 +142,8 @@ npm run format:check
 
 ## 上线前边界
 
-本机 Docker daemon 未启动，Docker 镜像/Compose 和真实 S3/SMTP 未完成运行验收；目前验证的是本地私有文件存储，S3 使用官方 SDK 但尚未联通真实桶。镜像默认 production；生产环境禁止模拟提供方、本地存储和开发邮件。阶段 A Worker 因没有真实适配器而拒绝生产启动。
+Docker 镜像/Compose 和真实 S3/SMTP 未完成运行验收；目前验证的是本地私有文件存储，S3 使用官方 SDK 但尚未联通真实桶。镜像默认 production；生产环境禁止模拟提供方、本地存储和开发邮件。Worker 必须至少有一个显式启用的提供方。
 
 本地存储只适用于受信任的开发目录，不能防御能任意修改该目录的其它本机进程。当前不执行图片物理清理，长期使用前需补充保留策略、备份与容量治理。列表暂为有界最新记录，不是完整分页后台。
 
-下一步应完成独立安全 / 并发审查、真实渠道适配与验收，然后单独迁移前端 API。当前前端重置密码流程还需传 purpose=reset-password；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。
+下一步应完成真实渠道/账单验收及运营对账能力，然后单独迁移前端 API。当前前端重置密码流程还需传 purpose=reset-password；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。
