@@ -18,12 +18,13 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
   app.useBodyParser('urlencoded', { extended: false, limit: config.formBodyLimit });
   app.use((request: Request, response: Response, next: NextFunction) => {
     const requestId = getRequestId(request);
+    // Express routes are case-insensitive; the security boundary must match them.
+    const isAdminRoute = /^\/api\/admin(?:\/|$)/i.test(request.path);
     response.setHeader('X-Request-Id', requestId);
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Referrer-Policy', 'no-referrer');
     response.setHeader('X-Frame-Options', 'DENY');
-    if (request.path === '/api/admin' || request.path.startsWith('/api/admin/'))
-      response.setHeader('Cache-Control', 'no-store');
+    if (isAdminRoute) response.setHeader('Cache-Control', 'no-store');
     if (
       !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
       !(
@@ -31,11 +32,9 @@ export function configureHttpSecurity(app: NestExpressApplication, config: AppCo
         ['/api/webhooks/payments/wechat', '/api/webhooks/payments/alipay'].includes(request.path)
       ) &&
       (!request.headers.origin ||
-        !(
-          request.path === '/api/admin' || request.path.startsWith('/api/admin/')
-            ? (config.admin?.origins ?? [])
-            : config.corsOrigins
-        ).includes(request.headers.origin))
+        !(isAdminRoute ? (config.admin?.origins ?? []) : config.corsOrigins).includes(
+          request.headers.origin,
+        ))
     ) {
       response.status(403).json({
         data: null,

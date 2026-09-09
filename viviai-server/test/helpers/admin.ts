@@ -13,7 +13,12 @@ export const adminOrigin = 'http://localhost:3010';
 export const testSecret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 export const adminConfig = { enabled: true, origins: [adminOrigin], encryptionKey: adminKey };
 export async function adminApp(db: TestDatabase, extra = {}) {
-  const app = await createApp({ databaseUrl: db.url, nodeEnv: 'test', admin: adminConfig, ...extra });
+  const app = await createApp({
+    databaseUrl: db.url,
+    nodeEnv: 'test',
+    admin: adminConfig,
+    ...extra,
+  });
   // Own one listener for concurrent requests; Supertest's per-request auto-close can race.
   await app.listen(0, '127.0.0.1');
   return app;

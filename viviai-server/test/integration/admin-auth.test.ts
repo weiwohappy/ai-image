@@ -44,6 +44,54 @@ describe('admin invitation and MFA', () => {
   });
   const post = (path: string) =>
     request(app.getHttpServer()).post(`/api/admin/${path}`).set('Origin', adminOrigin);
+  const mixedCaseRoutes = [
+    {
+      path: '/api/ADMIN/auth/login',
+      body: { email: 'case-boundary@example.test', password: 'test-only-long-password' },
+      status: 401,
+    },
+    {
+      path: '/API/ADMIN/auth/invitations/accept',
+      body: {
+        token: 'a'.repeat(43),
+        email: 'case-invite@example.test',
+        displayName: 'Case test',
+        password: 'test-only-long-password',
+      },
+      status: 401,
+    },
+    { path: '/Api/AdMiN/AUTH/MFA/VERIFY', body: { method: 'totp', code: '000000' }, status: 401 },
+    { path: '/API/admin/auth/LOGOUT', body: {}, status: 201 },
+    {
+      path: '/api/AdMiN/sensitive-access-grants',
+      body: { jobId: '00000000-0000-4000-8000-000000000001', reason: 'Investigate case boundary' },
+      status: 401,
+    },
+  ];
+  it.each(mixedCaseRoutes)(
+    'rejects consumer Origin on mixed-case admin route $path',
+    async ({ path, body }) => {
+      const response = await request(app.getHttpServer())
+        .post(path)
+        .set('Origin', 'http://localhost:3000')
+        .send(body);
+      expect(response.status).toBe(403);
+      expect(response.body.code).toBe('CSRF_ORIGIN');
+      expect(response.headers['cache-control']).toBe('no-store');
+    },
+  );
+  it.each(mixedCaseRoutes)(
+    'uses admin Origin allowlist on mixed-case admin route $path',
+    async ({ path, body, status }) => {
+      const response = await request(app.getHttpServer())
+        .post(path)
+        .set('Origin', adminOrigin)
+        .send(body);
+      expect(response.status).toBe(status);
+      expect(response.body.code).not.toBe('CSRF_ORIGIN');
+      expect(response.headers['cache-control']).toBe('no-store');
+    },
+  );
   it('requires a separate allowed Origin even for login and rejects unknown body fields', async () => {
     expect(
       (

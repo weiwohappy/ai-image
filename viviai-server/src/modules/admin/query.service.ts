@@ -285,22 +285,20 @@ export class AdminQueryService {
         'expiresAt',
         'createdAt',
       ),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          source: r.sourceId,
-          issued: String(r.issued),
-          available: String(r.available),
-          held: String(r.held),
-          consumed: String(r.consumed),
-          expired: String(r.expired),
-          revoked: String(r.revoked),
-          ...(costs ? { revenueMinor: String(r.revenueMinor) } : {}),
-          orderId: r.paymentOrderId,
-          expiresAt: r.expiresAt?.toISOString() ?? null,
-          createdAt: r.createdAt.toISOString(),
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        source: r.sourceId,
+        issued: String(r.issued),
+        available: String(r.available),
+        held: String(r.held),
+        consumed: String(r.consumed),
+        expired: String(r.expired),
+        revoked: String(r.revoked),
+        ...(costs ? { revenueMinor: String(r.revenueMinor) } : {}),
+        orderId: r.paymentOrderId,
+        expiresAt: r.expiresAt?.toISOString() ?? null,
+        createdAt: r.createdAt.toISOString(),
+      })),
       next(rows, q),
     );
   }
@@ -342,20 +340,18 @@ export class AdminQueryService {
         'revokedDelta',
         'createdAt',
       ),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          lotId: r.lotId,
-          type: r.type,
-          itemId: r.itemId,
-          availableDelta: String(r.availableDelta),
-          heldDelta: String(r.heldDelta),
-          consumedDelta: String(r.consumedDelta),
-          expiredDelta: String(r.expiredDelta),
-          revokedDelta: String(r.revokedDelta),
-          createdAt: r.createdAt.toISOString(),
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        lotId: r.lotId,
+        type: r.type,
+        itemId: r.itemId,
+        availableDelta: String(r.availableDelta),
+        heldDelta: String(r.heldDelta),
+        consumedDelta: String(r.consumedDelta),
+        expiredDelta: String(r.expiredDelta),
+        revokedDelta: String(r.revokedDelta),
+        createdAt: r.createdAt.toISOString(),
+      })),
       next(rows, q),
     );
   }
@@ -413,23 +409,21 @@ export class AdminQueryService {
         'expiresAt',
         'createdAt',
       ),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          userId: r.userId,
-          orderNo: r.orderNo,
-          planId: r.planId,
-          amountMinor: String(r.amountMinor),
-          currency: r.currency,
-          credits: String(r.credits),
-          channel: r.channel,
-          status: r.status,
-          paidAt: r.paidAt?.toISOString() ?? null,
-          fulfilledAt: r.fulfilledAt?.toISOString() ?? null,
-          expiresAt: r.expiresAt.toISOString(),
-          createdAt: r.createdAt.toISOString(),
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        userId: r.userId,
+        orderNo: r.orderNo,
+        planId: r.planId,
+        amountMinor: String(r.amountMinor),
+        currency: r.currency,
+        credits: String(r.credits),
+        channel: r.channel,
+        status: r.status,
+        paidAt: r.paidAt?.toISOString() ?? null,
+        fulfilledAt: r.fulfilledAt?.toISOString() ?? null,
+        expiresAt: r.expiresAt.toISOString(),
+        createdAt: r.createdAt.toISOString(),
+      })),
       next(rows, q),
       ['Cash refund, fees and net profit are unavailable in increment A.'],
     );
@@ -713,16 +707,14 @@ export class AdminQueryService {
     return table(
       'Models',
       cols('id', 'name', 'provider', 'enabled', 'maxImages', 'verification'),
-      page
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          name: r.name,
-          provider: r.provider,
-          enabled: r.enabled,
-          maxImages: r.maxImages,
-          verification: r.verification,
-        })),
+      page.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        name: r.name,
+        provider: r.provider,
+        enabled: r.enabled,
+        maxImages: r.maxImages,
+        verification: r.verification,
+      })),
       next(
         page.map((r) => ({ id: r.id, createdAt: new Date(0) })),
         q,
@@ -873,16 +865,14 @@ export class AdminQueryService {
     return table(
       'Administrators',
       cols('id', 'email', 'displayName', 'status', 'roles', 'createdAt'),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          email: maskEmail(r.email),
-          displayName: r.displayName,
-          status: r.status,
-          roles: r.roles.join(', '),
-          createdAt: r.createdAt.toISOString(),
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        email: maskEmail(r.email),
+        displayName: r.displayName,
+        status: r.status,
+        roles: r.roles.join(', '),
+        createdAt: r.createdAt.toISOString(),
+      })),
       next(rows, q),
     );
   }
@@ -927,16 +917,14 @@ export class AdminQueryService {
     return table(
       'Audit events',
       cols('id', 'accountId', 'action', 'resourceId', 'outcome', 'createdAt'),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          accountId: r.accountId,
-          action: r.action,
-          resourceId: r.resourceId,
-          outcome: r.outcome,
-          createdAt: r.createdAt.toISOString(),
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        action: r.action,
+        resourceId: r.resourceId,
+        outcome: r.outcome,
+        createdAt: r.createdAt.toISOString(),
+      })),
       next(rows, q),
     );
   }
@@ -983,19 +971,17 @@ export class AdminQueryService {
         'lastSeenAt',
         'resolved',
       ),
-      rows
-        .slice(0, q.limit)
-        .map((r) => ({
-          id: r.id,
-          category: r.category,
-          kind: r.kind,
-          resourceId: r.resourceId,
-          jobId: r.category === 'service' ? r.resourceId : null,
-          attemptId: r.kind === 'unknown_attempt' ? r.resourceId : null,
-          firstSeenAt: r.firstSeenAt.toISOString(),
-          lastSeenAt: r.lastSeenAt.toISOString(),
-          resolved: r.resolved,
-        })),
+      rows.slice(0, q.limit).map((r) => ({
+        id: r.id,
+        category: r.category,
+        kind: r.kind,
+        resourceId: r.resourceId,
+        jobId: r.category === 'service' ? r.resourceId : null,
+        attemptId: r.kind === 'unknown_attempt' ? r.resourceId : null,
+        firstSeenAt: r.firstSeenAt.toISOString(),
+        lastSeenAt: r.lastSeenAt.toISOString(),
+        resolved: r.resolved,
+      })),
       next(rows, q),
       ['Alert rules and notifications are unavailable in increment A.'],
     );
