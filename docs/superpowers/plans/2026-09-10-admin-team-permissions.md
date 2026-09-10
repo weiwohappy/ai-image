@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-10-admin-team-permissions-design.md` (approved 2026-09-10).
 
+**Execution status:** B1 completed and locally verified2026-09-10. Backend265/265, frontend90/90, both actual-client HTTP smokes and static/build checks pass. Task/full-increment reviews and the final invitation-recovery fix review pass. Private backup verified; local migration and exact first-account promotion applied; original passwords/MFA and second account preserved. Full acceptance record: spec§13. Existing worktree/preview retained, no merge/push/deploy.
+
 ## Global Constraints
 
 - 本批不实现上述业务写操作，不开放生产环境，不调用模型、支付或邮件服务。审计记录永远不可编辑或删除。
@@ -103,7 +105,7 @@ Mutation bodies: create invitation `{email,displayName,roles:string[],reason}`; 
 
 **Interfaces:** consumes existing `DatabaseService`, `DbTransaction`, `AdminContext`, `AdminAuditService`, `AdminAuthService.reauthorize`, crypto helpers and random-schema fixture. Produces all HTTP DTOs above and all spec §7 endpoints; public reset success is `{success:true}`. Exports `bootstrapSuperAdministrator(db: DatabaseService, config: AppConfig, input: {email:string; expectedVersion:number; reason:string; apply:boolean}): Promise<{accountId:string; roles:string[]; version:number; applied:boolean}>`.
 
-- [ ] **Step 1: Write failing HTTP authorization/creation tests using real app and database.** Add `teamFixture()` in test helpers returning `{db, app, superAdmin, manager, ordinary, post, close}`. It uses `createTestDatabase()`, `adminApp(db,{nodeEnv:'development',host:'127.0.0.1'})`, `fixtureAdmin` for super_admin/system_admin/support and an actor-specific HTTP call function. First assertion is successful creation, not source-text existence:
+- [x] **Step 1: Write failing HTTP authorization/creation tests using real app and database.** Add `teamFixture()` in test helpers returning `{db, app, superAdmin, manager, ordinary, post, close}`. It uses `createTestDatabase()`, `adminApp(db,{nodeEnv:'development',host:'127.0.0.1'})`, `fixtureAdmin` for super_admin/system_admin/support and an actor-specific HTTP call function. First assertion is successful creation, not source-text existence:
 
 ```ts
 const f = await teamFixture();
@@ -121,9 +123,9 @@ try {
 } finally { await f.close(); }
 ```
 
-- [ ] **Step 2: Run focused tests and record RED.** `npm test -- test/integration/admin-team.test.ts`; expect missing team route / absent super role behavior, not unrelated fixture syntax errors. Add incremental failure tests before each functional slice below.
+- [x] **Step 2: Run focused tests and record RED.** `npm test -- test/integration/admin-team.test.ts`; expect missing team route / absent super role behavior, not unrelated fixture syntax errors. Add incremental failure tests before each functional slice below.
 
-- [ ] **Step 3: Create migration and DB resolver, update existing auth consumers/fixtures.** Role tables, bindings, disabledAt/version, reset/receipt and audit metadata follow spec §6 exactly. Migration uses one transaction, validates every old role key before backfill, seeds built-ins, backfills account/invitation role bindings and removes old array columns. Validate legacy state using `lastTotpCounter`/active status evidence; no guessed activated state. The failure test migrates an isolated database only through the previous migration, inserts old records, then applies the new migration and reads resulting roles/status. An unknown old role must roll back without losing original arrays.
+- [x] **Step 3: Create migration and DB resolver, update existing auth consumers/fixtures.** Role tables, bindings, disabledAt/version, reset/receipt and audit metadata follow spec §6 exactly. Migration uses one transaction, validates every old role key before backfill, seeds built-ins, backfills account/invitation role bindings and removes old array columns. Validate legacy state using `lastTotpCounter`/active status evidence; no guessed activated state. The failure test migrates an isolated database only through the previous migration, inserts old records, then applies the new migration and reads resulting roles/status. An unknown old role must roll back without losing original arrays.
 
 Resolver returns empty/denied for no roles, deleted/unknown bindings or illegal extras; relational reads are authoritative. `permissions.ts` may retain a pure built-in template helper for bootstrap input validation but auth/query never read legacy arrays or independently resolve dynamic roles. Replace role-name data checks with spec §3.3 capability/underlying permission intersections.
 
@@ -133,7 +135,7 @@ const allowed = resolved.permissions.includes('dashboard.finance.read') &&
 expect(allowed).toBe(false); // Fixture contains costs.read only, not financial access.
 ```
 
-- [ ] **Step 4: Implement command boundary with tests for each gate and replay.** Shared command function reauthorizes current session inside a transaction, checks local gate and permission, acquires canonical global/email/invitation/ascending-account locks, checks idempotency, expectedVersion and target, performs mutation, audit and nonsecret receipt atomically. Explicit failure tests: test/staging/nonloopback writes 503, wrong Origin 403, unknown fields 400, ordinary member 403, system_admin editing owner 403, same key/different payload 409, stale version 409, self-disable 409. A recognized rejection audit persists separately without raw bodies.
+- [x] **Step 4: Implement command boundary with tests for each gate and replay.** Shared command function reauthorizes current session inside a transaction, checks local gate and permission, acquires canonical global/email/invitation/ascending-account locks, checks idempotency, expectedVersion and target, performs mutation, audit and nonsecret receipt atomically. Explicit failure tests: test/staging/nonloopback writes 503, wrong Origin 403, unknown fields 400, ordinary member 403, system_admin editing owner 403, same key/different payload 409, stale version 409, self-disable 409. A recognized rejection audit persists separately without raw bodies.
 
 ```ts
 async function withCurrentTeamSession<T>(context: AdminContext,
@@ -148,7 +150,7 @@ async function withCurrentTeamSession<T>(context: AdminContext,
 
 Here `lockTeam(tx: DbTransaction): Promise<void>` is the canonical shared advisory lock exported from `team/transaction.ts`; integrate ordering into existing login/accept/verify/resolve/bootstrap/revoke/sensitive flows to prevent reverse acquisition. No network work inside transactions. Audit metadata accepts only whitelisted keys. DisabledAt is checked in every credential/challenge/session acceptance path.
 
-- [ ] **Step 5: Implement member/invitation/role commands and DTO queries.** Enforce spec §3–5 including protected extras, safe built-ins, assignment delegation, own-name exception, last usable super-admin check, no super-admin invites, custom role dependency checks, consumed invitation immutability, role rotation and deletion reference constraints. Invitations are editable after expiry/revocation until consumed, but role edits revoke links; regenerate revalidates role references. Use 30/default100/max stable keyset pagination and exact email filtering. Grant mutation bumps target version/authVersion and invalidates sessions, challenges and sensitive grants. Custom permission edits invalidate affected accounts and version so stale concurrent member changes cannot overwrite state.
+- [x] **Step 5: Implement member/invitation/role commands and DTO queries.** Enforce spec §3–5 including protected extras, safe built-ins, assignment delegation, own-name exception, last usable super-admin check, no super-admin invites, custom role dependency checks, consumed invitation immutability, role rotation and deletion reference constraints. Invitations are editable after expiry/revocation until consumed, but role edits revoke links; regenerate revalidates role references. Use 30/default100/max stable keyset pagination and exact email filtering. Grant mutation bumps target version/authVersion and invalidates sessions, challenges and sensitive grants. Custom permission edits invalidate affected accounts and version so stale concurrent member changes cannot overwrite state.
 
 ```ts
 const results = await Promise.all([
@@ -161,7 +163,7 @@ expect(await countUsableSupers(f.db)).toBe(1);
 
 `countUsableSupers` is test-only: count active/non-disabled accounts with super_admin binding; use explicit local allowlisted pending fixture separately. Add direct tests for role edit versus member assignment, invitation rotation/role edit versus acceptance, and stale-session write after authorization removal.
 
-- [ ] **Step 6: Implement invitation links and password reset without SMTP.** Use trusted configured admin Origin; 24h invite and 30m reset tokens hashed at rest. Generate link only once, store sanitized receipt; subsequent replay returns linkUnavailable. Reset issuance revokes sessions/challenges/older reset links, rejects disabled/self/protected targets appropriately. Accept validates matching normalized email and current password policy, atomically consumes token and hashes password, bumps authVersion/version, revokes all sessions/grants, returns no session. MFA secret/counter/recovery codes untouched. Anonymous endpoint has durable credential/IP rate limiting and Origin validation.
+- [x] **Step 6: Implement invitation links and password reset without SMTP.** Use trusted configured admin Origin; 24h invite and 30m reset tokens hashed at rest. Generate link only once, store sanitized receipt; subsequent replay returns linkUnavailable. Reset issuance revokes sessions/challenges/older reset links, rejects disabled/self/protected targets appropriately. Accept validates matching normalized email and current password policy, atomically consumes token and hashes password, bumps authVersion/version, revokes all sessions/grants, returns no session. MFA secret/counter/recovery codes untouched. Anonymous endpoint has durable credential/IP rate limiting and Origin validation.
 
 ```ts
 const issued = await f.post(f.superAdmin.cookie, `/team/members/${f.ordinary.account.id}/password-resets`,
@@ -175,9 +177,9 @@ expect((await request(f.app.getHttpServer()).post('/api/admin/auth/password-rese
   .set('Origin',adminOrigin).send(reset)).status).toBe(400);
 ```
 
-- [ ] **Step 7: Implement dry-run/apply first-super CLI.** No staff constants; require exact normalized email, expectedVersion, reason, valid local config and usable target, and no current super binding. Preserve roles/password/MFA/extras; apply only adds binding, bumps versions, invalidates sessions and audits offline actor as null. Dry-run never mutates, second apply does not silently repeat. Unit/integration CLI service tests use fixtures only. Register `admin:super-admin` script and document arguments and real-mail-disabled invitation behavior.
+- [x] **Step 7: Implement dry-run/apply first-super CLI.** No staff constants; require exact normalized email, expectedVersion, reason, valid local config and usable target, and no current super binding. Preserve roles/password/MFA/extras; apply only adds binding, bumps versions, invalidates sessions and audits offline actor as null. Dry-run never mutates, second apply does not silently repeat. Unit/integration CLI service tests use fixtures only. Register `admin:super-admin` script and document arguments and real-mail-disabled invitation behavior.
 
-- [ ] **Step 8: Run all backend checks and self-review; commit only backend files.** Focused tests first; then `npm test`, `npm run typecheck`, `npm run format:check`, `npm run build`. Inspect migration, sensitive response snapshots, role data scopes and lock ordering. Write RED/GREEN and exact commands/results to task report. Do not migrate public DB or restart user's server here.
+- [x] **Step 8: Run all backend checks and self-review; commit only backend files.** Focused tests first; then `npm test`, `npm run typecheck`, `npm run format:check`, `npm run build`. Inspect migration, sensitive response snapshots, role data scopes and lock ordering. Write RED/GREEN and exact commands/results to task report. Do not migrate public DB or restart user's server here.
 
 ## Task 2: Working member and role management frontend
 
@@ -185,7 +187,7 @@ expect((await request(f.app.getHttpServer()).post('/api/admin/auth/password-rese
 
 **Interfaces:** consumes Task 1 DTO/endpoints above. `AdminClient.command<T>(method:'POST'|'PATCH'|'PUT'|'DELETE',path:string,body:unknown,idempotencyKey:string,signal?:AbortSignal):Promise<T>`; preserve existing `post` authentication semantics. Export `TeamPage({actor,client,onPermissionsChanged})`, `RolesPage({actor,client,onPermissionsChanged})`, and `PasswordResetScreen({client,link,onDone,localTestPasswords,environment})`. `onPermissionsChanged:()=>Promise<void>` refreshes `/me` and invalidates prior cached data; unauthorized still uses existing callback.
 
-- [ ] **Step 1: Write RED client and component tests.** Real AdminClient with fetch-level controlled envelopes; installed React components, not mocked sidebar/forms. Verify body/header/method, disabled buttons/reason, Chinese validation, data reload after persisted success, retained 409 input, and same-key network retry.
+- [x] **Step 1: Write RED client and component tests.** Real AdminClient with fetch-level controlled envelopes; installed React components, not mocked sidebar/forms. Verify body/header/method, disabled buttons/reason, Chinese validation, data reload after persisted success, retained 409 input, and same-key network retry.
 
 ```tsx
 render(<TeamPage actor={actor} client={client} onPermissionsChanged={async()=>{}} />);
@@ -200,7 +202,7 @@ expect(await screen.findByText('邀请已创建，请复制链接发给同事'))
 
 Test fixtures use literal Task 1 DTO envelopes and distinguish endpoints/headers/bodies; returned success changes fixture server state only on valid command to make subsequent query assertions meaningful. Run `npm test -- src/http.test.ts src/team/TeamPage.test.tsx` and record RED.
 
-- [ ] **Step 2: Add typed command transport and form lifecycle.** AdminError carries optional known code; preserve requestId sanitization/no raw message display. Reuse same key only for identical failed/unknown submission; changing form resets key. Unknown-result mode freezes submitted inputs, permits exact retry or cancel-with-warning, never silently issues new key. 409 retains inputs but requires reloading current object/version before resubmit. 403 refreshes actor/permissions; 401 existing clear cache path; 503 explains local writes unavailable.
+- [x] **Step 2: Add typed command transport and form lifecycle.** AdminError carries optional known code; preserve requestId sanitization/no raw message display. Reuse same key only for identical failed/unknown submission; changing form resets key. Unknown-result mode freezes submitted inputs, permits exact retry or cancel-with-warning, never silently issues new key. 409 retains inputs but requires reloading current object/version before resubmit. 403 refreshes actor/permissions; 401 existing clear cache path; 503 explains local writes unavailable.
 
 ```ts
 const submission = { key: crypto.randomUUID(), method, path, body };
@@ -210,9 +212,9 @@ const result = await client.command<TeamMutationResult>(
 // Save submission in component memory before dispatch; reuse unchanged on unknown-result retry.
 ```
 
-- [ ] **Step 3: Implement members and invitations surfaces.** Use existing Sheet for create/edit/confirmation, Tabs for member/invite tabs, stable pagination and exact email/status/role filtering. Catalog assignableRoles powers choices and permission summaries. Always honor returned allowedActions; explain self/protected/built-in boundaries. Member identity email read-only; separate role assignment from name edit. Invitation row supports edit/rotate/revoke and shows real activation/expiry state. One-time LinkResult supports clipboard and manual selection, no persistence, no fictitious email sent toast.
+- [x] **Step 3: Implement members and invitations surfaces.** Use existing Sheet for create/edit/confirmation, Tabs for member/invite tabs, stable pagination and exact email/status/role filtering. Catalog assignableRoles powers choices and permission summaries. Always honor returned allowedActions; explain self/protected/built-in boundaries. Member identity email read-only; separate role assignment from name edit. Invitation row supports edit/rotate/revoke and shows real activation/expiry state. One-time LinkResult supports clipboard and manual selection, no persistence, no fictitious email sent toast.
 
-- [ ] **Step 4: Implement role list/editor/detail.** Display built-ins as protected read-only, human names and actual permissions; create/edit custom roles uses permission catalog customRoleAllowed and recursive dependency closure, read-only key after creation, mandatory reason. Removing a dependency removes dependent choices or clearly blocks save. Show affected member/invitation counts, reject deletion-in-use and preserve 409 form.
+- [x] **Step 4: Implement role list/editor/detail.** Display built-ins as protected read-only, human names and actual permissions; create/edit custom roles uses permission catalog customRoleAllowed and recursive dependency closure, read-only key after creation, mandatory reason. Removing a dependency removes dependent choices or clearly blocks save. Show affected member/invitation counts, reject deletion-in-use and preserve 409 form.
 
 ```ts
 function includeDependencies(selected: Set<string>, key: string, catalog: PermissionEntry[]) {
@@ -225,11 +227,11 @@ function includeDependencies(selected: Set<string>, key: string, catalog: Permis
 
 Implement this pure helper in `RoleEditor.tsx` (or adjacent focused helper if exported test needs it); no runtime ability to select noncustom permissions.
 
-- [ ] **Step 5: Implement invitation/reset fragment flow and wire shell.** `readAuthLink(hash:string):{kind:'invite'|'reset';token:string;email:string;displayName?:string}|null` parses only exact known paths and expected token format. Read into memory once, immediately replace URL fragment without token. Extend existing invite form to prefill nonauthoritative email/name; keep server-bound roles. Password reset validates new password/repeat, uses anonymous endpoint, clears secret/password after success, returns to login without granting a session. Preserve MFA and local exceptions and status-refresh behavior.
+- [x] **Step 5: Implement invitation/reset fragment flow and wire shell.** `readAuthLink(hash:string):{kind:'invite'|'reset';token:string;email:string;displayName?:string}|null` parses only exact known paths and expected token format. Read into memory once, immediately replace URL fragment without token. Extend existing invite form to prefill nonauthoritative email/name; keep server-bound roles. Password reset validates new password/repeat, uses anonymous endpoint, clears secret/password after success, returns to login without granting a session. Preserve MFA and local exceptions and status-refresh behavior.
 
 Wire `/administrators` to TeamPage and `/roles` to RolesPage; other ResourcePage behavior unchanged. Role navigation uses roles.read, labels add super_admin; header uses actual stage/write availability. Button/dialog text uses current blue/white theme and no unrelated redesign. Team errors do not hide the existing readonly business menus.
 
-- [ ] **Step 6: Validate all frontend states and regression tests; commit explicit files.** `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. Include loading/empty/error/readonly catalog, last-super denial, clipboard failure, role dependency and unknown-result tests. Preserve existing auth tests; update fixtures to include new role read permission only where the role truly gains it.
+- [x] **Step 6: Validate all frontend states and regression tests; commit explicit files.** `npm test`, `npm run typecheck`, `npm run lint`, `npm run build`. Include loading/empty/error/readonly catalog, last-super denial, clipboard failure, role dependency and unknown-result tests. Preserve existing auth tests; update fixtures to include new role read permission only where the role truly gains it.
 
 ## Task 3: Full local integration, reviewed migration and exact account promotion
 
@@ -237,7 +239,7 @@ Wire `/administrators` to TeamPage and `/roles` to RolesPage; other ResourcePage
 
 **Interfaces:** consumes `bootstrapSuperAdministrator`, Task 1 HTTP contracts and actual frontend `AdminClient`; node smoke imports the actual client through existing tsx harness. Existing server launch reads private MFA key without output.
 
-- [ ] **Step 1: Write failing actual-client smoke against isolated app.** Create random schema, active super/system/support fixtures, use a cookie-preserving fetch wrapper equivalent to existing admin-http-smoke; never print raw cookies/links/passwords. Assert management creation→GET readback→role assignment→disabled session401→enable→password-reset single use→custom-role in-use409→unbind/delete. Include real MFA invite activation with test-only TOTP secret, and exact local exception login fixture. Exit nonzero for any unexpected status and clean only owned schema.
+- [x] **Step 1: Write failing actual-client smoke against isolated app.** Create random schema, active super/system/support fixtures, use a cookie-preserving fetch wrapper equivalent to existing admin-http-smoke; never print raw cookies/links/passwords. Assert management creation→GET readback→role assignment→disabled session401→enable→password-reset single use→custom-role in-use409→unbind/delete. Include real MFA invite activation with test-only TOTP secret, and exact local exception login fixture. Exit nonzero for any unexpected status and clean only owned schema.
 
 ```ts
 const created = await client.command<TeamMutationResult>('POST','/team/invitations',
@@ -247,13 +249,13 @@ assert.equal(list.items[0].id, created.resourceId);
 assert.equal(list.items[0].status,'pending');
 ```
 
-- [ ] **Step 2: Run integrated checks and independent task/full-increment review.** Test against actual client, not duplicate HTTP helpers only. Run full backend/frontend suites and typecheck/lint/build after all amendments, record counts. Scope independent review to baseline `f0c77a5` through final B1 implementation, including interfaces, migration/rollback, revocation/races and UI unknown outcomes. Correct required findings before live migration.
+- [x] **Step 2: Run integrated checks and independent task/full-increment review.** Test against actual client, not duplicate HTTP helpers only. Run full backend/frontend suites and typecheck/lint/build after all amendments, record counts. Scope independent review to baseline `f0c77a5` through final B1 implementation, including interfaces, migration/rollback, revocation/races and UI unknown outcomes. Correct required findings before live migration.
 
-- [ ] **Step 3: Prepare local maintenance safely.** Verify exact frontend3010/backend3011 URLs from known runtime, confirm database points to local55432/viviai_dev, no active payment/model calls. Snapshot migration status and the two staff identities/roles/status/version without secrets. Generate a private0600 PostgreSQL backup with local pg_dump into a uniquely created ignored directory; verify command exit and archive listing before proceeding. Stop only owned admin backend session. Do not kill unrelated listeners or delete runtime key material.
+- [x] **Step 3: Prepare local maintenance safely.** Verify exact frontend3010/backend3011 URLs from known runtime, confirm database points to local55432/viviai_dev, no active payment/model calls. Snapshot migration status and the two staff identities/roles/status/version without secrets. Generate a private0600 PostgreSQL backup with local pg_dump into a uniquely created ignored directory; verify command exit and archive listing before proceeding. Stop only owned admin backend session. Do not kill unrelated listeners or delete runtime key material.
 
-- [ ] **Step 4: Apply reviewed migration and promote exact account.** Apply `prisma migrate deploy` to the verified local URL only after backup/maintenance. Start updated owned admin backend using the retained private launcher/config; no new credentials. Invoke the audited promotion service dry-run for weiys01@126.com at its actual version, inspect expected identity/roles, then apply once. No account password/status/MFA/extras changes; preserve second account. If migration fails transactionally, restore old process/code compatibility without destructive improvisation; stop and report if recovery is uncertain.
+- [x] **Step 4: Apply reviewed migration and promote exact account.** Apply `prisma migrate deploy` to the verified local URL only after backup/maintenance. Start updated owned admin backend using the retained private launcher/config; no new credentials. Invoke the audited promotion service dry-run for weiys01@126.com at its actual version, inspect expected identity/roles, then apply once. No account password/status/MFA/extras changes; preserve second account. If migration fails transactionally, restore old process/code compatibility without destructive improvisation; stop and report if recovery is uncertain.
 
-- [ ] **Step 5: Read-only live validation and user handoff.** Login using already authorized existing password in memory, check `/me`, all ten readable modules and team permissions/catalog for first account; second account retains system_admin and can manage ordinary targets but not super. Do not create real invitations/resets as a smoke test. Log out diagnostic sessions and verify401. Confirm frontend3010 responds using lightweight HTTP and preserve same preview. Report which menus are now writable, residual readonly modules, tests and any unresolved constraints. Commit only owned source/doc files; keep worktree and preview, no merge/push/deploy.
+- [x] **Step 5: Read-only live validation and user handoff.** Login using already authorized existing password in memory, check `/me`, all ten readable modules and team permissions/catalog for first account; second account retains system_admin and can manage ordinary targets but not super. Do not create real invitations/resets as a smoke test. Log out diagnostic sessions and verify401. Confirm frontend3010 responds using lightweight HTTP and preserve same preview. Report which menus are now writable, residual readonly modules, tests and any unresolved constraints. Commit only owned source/doc files; keep worktree and preview, no merge/push/deploy.
 
 ## Plan self-review
 
