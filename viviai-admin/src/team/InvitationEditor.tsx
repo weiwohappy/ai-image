@@ -1,10 +1,15 @@
-import { useState } from 'react';
-import { Input } from '@/components/ui/input';
-import type { AdminClient } from '../http';
-import type { PermissionCatalog, TeamAction, TeamInvitation } from './contracts';
-import { ActionForm } from './ActionForm';
-import { RoleChoices } from './presentation';
-import { FormField, type FieldErrors } from './FormField';
+import { useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import type { AdminClient } from "../http";
+import type {
+  PermissionCatalog,
+  TeamAction,
+  TeamInvitation,
+} from "./contracts";
+import { ActionForm } from "./ActionForm";
+import { RoleChoices } from "./presentation";
+import { FormField, type FieldErrors } from "./FormField";
 export function InvitationEditor({
   invitation,
   action,
@@ -22,34 +27,40 @@ export function InvitationEditor({
   onChanged: () => void;
   onPermissionsChanged: () => Promise<void>;
 }) {
-  const [email, setEmail] = useState(invitation?.email ?? '');
-  const [name, setName] = useState(invitation?.displayName ?? '');
+  const [email, setEmail] = useState(invitation?.email ?? "");
+  const [name, setName] = useState(invitation?.displayName ?? "");
   const [roles, setRoles] = useState(invitation?.roles.map((r) => r.key) ?? []);
+  const assignableRoles = catalog.assignableRoles.filter(
+    (role) => role.key !== "super_admin",
+  );
+  const unavailableRoles = roles.filter(
+    (key) => !assignableRoles.some((role) => role.key === key),
+  );
   const create = !invitation;
-  const edit = action === 'edit';
+  const edit = action === "edit";
   const labels = create
-    ? ['新增成员', '创建邀请', '邀请已创建，请复制链接发给同事']
+    ? ["新增成员", "创建邀请", "邀请已创建，请复制链接发给同事"]
     : edit
-      ? ['编辑邀请', '保存邀请', '邀请已更新；角色变化后请重新生成链接']
-      : action === 'rotate'
-        ? ['重新生成邀请', '重新生成链接', '邀请链接已重新生成，旧链接已失效']
-        : ['撤销邀请', '确认撤销', '邀请已撤销'];
+      ? ["编辑邀请", "保存邀请", "邀请已更新；角色变化后请重新生成链接"]
+      : action === "rotate"
+        ? ["重新生成邀请", "重新生成链接", "邀请链接已重新生成，旧链接已失效"]
+        : ["撤销邀请", "确认撤销", "邀请已撤销"];
   return (
     <ActionForm
       client={client}
       title={labels[0]}
       description={
         create
-          ? '通过邀请链接加入内部团队，不会自动发送邮件。'
+          ? "通过邀请链接加入内部团队，不会自动发送邮件。"
           : `${invitation.displayName}（${invitation.email}）`
       }
       submitLabel={labels[1]}
       successText={labels[2]}
-      method={edit ? 'PATCH' : 'POST'}
+      method={edit ? "PATCH" : "POST"}
       path={
         create
-          ? '/team/invitations'
-          : `/team/invitations/${invitation.id}${edit ? '' : `/${action}`}`
+          ? "/team/invitations"
+          : `/team/invitations/${invitation.id}${edit ? "" : `/${action}`}`
       }
       initialVersion={invitation?.version}
       onClose={onClose}
@@ -61,11 +72,13 @@ export function InvitationEditor({
               const page = await client.get<{ items: TeamInvitation[] }>(
                 `/team/invitations?q=${encodeURIComponent(invitation.email)}&limit=30`,
               );
-              const current = page.items.find((row) => row.id === invitation.id);
-              if (!current) throw new Error('Record unavailable');
+              const current = page.items.find(
+                (row) => row.id === invitation.id,
+              );
+              if (!current) throw new Error("Record unavailable");
               return {
                 version: current.version,
-                summary: `${current.displayName}，${current.roles.map((r) => r.name).join('、')}`,
+                summary: `${current.displayName}，${current.roles.map((r) => r.name).join("、")}`,
               };
             }
           : undefined
@@ -73,14 +86,21 @@ export function InvitationEditor({
       validate={() => {
         if (!create && !edit) return;
         const errors: FieldErrors = {};
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) errors.email = '请填写有效的工作邮箱';
-        if (!name.trim()) errors.displayName = '请填写显示名称';
-        if (!roles.length) errors.roles = '请至少选择一个角色';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()))
+          errors.email = "请填写有效的工作邮箱";
+        if (!name.trim()) errors.displayName = "请填写显示名称";
+        if (!roles.length) errors.roles = "请至少选择一个角色";
+        if (unavailableRoles.length)
+          errors.roles = "请先移除不可分配的历史角色";
         return errors;
       }}
       payload={() =>
         create
-          ? { email: email.trim().toLowerCase(), displayName: name.trim(), roles }
+          ? {
+              email: email.trim().toLowerCase(),
+              displayName: name.trim(),
+              roles,
+            }
           : edit
             ? { displayName: name.trim(), roles }
             : {}
@@ -98,23 +118,58 @@ export function InvitationEditor({
             />
           </FormField>
           <FormField name="displayName" label="显示名称">
-            <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
+            <Input
+              value={name}
+              maxLength={80}
+              onChange={(e) => setName(e.target.value)}
+            />
           </FormField>
           <RoleChoices
-            roles={catalog.assignableRoles.filter((r) => r.key !== 'super_admin')}
+            roles={assignableRoles}
             selected={roles}
             onChange={setRoles}
             permissions={catalog.permissions}
           />
+          {unavailableRoles.length > 0 && (
+            <div className="notices stack">
+              <p>
+                以下历史角色当前不可分配，请明确移除后选择替代角色。不会自动删除原有选择。
+              </p>
+              {unavailableRoles.map((key) => {
+                const label =
+                  invitation?.roles.find((role) => role.key === key)?.name ??
+                  key;
+                return (
+                  <div className="team-form-actions" key={key}>
+                    <span>{label}（不可分配）</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-label={`移除角色 ${label}`}
+                      onClick={() =>
+                        setRoles((selected) =>
+                          selected.filter((role) => role !== key),
+                        )
+                      }
+                    >
+                      移除
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <p className="notices">
-            新成员需自行设置至少 12 位密码并绑定身份验证器。现有两位本地测试账号的简化登录不变。
+            新成员需自行设置至少 12
+            位密码并绑定身份验证器。现有两位本地测试账号的简化登录不变。
           </p>
         </>
       ) : (
         <p className="notices">
-          {action === 'rotate'
-            ? '旧链接将立即失效，新链接有效期为 24 小时。'
-            : '该链接将立即失效，受邀人无法继续使用它激活账号。'}
+          {action === "rotate"
+            ? "旧链接将立即失效，新链接有效期为 24 小时。"
+            : "该链接将立即失效，受邀人无法继续使用它激活账号。"}
         </p>
       )}
     </ActionForm>
