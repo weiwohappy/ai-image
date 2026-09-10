@@ -1,4 +1,5 @@
 import type { ObjectStore } from '../../assets/object-store.js';
+import { OFFICIAL_PROTOCOLS } from '../official-models.js';
 import type {
   NormalizedImageRequest,
   ProviderAdapter,
@@ -36,7 +37,7 @@ const GOOGLE_MODELS = [
 const GOOGLE_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 
 export class GoogleImageProvider implements ProviderAdapter {
-  readonly protocol = 'google-interactions-v1';
+  readonly protocol = OFFICIAL_PROTOCOLS.google;
 
   constructor(
     private readonly store: ObjectStore,

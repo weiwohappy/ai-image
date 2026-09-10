@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   OFFICIAL_MODELS,
+  OFFICIAL_PROTOCOLS,
   officialSpecs,
   getOfficialOutputSpec,
 } from '../src/modules/providers/official-models.js';
@@ -113,11 +114,63 @@ describe('official model specifications and fail-closed configuration', () => {
       upstreamModelId: 'gpt-image-2',
       width: 3840,
       height: 2160,
-      unitCredits: 400,
       pricing: { version: 'test-not-real-prices' },
     });
     expect(JSON.stringify(snapshot)).not.toContain('offline-key');
+    expect(snapshot).not.toHaveProperty('unitCredits');
     expect(officialSnapshot(config, 'gpt-image-2', '4K', '1:1')).toBeUndefined();
+  });
+  it('sales values cannot change execution identity; explicit runtime resolutions need no sales', () => {
+    const settings = fixtureConfig();
+    const load = () =>
+      loadOfficialConfig({
+        OFFICIAL_IMAGE_MODELS_JSON: JSON.stringify(settings),
+        OPENAI_API_KEY: 'offline-key',
+      });
+    const first = officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')!;
+    settings.models[0]!.sales['1K'] = 200;
+    expect(officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')).toEqual(first);
+    settings.accounts.openai.credentialVersion = 'v2';
+    expect(officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')!.channelId).not.toBe(
+      first.channelId,
+    );
+    const explicit = {
+      ...settings,
+      models: [{ ...settings.models[0], sales: undefined, enabledResolutions: ['1K'] }],
+    };
+    const configured = loadOfficialConfig({
+      OFFICIAL_IMAGE_MODELS_JSON: JSON.stringify(explicit),
+      OPENAI_API_KEY: 'offline-key',
+    });
+    expect(officialSnapshot(configured, 'gpt-image-2', '1K', '1:1')).toBeDefined();
+    expect(officialSnapshot(configured, 'gpt-image-2', '2K', '1:1')).toBeUndefined();
+  });
+  it('includes protocol in execution snapshots and keeps output and cost changes in identity', () => {
+    const settings = fixtureConfig();
+    const load = () =>
+      loadOfficialConfig({
+        OFFICIAL_IMAGE_MODELS_JSON: JSON.stringify(settings),
+        OPENAI_API_KEY: 'offline-key',
+      });
+    const original = officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')!;
+    expect(original).toMatchObject({ protocol: 'openai-images-v1' });
+    const protocols: Record<string, string> = OFFICIAL_PROTOCOLS;
+    const protocol = protocols.openai!;
+    try {
+      protocols.openai = 'future-reviewed-protocol';
+      expect(officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')!.channelId).not.toBe(
+        original.channelId,
+      );
+    } finally {
+      protocols.openai = protocol;
+    }
+    expect(officialSnapshot(load(), 'gpt-image-2', '1K', '16:9')!.channelId).not.toBe(
+      original.channelId,
+    );
+    settings.models[0]!.reserveCostMicros = '999999';
+    expect(officialSnapshot(load(), 'gpt-image-2', '1K', '1:1')!.channelId).not.toBe(
+      original.channelId,
+    );
   });
   it('calculates integer USD microcost only with complete accounted usage', () => {
     const pricing = fixtureConfig().models[0]!.pricing;

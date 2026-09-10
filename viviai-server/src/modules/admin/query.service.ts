@@ -722,10 +722,10 @@ export class AdminQueryService {
       ['Enabled indicates local configuration only; it is not proof of live verification.'],
     );
   }
-  model(actor: AdminActor, modelId: string) {
+  async model(actor: AdminActor, modelId: string) {
     const row = this.models(actor, { q: modelId }).rows[0];
     if (!row) throw missing();
-    const config = this.config.officialImages?.models.find((m) => m.modelId === modelId);
+    const prices = await this.db.client.modelCreditPrice.findMany({ where: { modelId } });
     return detail(
       'Model definition',
       row,
@@ -739,8 +739,9 @@ export class AdminQueryService {
             ratio: s.ratio,
             width: s.width,
             height: s.height,
-            enabled: !!config?.sales[s.resolution],
-            credits: config?.sales[s.resolution]?.toString() ?? null,
+            enabled: prices.find((p) => p.resolution === s.resolution)?.enabled ?? false,
+            credits:
+              prices.find((p) => p.resolution === s.resolution)?.unitCredits.toString() ?? null,
           })),
         ),
       ],

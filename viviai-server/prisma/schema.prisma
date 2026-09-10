@@ -86,6 +86,7 @@ model GenerationQuote {
   user User @relation(fields: [userId], references: [id], onDelete: Restrict)
   input Json
   execution Json?
+  creditPriceSnapshot Json?
   inputHash String
   productVersion String
   unitCredits BigInt
@@ -108,6 +109,7 @@ model GenerationJob {
   requestHash String
   input Json
   execution Json?
+  creditPriceSnapshot Json?
   cancelRequested Boolean @default(false)
   retryOfJobId String? @db.Uuid
   createdAt DateTime @default(now()) @db.Timestamptz(6)
@@ -328,11 +330,25 @@ model AdminAccount {
   updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
   disabledAt DateTime? @db.Timestamptz(6)
   passwordResets AdminPasswordReset[]
+  creditPrices ModelCreditPrice[]
   extraPermissions String[] @default([])
   encryptedMfaSecret String
   lastTotpCounter BigInt?
   authVersion Int @default(1)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model ModelCreditPrice {
+  id String @id @default(uuid()) @db.Uuid
+  modelId String @db.VarChar(80)
+  resolution String @db.VarChar(16)
+  unitCredits Int
+  enabled Boolean
+  version Int @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  updatedBy String? @db.Uuid
+  administrator AdminAccount? @relation(fields: [updatedBy], references: [id], onDelete: Restrict)
+  @@unique([modelId, resolution])
 }
 model AdminInvitation {
   id String @id @default(uuid()) @db.Uuid

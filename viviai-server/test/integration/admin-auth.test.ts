@@ -26,6 +26,7 @@ describe('isolated admin HTTP boundary', () => {
       environment: 'test',
       stage: 'B1',
       teamWritesEnabled: false,
+      modelPricingWritesEnabled: false,
     });
   });
   it('does not let a consumer cookie authorize admin queries', async () => {

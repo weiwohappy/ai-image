@@ -7,6 +7,7 @@ import { safeInteger } from '../../shared/database/locks.js';
 import { digest, normalizeInput, PRODUCT_ID, type GenerationInput } from './input-schema.js';
 import { OFFICIAL_MODELS, officialSpecs } from '../providers/official-models.js';
 import { officialSnapshot } from '../providers/official-config.js';
+import { activeCreditPrice } from './credit-pricing.js';
 
 @Injectable()
 export class CatalogService {
@@ -14,7 +15,7 @@ export class CatalogService {
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
-  models() {
+  async models() {
     const simulated =
       this.config.simulationProviderEnabled && this.config.nodeEnv !== 'production'
         ? [
@@ -29,28 +30,42 @@ export class CatalogService {
             },
           ]
         : [];
-    const official = (this.config.officialImages?.models ?? []).map((model) => {
+    const prices = await this.db.client.modelCreditPrice.findMany({ where: { enabled: true } });
+    const official = (this.config.officialImages?.models ?? []).flatMap((model) => {
       const definition = OFFICIAL_MODELS.find((d) => d.id === model.modelId)!;
-      const specs = officialSpecs(model.modelId)
-        .filter((s) => model.sales[s.resolution])
-        .map((s) => ({ ...s, unitCredits: model.sales[s.resolution] }));
-      return {
-        id: model.modelId,
-        name: definition.name,
-        simulated: false,
-        resolutions: [...new Set(specs.map((s) => s.resolution))],
-        ratios: [...new Set(specs.map((s) => s.ratio))],
-        formats: ['png'],
-        quality: 'standard',
-        maxReferenceImages: definition.maxImages,
-        specs,
-        unitCredits: Math.min(...specs.map((s) => s.unitCredits!)),
-      };
+      const specs = officialSpecs(model.modelId).flatMap((s) => {
+        const price = prices.find(
+          (p) => p.modelId === model.modelId && p.resolution === s.resolution,
+        );
+        return price &&
+          officialSnapshot(this.config.officialImages, model.modelId, s.resolution, s.ratio)
+          ? [{ ...s, unitCredits: price.unitCredits }]
+          : [];
+      });
+      if (!specs.length) return [];
+      return [
+        {
+          id: model.modelId,
+          name: definition.name,
+          simulated: false,
+          resolutions: [...new Set(specs.map((s) => s.resolution))],
+          ratios: [...new Set(specs.map((s) => s.ratio))],
+          formats: ['png'],
+          quality: 'standard',
+          maxReferenceImages: definition.maxImages,
+          specs,
+          unitCredits: Math.min(...specs.map((s) => s.unitCredits!)),
+        },
+      ];
     });
     return [...simulated, ...official];
   }
   requireAvailable(modelId: string = PRODUCT_ID) {
-    if (!this.models().some((model) => model.id === modelId))
+    if (
+      modelId === PRODUCT_ID
+        ? !(this.config.simulationProviderEnabled && this.config.nodeEnv !== 'production')
+        : !this.config.officialImages?.models.some((m) => m.modelId === modelId)
+    )
       throw new AppError(503, 'MODEL_UNAVAILABLE', 'No enabled model is available');
   }
   execution(input: GenerationInput) {
@@ -92,9 +107,13 @@ export class CatalogService {
   }
   async quote(userId: string, raw: unknown) {
     const input = normalizeInput(raw);
-    const execution = this.execution(input);
-    const unitCredits = BigInt(execution?.unitCredits ?? 30);
     const record = await this.db.transaction(async (tx) => {
+      const price =
+        input.modelId === PRODUCT_ID
+          ? undefined
+          : await activeCreditPrice(tx, input.modelId, input.resolution, 503);
+      const execution = this.execution(input);
+      const unitCredits = BigInt(price?.unitCredits ?? 30);
       const images = await this.references(tx, userId, input);
       const createdAt = new Date();
       return tx.generationQuote.create({
@@ -103,6 +122,7 @@ export class CatalogService {
           input,
           inputHash: digest({ input, images }),
           productVersion: input.modelId,
+          ...(price ? { creditPriceSnapshot: price } : {}),
           ...(execution
             ? {
                 execution:
@@ -122,6 +142,9 @@ export class CatalogService {
       inputHash: record.inputHash,
       unitCredits: safeInteger(record.unitCredits),
       totalCredits: safeInteger(record.totalCredits),
+      priceVersion: record.creditPriceSnapshot
+        ? (record.creditPriceSnapshot as { version: number }).version
+        : null,
       createdAt: record.createdAt.toISOString(),
       expiresAt: record.expiresAt.toISOString(),
     };

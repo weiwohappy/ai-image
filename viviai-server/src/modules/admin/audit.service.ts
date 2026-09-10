@@ -12,6 +12,13 @@ export interface AuditMetadata {
   credentialId?: string;
   memberCount?: number;
   invitationCount?: number;
+  modelId?: string;
+  resolution?: string;
+  beforeUnitCredits?: number | null;
+  afterUnitCredits?: number;
+  beforeEnabled?: boolean | null;
+  afterEnabled?: boolean;
+  source?: 'offline_import';
 }
 @Injectable()
 export class AdminAuditService {
@@ -49,6 +56,13 @@ export class AdminAuditService {
                     'credentialId',
                     'memberCount',
                     'invitationCount',
+                    'modelId',
+                    'resolution',
+                    'beforeUnitCredits',
+                    'afterUnitCredits',
+                    'beforeEnabled',
+                    'afterEnabled',
+                    'source',
                   ].includes(key),
                 ),
               ),

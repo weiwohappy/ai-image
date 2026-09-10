@@ -1,6 +1,11 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { OFFICIAL_MODELS, officialSpecs, type OfficialOutputSpec } from './official-models.js';
+import {
+  OFFICIAL_MODELS,
+  OFFICIAL_PROTOCOLS,
+  officialSpecs,
+  type OfficialOutputSpec,
+} from './official-models.js';
 import type { PriceSnapshot } from './pricing.js';
 const id = z.string().regex(/^[a-zA-Z0-9._-]{1,80}$/);
 const positive = z.string().regex(/^[1-9]\d{0,14}$/);
@@ -31,7 +36,13 @@ const pricing = z
 const model = z
   .object({
     modelId: z.enum(OFFICIAL_MODELS.map((m) => m.id)),
-    sales: z.record(z.string(), z.number().int().min(1).max(1_000_000)),
+    sales: z.record(z.string(), z.number().int().min(1).max(1_000_000)).optional(),
+    enabledResolutions: z
+      .array(z.string())
+      .min(1)
+      .max(8)
+      .refine((r) => new Set(r).size === r.length)
+      .optional(),
     reserveCostMicros: positive,
     pricing,
   })
@@ -48,10 +59,10 @@ export interface OfficialConfig extends OfficialSettings {
   credentials: { google?: string; openai?: string };
 }
 export interface ExecutionSnapshot extends OfficialOutputSpec {
+  protocol: string;
   channelId: string;
   revision: string;
   upstreamModelId: string;
-  unitCredits: number;
   pricing: PriceSnapshot;
   reserveCostMicros: string;
   provider: 'google' | 'openai';
@@ -102,7 +113,12 @@ export function validateOfficialConfig(config: OfficialConfig): OfficialConfig {
     )
       throw invalid();
     const resolutions = officialSpecs(m.modelId).map((s) => s.resolution);
-    if (!Object.keys(m.sales).length || Object.keys(m.sales).some((r) => !resolutions.includes(r)))
+    const enabled = enabledResolutions(m);
+    if (
+      !enabled.length ||
+      enabled.some((r) => !resolutions.includes(r)) ||
+      Object.keys(m.sales ?? {}).some((r) => !resolutions.includes(r))
+    )
       throw invalid();
     const required = [
       'input_text_tokens',
@@ -120,6 +136,9 @@ export function validateOfficialConfig(config: OfficialConfig): OfficialConfig {
   }
   return config;
 }
+export function enabledResolutions(model: OfficialSettings['models'][number]): string[] {
+  return model.enabledResolutions ?? Object.keys(model.sales ?? {});
+}
 export function officialSnapshot(
   config: OfficialConfig | undefined,
   modelId: string,
@@ -130,22 +149,31 @@ export function officialSnapshot(
   const output = officialSpecs(modelId).find(
     (s) => s.resolution === resolution && s.ratio === ratio,
   );
-  if (!config || !m || !output || !m.sales[resolution]) return;
+  if (!config || !m || !output || !enabledResolutions(m).includes(resolution)) return;
   const definition = OFFICIAL_MODELS.find((d) => d.id === modelId)!;
   const account = config.accounts[definition.provider]!;
-  // Content-derived revision detects price/spec/credential-version changes even if operator forgets to bump revision.
+  const protocol = OFFICIAL_PROTOCOLS[definition.provider];
+  // Commercial prices never participate in execution identity.
+  const executionModel = {
+    modelId: m.modelId,
+    enabledResolutions: [...enabledResolutions(m)].sort(),
+    reserveCostMicros: m.reserveCostMicros,
+    pricing: m.pricing,
+  };
   const revision = createHash('sha256')
-    .update(JSON.stringify({ revision: config.revision, m, output, account }))
+    .update(
+      JSON.stringify({ revision: config.revision, m: executionModel, output, account, protocol }),
+    )
     .digest('hex')
     .slice(0, 24);
   return {
     ...output,
+    protocol,
     channelId: `official-${modelId}-${output.id}-${revision}`,
     revision,
     upstreamModelId: modelId,
     provider: definition.provider,
     credentialVersion: account.credentialVersion,
-    unitCredits: m.sales[resolution]!,
     pricing: m.pricing,
     reserveCostMicros: m.reserveCostMicros,
   };

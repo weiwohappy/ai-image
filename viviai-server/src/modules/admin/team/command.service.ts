@@ -78,7 +78,10 @@ export class AdminTeamCommands {
         );
         if (!teamWritesEnabled(this.config, current.requestIp))
           throw failure(503, 'ADMIN_TEAM_WRITES_DISABLED', '团队写入仅在本机开发环境开放');
-        requirePermission(current.actor, 'admins.read');
+        requirePermission(
+          current.actor,
+          permission === 'model-pricing.write' ? 'models.read' : 'admins.read',
+        );
         requirePermission(current.actor, permission);
         const receipt = await tx.adminCommandReceipt.findUnique({
           where: { accountId_idempotencyKey: { accountId: current.actor.id, idempotencyKey: key } },

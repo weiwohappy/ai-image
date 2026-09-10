@@ -38,10 +38,11 @@ API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JS
 
 - `revision`：业务发布版本号。
 - `accounts.google` / `accounts.openai`：`scope`（真实采购账号/项目的稳定标识，不含密钥）、`credentialVersion`、`concurrency`（1–4）、`maxUnknown`（1–4）、`dailyBudgetMicros`（正整数的字符串，USD 微元）。同一供应商账号的模型共享配额和预算，不能为每个型号虚构新账号。
-- `models[]`：`modelId` 必须为上面的精确 ID；`sales` 是分辨率到每张积分的映射，例如键 `1K`、`2K`。只开放填写过售价的档位；一个档位各比例采用同售价，运营必须覆盖其最贵组合。
+- `models[]`：`modelId` 必须为上面的精确 ID；`enabledResolutions` 指定允许运行的已审核档位，例如 `['1K', '2K']`。该列表必须非空且不能包含重复或不支持的档位。兼容旧配置时，省略此字段才从 `sales` 的键读取运行档位；两者同时存在时显式列表优先。`sales` 的数值不再用于报价，也不参与执行渠道指纹。
+- 对客积分由数据库 `ModelCreditPrice` 管理；仅“运行档位可用＋价格已配置并启用”的规格出现在公开目录。没有 API Key 也可在运营平台先配置积分，不会启用官方调用。每档位下已支持比例统一价格，不能配置任意像素或比例加价。
 - 每个 model 的 `reserveCostMicros`：单张预算预留，USD 微元字符串，应覆盖允许规格/参考图/提示词的保守预估，不等于最终费用。
 - `pricing`：`version`、`currency: USD`、`rates`。rates 是“每百万 token 的微美元数”的整数字符串：`input_text_tokens`、`input_image_tokens`、`output_text_tokens`、`output_image_tokens`，Google 另需 `thought_tokens`。例如纯算术：若某项为每百万 token 2 美元，则填 `2000000`；这不是任何型号的实际报价。
-- Key 独立设置 `GEMINI_API_KEY` / `OPENAI_API_KEY`，只在服务端秘密管理系统中配置。缺 Key、价格、账号或非法尺寸档位时启动拒绝，错误不包含密钥。Key 不放前端环境变量，不放 JSON、不提交 Git。轮换 Key 时同步更新 `credentialVersion`。
+- Key 独立设置 `GEMINI_API_KEY` / `OPENAI_API_KEY`，只在服务端秘密管理系统中配置。配置官方模型却缺 Key、运行档位、成本费率、账号或存在非法尺寸档位时启动拒绝，错误不包含密钥。没有数据库售价不会阻止启动，但该档位不能报价。Key 不放前端环境变量，不放 JSON、不提交 Git。轮换 Key 时同步更新 `credentialVersion`。
 
 模型输入同原有报价接口，例如：
 
@@ -53,7 +54,9 @@ API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JS
 
 ## 成本、超时和恢复
 
-报价和任务存储执行/价格快照，包含配置摘要而非 Key；变更配置后旧任务不会改用新型号。未执行任务遇配置不匹配会退款，未消费报价要求重报。不要在仍有大量排队任务时删配置。
+报价和任务分别存储执行快照与积分价格快照。价格快照包含价格ID、版本、模型、分辨率和单张积分；执行快照保留协议、像素、渠道、凭据版本和官方成本配置，不保存对客积分或 Key。调价/停用只影响新报价，未提交报价以 `409 PRICE_CHANGED` 或 `PRICE_UNAVAILABLE` 要求重新确认，已提交任务继续按原任务项积分扣除或释放。真实执行配置变更仍会使旧配置任务安全失败/释放，不改用新型号。不要在仍有排队任务时删执行配置。
+
+已有 `sales` 只能通过 `npm run admin:import-model-prices` 显式 dry-run 查看；批准后加 `-- --apply` 创建缺失记录，已有启用/停用记录均不覆盖。导入无需 Key、不调用官方接口并记录离线审计。服务启动和迁移不会自动种价。详见 [后台维护说明](ADMIN.md)。
 
 只有费用确定为 billable、上游 token 用量完整且价格覆盖时才计算 actualCostMicros；缺失/不完整使用量保留 unknown 和预算预留。畸形或拒绝的响应即使含 token 用量，也只作为对账证据，不能据此断言供应商最终收费；费用确定性与计量完整性分开记录。缓存、工具用量或不认识的维度不被悄悄省略。当前无运营待对账处理界面，上线前需实现供应商账单核对、差异更正与人工解锁；未对账成本不是利润。
 

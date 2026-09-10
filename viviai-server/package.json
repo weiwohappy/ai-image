@@ -22,6 +22,7 @@
     "seed:dev": "tsx src/scripts/seed-dev.ts",
     "admin:bootstrap": "tsx src/scripts/admin-bootstrap.ts",
     "admin:super-admin": "tsx src/scripts/admin-super-admin.ts",
+    "admin:import-model-prices": "tsx src/scripts/admin-import-model-prices.ts",
     "pretest": "prisma generate",
     "test": "vitest run"
   },

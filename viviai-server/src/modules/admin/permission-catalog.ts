@@ -9,6 +9,7 @@ const team = [
 ];
 export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
   super_admin: [
+    'model-pricing.write',
     'dashboard.read',
     'users.read',
     'orders.read',
@@ -94,6 +95,7 @@ export const ROLE_NAMES: Record<string, string> = {
   content_operator: '内容运营',
 };
 const labels: Record<string, string> = {
+  'model-pricing.write': '配置模型积分价格',
   'dashboard.read': '查看首页',
   'users.read': '查看用户',
   'orders.read': '查看订单',
@@ -123,6 +125,7 @@ const labels: Record<string, string> = {
   'roles.delete': '删除角色',
 };
 const dependencies: Record<string, string[]> = {
+  'model-pricing.write': ['models.read'],
   'dashboard.business.read': ['dashboard.read', 'users.read', 'orders.read', 'jobs.read'],
   'dashboard.finance.read': ['dashboard.read', 'orders.read', 'credits.read'],
   'dashboard.models.read': ['dashboard.read', 'models.read'],
@@ -143,6 +146,7 @@ export const PERMISSION_CATALOG = Object.entries(labels).map(([key, name]) => ({
         ? ['admins.read', 'roles.read']
         : []),
   customRoleAllowed:
+    key !== 'model-pricing.write' &&
     (!key.startsWith('admins.') || key === 'admins.read') &&
     (!key.startsWith('roles.') || key === 'roles.read'),
 }));

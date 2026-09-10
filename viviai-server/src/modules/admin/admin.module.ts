@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { AdminModelPricingController } from './model-pricing/controller.js';
+import { AdminModelPricingService } from './model-pricing/service.js';
 import { AdminPermissionService } from './permission.service.js';
 import { AdminTeamCommands } from './team/command.service.js';
 import { AdminTeamController } from './team/team.controller.js';
@@ -19,6 +21,7 @@ import { AdminSensitiveService } from './sensitive.service.js';
 @Module({
   imports: [AssetsModule],
   controllers: [
+    AdminModelPricingController,
     AdminAuthController,
     AdminQueryController,
     AdminSensitiveController,
@@ -26,6 +29,7 @@ import { AdminSensitiveService } from './sensitive.service.js';
     AdminPasswordResetController,
   ],
   providers: [
+    AdminModelPricingService,
     AdminPermissionService,
     AdminTeamCommands,
     AdminInvitationsService,

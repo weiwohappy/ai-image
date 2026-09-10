@@ -93,7 +93,29 @@ NODE_ENV=development npm run admin:bootstrap -- revoke-account --input=/absolute
 
 SQL trigger 拒绝对审计行 UPDATE/DELETE；成功变更与审计同事务，拒绝敏感访问在独立事务持久记录。应由部署所有者配置独立审计归档与不可篡改存储，A 不宣称 SQL 拥有者无法修改数据库。
 
-生命周期事件只从实际 dispatch/受理/本地物化/交付/终止事务记录，唯一 `(itemId,event)` 保留首次观察时间，历史缺失明确无数据。排队耗时不可用可变 updatedAt 推测。退款、手续费、净利润、通知、内容运营、资金/价格/配置/重试变更均未接入，不提供假成功。
+生命周期事件只从实际 dispatch/受理/本地物化/交付/终止事务记录，唯一 `(itemId,event)` 保留首次观察时间，历史缺失明确无数据。排队耗时不可用可变 updatedAt 推测。退款、手续费、净利润、通知、内容运营、资金/执行配置/重试变更均未接入，不提供假成功。
+
+## 模型分辨率积分定价
+
+`GET /model-pricing?modelId=...` 枚举官方审核分辨率及有效比例；没有 Key 也能读写价格。`GET /model-pricing/:modelId/:resolution` 返回未配置空价和版本 0；`PUT` 接受严格 `{unitCredits,enabled,expectedVersion,reason}` 与 UUID `Idempotency-Key`。积分必须是 1–1,000,000 的数字整数，原因 5–500 字，只存原因摘要。读取要求 `models.read`，写入要求仅授予内置超级管理员的 `model-pricing.write` 和团队写入相同的本机 development/Origin/实际对端 gate。非超级管理员或自定义角色不能获得定价写权。
+
+数据库价格与运行渠道独立。列表 `runtimeAvailable` 只描述本地配置可用性，不保证真实 API 已联调；综合状态区分未配置、停用、API 未就绪与可用。新报价必须有有效数据库价，返回 `priceVersion`；提交检查相同价格锁下的ID、版本和金额。旧价、已停用价分别返回 `409 PRICE_CHANGED`、`409 PRICE_UNAVAILABLE`，不冻结任何积分。已提交任务和幂等重放始终保留原积分与执行快照。后台并发版本错误为 `409 PRICE_VERSION_CONFLICT`，没有强制覆盖接口；同值保存版本不变。
+
+`GET /model-pricing/:modelId/history?resolution=...&limit=30&cursor=...` 返回定价成功事件的安全前后快照和操作者，最多 100 条。游标绑定模型、分辨率和首次查询时间，不能移用于另一个筛选。审计 action 是 `model-pricing.save` / `model-pricing.import`；离线导入标识 `offline_import`。历史不返回原始原因、凭据或请求体。
+
+迁移 `20260910040000_model_credit_pricing` 增加价格表和 quote/job 可空快照，不修改既有金额或执行快照，不播种售价。仅超级管理员内置角色加权限并升版本，其绑定账号升 authVersion/version、撤销旧会话/挑战/敏感授权及未使用密码重置；密码、MFA、额外敏感权限和全部角色绑定保留。其他账号不变。
+
+维护前确认是已核对的本机预览数据库，备份并验证归档，检查非终态任务、提供方请求、支付操作及旧官方执行快照；存在不可安全继续的旧任务就中止。暂停所属 API/Worker 后才应用迁移，再用原配置重启。旧代码仍把 JSON sales 当作售价，不得直接回退；必须先评估新价格与快照兼容性并保留备份。
+
+显式旧价导入只读取 `OFFICIAL_IMAGE_MODELS_JSON.models[].sales`，无需 Key，不调用官方 API。默认 dry-run，不产生记录：
+
+```sh
+npm run admin:import-model-prices
+# 仅在逐项核对且明确批准后执行；只创建缺失价格，启用和停用的已有价格均不覆盖。
+npm run admin:import-model-prices -- --apply
+```
+
+apply 只允许 development、回环 HOST 和回环数据库。每个新价格及其离线审计在同一事务提交，可重复执行；输入无旧价时零新增。启动、构建、迁移都不会运行导入。
 
 ## 验证
 

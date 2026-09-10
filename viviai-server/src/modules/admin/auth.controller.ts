@@ -38,6 +38,10 @@ export class AdminAuthController {
       enabled: this.auth.config.admin?.enabled ?? false,
       environment: this.auth.config.nodeEnv,
       stage: 'B1',
+      modelPricingWritesEnabled: teamWritesEnabled(
+        this.auth.config,
+        request.socket.remoteAddress ?? 'unknown',
+      ),
       teamWritesEnabled: teamWritesEnabled(
         this.auth.config,
         request.socket.remoteAddress ?? 'unknown',

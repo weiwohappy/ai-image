@@ -78,6 +78,15 @@ describe('official model runtime with offline provider boundary', () => {
       }),
     });
     const config = { ...loadConfig(), officialImages: official, simulationProviderEnabled: false };
+    // Explicit isolated test prices. Runtime configuration no longer seeds customer prices.
+    for (const resolution of [...new Set(officialSpecs(modelId).map((s) => s.resolution))]) {
+      const unitCredits = resolution === '1K' ? 100 : 200;
+      await db.database.client.modelCreditPrice.upsert({
+        where: { modelId_resolution: { modelId, resolution } },
+        create: { modelId, resolution, unitCredits, enabled: true },
+        update: { unitCredits, enabled: true, version: 1 },
+      });
+    }
     const catalog = new CatalogService(db.database, config);
     const jobs = new GenerationService(db.database, catalog, wallet);
     const bytes = await sharp({ create: { width, height, channels: 3, background: 'blue' } })
@@ -188,8 +197,11 @@ describe('official model runtime with offline provider boundary', () => {
       width: 1024,
       height: 1024,
     });
-    expect(JSON.stringify(s.catalog.models())).not.toContain('offline-key');
-    expect(s.catalog.models()[0]).toMatchObject({ simulated: false, specs: expect.any(Array) });
+    expect(JSON.stringify(await s.catalog.models())).not.toContain('offline-key');
+    expect((await s.catalog.models())[0]).toMatchObject({
+      simulated: false,
+      specs: expect.any(Array),
+    });
     await s.dispatch.process(s.id);
     await s.dispatch.process(s.id);
     expect(s.fetcher).toHaveBeenCalledTimes(1);
@@ -239,7 +251,7 @@ describe('official model runtime with offline provider boundary', () => {
   });
   it('rejects execution after config drift rather than substituting model/price', async () => {
     const s = await setup();
-    s.config.officialImages.models[0]!.sales['1K'] = 101;
+    s.config.officialImages.accounts.openai!.credentialVersion = 'v2';
     const drifted = buildProviderRegistry(s.config, storage.store, s.fetcher);
     await new DispatchService(db.database, s.wallet, storage.store, drifted).process(s.id);
     expect(s.fetcher).not.toHaveBeenCalled();
@@ -249,11 +261,66 @@ describe('official model runtime with offline provider boundary', () => {
   it('requires requoting when prices change before acceptance', async () => {
     const s = await setup();
     const quote = await s.catalog.quote(s.userId, s.input);
-    s.config.officialImages.models[0]!.sales['1K'] = 102;
+    await db.database.client.modelCreditPrice.update({
+      where: { modelId_resolution: { modelId: 'gpt-image-2', resolution: '1K' } },
+      data: { unitCredits: 102, version: { increment: 1 } },
+    });
     await expect(
       s.jobs.create(s.userId, { quoteId: quote.id, input: s.input }, randomUUID(), 'create'),
-    ).rejects.toMatchObject({ code: 'MODEL_CONFIG_CHANGED' });
+    ).rejects.toMatchObject({ code: 'PRICE_CHANGED' });
     expect(await s.wallet.balance(s.userId)).toMatchObject({ available: 900n, held: 100n });
+  });
+  it('executes submitted old-price jobs after repricing/disable and legacy-sale changes at original API cost', async () => {
+    const s = await setup();
+    const originalChannel = (
+      await db.database.client.generationJob.findUniqueOrThrow({ where: { id: s.job.id } })
+    ).execution;
+    await db.database.client.modelCreditPrice.update({
+      where: { modelId_resolution: { modelId: 'gpt-image-2', resolution: '1K' } },
+      data: { unitCredits: 999, enabled: false, version: { increment: 1 } },
+    });
+    s.config.officialImages.models[0]!.sales!['1K'] = 888;
+    const rebuilt = buildProviderRegistry(s.config, storage.store, s.fetcher);
+    await new DispatchService(db.database, s.wallet, storage.store, rebuilt).process(s.id);
+    expect((await s.jobs.get(s.userId, s.job.id)).status).toBe('succeeded');
+    expect(await s.wallet.balance(s.userId)).toMatchObject({ consumed: 100n, held: 0n });
+    expect(
+      (await db.database.client.generationJob.findUniqueOrThrow({ where: { id: s.job.id } }))
+        .execution,
+    ).toEqual(originalChannel);
+    expect(
+      (
+        await db.database.client.providerAttempt.findFirstOrThrow({
+          where: { itemId: s.id },
+          include: { usage: true },
+        })
+      ).usage,
+    ).toMatchObject({ actualCostMicros: 3050n });
+  });
+  it('settles partial success at submitted credits and releases only the failed image after repricing', async () => {
+    const s = await setup();
+    await s.jobs.cancel(s.userId, s.job.id);
+    const input = { ...s.input, count: 2 };
+    const quote = await s.catalog.quote(s.userId, input);
+    const job = await s.jobs.create(s.userId, { quoteId: quote.id, input }, randomUUID(), 'create');
+    await db.database.client.modelCreditPrice.update({
+      where: { modelId_resolution: { modelId: 'gpt-image-2', resolution: '1K' } },
+      data: { unitCredits: 777, enabled: false, version: { increment: 1 } },
+    });
+    await s.dispatch.process(job.items[0]!.id);
+    s.fetcher.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { message: 'test failure' } }), { status: 400 }),
+    );
+    await s.dispatch.process(job.items[1]!.id);
+    expect(await s.wallet.balance(s.userId)).toMatchObject({
+      available: 900n,
+      held: 0n,
+      consumed: 100n,
+    });
+    expect((await s.jobs.get(s.userId, job.id)).items.map((i) => i.status).sort()).toEqual([
+      'failed',
+      'succeeded',
+    ]);
   });
   it('recovers final transaction failure from staged bytes without another paid submission', async () => {
     const s = await setup();

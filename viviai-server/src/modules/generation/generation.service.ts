@@ -4,7 +4,8 @@ import { DatabaseService } from '../../shared/database/database.service.js';
 import { lockWallet } from '../../shared/database/locks.js';
 import { AppError } from '../../shared/http/errors.js';
 import { CatalogService } from '../catalog/catalog.service.js';
-import { digest, normalizeInput } from '../catalog/input-schema.js';
+import { digest, normalizeInput, PRODUCT_ID } from '../catalog/input-schema.js';
+import { activeCreditPrice, creditPriceSchema } from '../catalog/credit-pricing.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { jobDto, jobInclude, TERMINAL } from './job-serializer.js';
 
@@ -47,9 +48,24 @@ export class GenerationService {
           throw new AppError(409, 'IDEMPOTENCY_CONFLICT', 'Key was used for a different request');
         return replay;
       }
-      const execution = this.catalog.execution(input);
       const quote = await tx.generationQuote.findFirst({ where: { id: quoteId, userId } });
       if (!quote) throw new AppError(404, 'NOT_FOUND', 'Quote not found');
+      if (input.modelId !== PRODUCT_ID) {
+        const current = await activeCreditPrice(tx, input.modelId, input.resolution, 409);
+        const snapshot = creditPriceSchema.safeParse(quote.creditPriceSnapshot);
+        if (
+          !snapshot.success ||
+          digest(snapshot.data) !== digest(current) ||
+          quote.unitCredits !== BigInt(snapshot.data.unitCredits) ||
+          quote.totalCredits !== BigInt(input.count) * quote.unitCredits
+        )
+          throw new AppError(
+            409,
+            'PRICE_CHANGED',
+            'Model price changed; request and confirm a new quote',
+          );
+      }
+      const execution = this.catalog.execution(input);
       if (digest(quote.execution ?? null) !== digest(execution ?? null))
         throw new AppError(
           409,
@@ -96,6 +112,7 @@ export class GenerationService {
           requestHash,
           input,
           ...(quote.execution ? { execution: quote.execution } : {}),
+          ...(quote.creditPriceSnapshot ? { creditPriceSnapshot: quote.creditPriceSnapshot } : {}),
           ...(retryOfJobId ? { retryOfJobId } : {}),
           queueDeadlineAt: new Date(now.getTime() + 300_000),
           deliveryDeadlineAt: new Date(now.getTime() + 900_000),

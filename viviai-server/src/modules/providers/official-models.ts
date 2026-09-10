@@ -14,6 +14,10 @@ export const OFFICIAL_MODELS = [
   { id: 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', maxImages: 2 },
 ] as const;
 export type OfficialModelId = (typeof OFFICIAL_MODELS)[number]['id'];
+export const OFFICIAL_PROTOCOLS = {
+  google: 'google-interactions-v1',
+  openai: 'openai-images-v1',
+} as const;
 export interface OfficialOutputSpec {
   id: string;
   resolution: string;

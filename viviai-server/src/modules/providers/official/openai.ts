@@ -1,4 +1,5 @@
 import type { ObjectStore } from '../../assets/object-store.js';
+import { OFFICIAL_PROTOCOLS } from '../official-models.js';
 import type {
   NormalizedImageRequest,
   ProviderAdapter,
@@ -32,7 +33,7 @@ const OPENAI_GENERATIONS_URL = 'https://api.openai.com/v1/images/generations';
 const OPENAI_EDITS_URL = 'https://api.openai.com/v1/images/edits';
 
 export class OpenAIImageProvider implements ProviderAdapter {
-  readonly protocol = 'openai-images-v1';
+  readonly protocol = OFFICIAL_PROTOCOLS.openai;
 
   constructor(
     private readonly store: ObjectStore,

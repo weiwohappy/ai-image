@@ -128,7 +128,9 @@ NODE_ENV=development npm run seed:dev
 
 ### 运营平台 B1 团队管理
 
-`/api/admin/team` 提供成员、邀请、普通自定义角色的持久化管理；原业务资源仍为只读。写入要求 `NODE_ENV=development`、`HOST` 为回环地址、全部 `ADMIN_ORIGINS` 为回环 Origin 且请求真实对端为回环 IP。生产启动阻断继续保留；`GET /api/admin/status` 返回 `stage: B1` 和实际 `teamWritesEnabled`。
+`/api/admin/team` 提供成员、邀请、普通自定义角色的持久化管理；`/api/admin/model-pricing` 提供官方模型分辨率积分定价，其余业务资源仍为只读。写入要求 `NODE_ENV=development`、`HOST` 为回环地址、全部 `ADMIN_ORIGINS` 为回环 Origin 且请求真实对端为回环 IP。生产启动阻断继续保留；`GET /api/admin/status` 返回 `stage: B1`、实际 `teamWritesEnabled` 和 `modelPricingWritesEnabled`。
+
+定价读取使用 `models.read`；写入仅内置 `super_admin` 具有 `model-pricing.write`，不能授予自定义角色。价格为 1–1,000,000 整数，版本和幂等键防止覆盖并发修改。数据库价即时影响新报价；旧报价需重新确认，已提交任务金额与执行渠道保持原快照。未定价或停用不会采用旧 JSON 或模拟价格兜底。迁移不种价，无 API Key 也可配置价格。维护导入默认 dry-run：`npm run admin:import-model-prices`，明确批准导入后才用 `npm run admin:import-model-prices -- --apply`。详细迁移和恢复边界见 [ADMIN.md](ADMIN.md)。
 
 邀请有效期 24 小时，密码重置有效期 30 分钟。两者仅首次响应返回 fragment 链接，由操作者复制转交；不会发送真实邮件。幂等重放仅返回 `linkUnavailable: true`，需新操作重新生成链接。角色变化、禁用和密码重置撤销旧会话、挑战及敏感授权；密码重置保留 MFA。普通新成员仍使用原 12 字符密码和 MFA 流程；显式本地账号例外不扩展至新成员。
 
