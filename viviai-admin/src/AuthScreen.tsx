@@ -13,13 +13,16 @@ export function AuthScreen({
   onSuccess,
   environment,
   localTestPasswords = false,
+  localPasswordLogin = false,
 }: {
   client: AdminClient;
   onSuccess: (actor: AdminActor) => void;
   environment: string;
   localTestPasswords?: boolean;
+  localPasswordLogin?: boolean;
 }) {
   const localPasswordMode = environment === 'development' && localTestPasswords;
+  const passwordOnlyMode = localPasswordMode && localPasswordLogin;
   const minimumPasswordLength = localPasswordMode ? 6 : 12;
   const [token, setToken] = useState(() =>
     typeof window !== 'undefined' && window.location.hash.startsWith('#/accept?')
@@ -38,6 +41,15 @@ export function AuthScreen({
   const [error, setError] = useState('');
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
+  useEffect(() => {
+    if (!passwordOnlyMode) return;
+    // A local policy change can arrive while the old enrollment screen is open.
+    pending.current?.abort();
+    setChallenge(null);
+    setCode('');
+    setBusy(false);
+    setError('');
+  }, [passwordOnlyMode]);
   useEffect(() => {
     function changed() {
       pending.current?.abort();
@@ -93,7 +105,7 @@ export function AuthScreen({
     try {
       if (!challenge) {
         const data = token ? { token, email, displayName, password } : { email, password };
-        const next = await client.post<AuthChallenge>(
+        const next = await client.post<AuthChallenge | AuthResult>(
           token ? '/auth/invitations/accept' : '/auth/login',
           data,
           controller.signal,
@@ -101,7 +113,6 @@ export function AuthScreen({
         );
         if (controller.signal.aborted) return;
         setPassword('');
-        setChallenge(next);
         setCode('');
         setMethod('totp');
         if (token) {
@@ -112,6 +123,11 @@ export function AuthScreen({
             `${window.location.pathname}${window.location.search}#/login`,
           );
         }
+        if ('account' in next) {
+          onSuccess(next.account);
+          return;
+        }
+        setChallenge(next);
       } else {
         const next = await client.post<AuthResult>(
           '/auth/mfa/verify',
@@ -233,8 +249,9 @@ export function AuthScreen({
                 </label>
                 {localPasswordMode ? (
                   <p className="caption">
-                    仅预先授权的本机测试账号允许临时短密码，仍需双重验证。其他账号至少 12
-                    位；请勿用于正式环境。
+                    {passwordOnlyMode
+                      ? '本机测试：指定账号可直接使用邮箱和密码登录。其他账号仍需双重验证；请勿用于正式环境。'
+                      : '仅预先授权的本机测试账号允许临时短密码，仍需双重验证。其他账号至少 12 位；请勿用于正式环境。'}
                   </p>
                 ) : (
                   token && (
@@ -312,8 +329,12 @@ export function AuthScreen({
                 : challenge
                   ? '验证并登录'
                   : token
-                    ? '接受邀请并绑定验证器'
-                    : '继续验证'}
+                    ? passwordOnlyMode
+                      ? '接受邀请并登录'
+                      : '接受邀请并绑定验证器'
+                    : passwordOnlyMode
+                      ? '登录'
+                      : '继续验证'}
               {!busy && <ArrowRight />}
             </Button>
             {challenge && (
@@ -334,7 +355,11 @@ export function AuthScreen({
         )}
         <div className="auth-note">
           <ShieldCheck size={16} />
-          <span>独立管理员身份 · 双重验证 · 访问留痕</span>
+          <span>
+            {passwordOnlyMode
+              ? '本机测试 · 密码登录 · 访问留痕'
+              : '独立管理员身份 · 双重验证 · 访问留痕'}
+          </span>
         </div>
       </main>
       <footer className="auth-footer">

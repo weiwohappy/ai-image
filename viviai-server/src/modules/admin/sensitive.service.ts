@@ -31,7 +31,12 @@ export class AdminSensitiveService {
   }
   private async check(tx: DbTransaction, context: AdminContext) {
     await lockAdmin(tx, context.actor.id);
-    const current = await this.auth.reauthorize(tx, context.sessionId, context.actor.id);
+    const current = await this.auth.reauthorize(
+      tx,
+      context.sessionId,
+      context.actor.id,
+      context.requestIp,
+    );
     requirePermission(current.actor, 'sensitive.read');
     requirePermission(current.actor, 'jobs.read');
   }

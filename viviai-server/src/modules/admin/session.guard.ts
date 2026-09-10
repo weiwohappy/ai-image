@@ -16,7 +16,7 @@ export class AdminSessionGuard implements CanActivate {
   constructor(@Inject(AdminAuthService) private readonly auth: AdminAuthService) {}
   async canActivate(context: ExecutionContext) {
     const request = context.switchToHttp().getRequest<AdminRequest>();
-    request.admin = await this.auth.resolve(cookie(request, ADMIN_COOKIE));
+    request.admin = await this.auth.resolve(cookie(request, ADMIN_COOKIE), request.ip ?? 'unknown');
     return true;
   }
 }

@@ -19,7 +19,7 @@ import {
 } from './crypto.js';
 import { permissions } from './permissions.js';
 import type { AdminActor } from './contracts.js';
-import { adminPasswordMinimum } from './config.js';
+import { adminPasswordMinimum, allowsLocalPasswordLogin } from './config.js';
 export const ADMIN_COOKIE = 'viviai_admin_session';
 export const CHALLENGE_COOKIE = 'viviai_admin_challenge';
 export const denied = () =>
@@ -40,6 +40,7 @@ export function actor(account: AdminAccount, session: AdminSession): AdminActor 
 export interface AdminContext {
   actor: AdminActor;
   sessionId: string;
+  requestIp?: string;
 }
 @Injectable()
 export class AdminAuthService {
@@ -113,6 +114,24 @@ export class AdminAuthService {
       },
     };
   }
+  private async afterPassword(tx: DbTransaction, account: AdminAccount, ip: string) {
+    if (!allowsLocalPasswordLogin(this.config, account.email, ip))
+      return this.challenge(tx, account);
+    const raw = token();
+    const session = await tx.adminSession.create({
+      data: {
+        tokenHash: digest(raw),
+        accountId: account.id,
+        authVersion: account.authVersion,
+        authMethod: 'local_password',
+        expiresAt: new Date(Date.now() + 8 * 3600000),
+      },
+    });
+    // Password-only testing must never mark an account as MFA-enrolled.
+    await tx.adminChallenge.deleteMany({ where: { accountId: account.id } });
+    await this.audit.write(tx, 'auth.local_password', 'allowed', account.id, session.id);
+    return { raw, data: { account: actor(account, session) } };
+  }
   async login(email: string, password: string, ip: string) {
     this.enabled();
     this.passwordMinimum(password, email, ip);
@@ -135,7 +154,7 @@ export class AdminAuthService {
         return null;
       }
       await this.audit.write(tx, 'auth.login', 'allowed', account.id);
-      return this.challenge(tx, account);
+      return this.afterPassword(tx, account, ip);
     });
     if (!result) throw denied();
     return result;
@@ -182,7 +201,7 @@ export class AdminAuthService {
         data: { consumedAt: new Date() },
       });
       await this.audit.write(tx, 'invitation.accept', 'allowed', id, undefined, invite.id);
-      return this.challenge(tx, account);
+      return this.afterPassword(tx, account, ip);
     });
     if (!result) throw denied();
     return result;
@@ -266,7 +285,7 @@ export class AdminAuthService {
     if (!result) throw denied();
     return result;
   }
-  async resolve(raw: string): Promise<AdminContext> {
+  async resolve(raw: string, ip = 'unknown'): Promise<AdminContext> {
     this.enabled();
     if (!/^[\w-]{43}$/.test(raw)) throw denied();
     const session = await this.db.client.adminSession.findUnique({
@@ -275,7 +294,7 @@ export class AdminAuthService {
     if (!session) throw denied();
     return this.db.transaction(async (tx) => {
       await lockAdmin(tx, session.accountId);
-      const context = await this.reauthorize(tx, session.id, session.accountId);
+      const context = await this.reauthorize(tx, session.id, session.accountId, ip);
       await tx.adminSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
       return context;
     });
@@ -284,6 +303,7 @@ export class AdminAuthService {
     tx: DbTransaction,
     sessionId: string,
     accountId: string,
+    ip = 'unknown',
   ): Promise<AdminContext> {
     const session = await tx.adminSession.findUnique({ where: { id: sessionId } });
     const account = await tx.adminAccount.findUnique({ where: { id: accountId } });
@@ -291,7 +311,10 @@ export class AdminAuthService {
       !session ||
       !account ||
       session.accountId !== account.id ||
-      account.status !== 'active' ||
+      (session.authMethod === 'local_password'
+        ? !['active', 'pending'].includes(account.status) ||
+          !allowsLocalPasswordLogin(this.config, account.email, ip)
+        : session.authMethod !== 'mfa' || account.status !== 'active') ||
       session.authVersion !== account.authVersion ||
       session.expiresAt <= new Date() ||
       session.createdAt.getTime() + 8 * 3600000 <= Date.now() ||
@@ -299,7 +322,7 @@ export class AdminAuthService {
       !permissions(account.roles, account.extraPermissions).length
     )
       throw denied();
-    return { actor: actor(account, session), sessionId };
+    return { actor: actor(account, session), sessionId, requestIp: ip };
   }
   async logout(sessionRaw: string, challengeRaw: string) {
     this.enabled();

@@ -13,6 +13,42 @@ it('does not use mock fallback when admin is disabled', async () => {
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(screen.queryByLabelText('密码')).not.toBeInTheDocument();
 });
+it('enters the console directly after an explicitly enabled local password login', async () => {
+  window.history.replaceState(null, '', '#/login');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/status')
+          ? json({
+              enabled: true,
+              environment: 'development',
+              stage: 'A',
+              localTestPasswords: true,
+              localPasswordLogin: true,
+            })
+          : url.endsWith('/auth/login')
+            ? json({ account: actor })
+            : url.endsWith('/me')
+              ? json(null, 401)
+              : json({
+                  asOf: emptyTable.asOf,
+                  environment: 'development',
+                  metrics: [],
+                  alerts: emptyTable,
+                  notices: [],
+                }),
+      ),
+    ),
+  );
+  render(<AdminApp />);
+  fireEvent.change(await screen.findByLabelText('工作邮箱'), { target: { value: actor.email } });
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: '登录' }));
+  expect(await screen.findByRole('navigation')).toBeInTheDocument();
+  expect(screen.queryByLabelText('六位动态验证码')).not.toBeInTheDocument();
+  expect(screen.queryByText('保存一次性恢复码')).not.toBeInTheDocument();
+});
 it('refreshes a stale guest password policy on return without losing entered credentials', async () => {
   let localTestPasswords = false;
   vi.stubGlobal(

@@ -97,6 +97,76 @@ it('recognizes an invitation opened in an already mounted logged-out tab', () =>
   expect(screen.getByRole('button', { name: '接受邀请并绑定验证器' })).toBeInTheDocument();
 });
 
+it('clears an old enrollment screen when local password-only login is enabled without bypassing later server challenges', async () => {
+  window.history.replaceState(null, '', '#/login');
+  const client = new AdminClient();
+  const done = vi.fn();
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockImplementation(() =>
+        Promise.resolve(
+          json({
+            next: 'enroll',
+            secret: 'OLD_LOCAL_TEST_SECRET',
+            expiresAt: '2099-01-01T00:00:00Z',
+          }),
+        ),
+      ),
+  );
+  const { rerender } = render(
+    <AuthScreen client={client} environment="development" localTestPasswords onSuccess={done} />,
+  );
+  const enterPassword = () => {
+    fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: actor.email } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: '123456' } });
+  };
+  enterPassword();
+  fireEvent.click(screen.getByRole('button', { name: '继续验证' }));
+  await screen.findByText('OLD_LOCAL_TEST_SECRET');
+  rerender(
+    <AuthScreen
+      client={client}
+      environment="development"
+      localTestPasswords
+      localPasswordLogin
+      onSuccess={done}
+    />,
+  );
+  expect(await screen.findByRole('heading', { name: '登录运营工作台' })).toBeInTheDocument();
+  expect(screen.queryByText('OLD_LOCAL_TEST_SECRET')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('密码')).toHaveValue('');
+  enterPassword();
+  fireEvent.click(screen.getByRole('button', { name: '登录' }));
+  expect(await screen.findByLabelText('六位动态验证码')).toBeInTheDocument();
+  expect(done).not.toHaveBeenCalled();
+});
+
+it('consumes a local direct-login invitation and removes its token without displaying recovery codes', async () => {
+  window.history.replaceState(null, '', '#/accept?token=local-invite');
+  const done = vi.fn();
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ account: actor })));
+  render(
+    <AuthScreen
+      client={new AdminClient()}
+      environment="development"
+      localTestPasswords
+      localPasswordLogin
+      onSuccess={done}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: actor.email } });
+  fireEvent.change(screen.getByLabelText('姓名'), { target: { value: 'Local operator' } });
+  fireEvent.change(screen.getByLabelText('设置密码'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: '接受邀请并登录' }));
+  await waitFor(() => expect(done).toHaveBeenCalledWith(actor));
+  expect(window.location.hash).toBe('#/login');
+  expect(screen.queryByLabelText('六位动态验证码')).not.toBeInTheDocument();
+  expect(localStorage.length).toBe(0);
+  expect(sessionStorage.length).toBe(0);
+});
+
 it('allows the native short-password form only in explicit development mode and still proceeds to MFA', async () => {
   window.history.replaceState(null, '', '#/login');
   const done = vi.fn();

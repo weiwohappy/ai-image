@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { AppError } from '../../shared/http/errors.js';
 import { ADMIN_COOKIE, CHALLENGE_COOKIE, AdminAuthService } from './auth.service.js';
 import { AdminSessionGuard, cookie, type AdminRequest } from './session.guard.js';
-import { localTestPasswordsEnabled } from './config.js';
+import { localTestPasswordsEnabled, localPasswordLoginEnabled } from './config.js';
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success)
@@ -38,6 +38,7 @@ export class AdminAuthController {
       environment: this.auth.config.nodeEnv,
       stage: 'A',
       ...(localTestPasswordsEnabled(this.auth.config) ? { localTestPasswords: true } : {}),
+      ...(localPasswordLoginEnabled(this.auth.config) ? { localPasswordLogin: true } : {}),
     };
   }
   @Get('me') @UseGuards(AdminSessionGuard) me(@Req() request: AdminRequest) {
@@ -51,7 +52,10 @@ export class AdminAuthController {
     this.auth.enabled();
     const data = parse(z.object({ email, password }).strict(), body);
     const result = await this.auth.login(data.email, data.password, request.ip ?? 'unknown');
-    this.setCookie(response, CHALLENGE_COOKIE, result.raw, 600);
+    if ('account' in result.data) {
+      this.setCookie(response, ADMIN_COOKIE, result.raw, 8 * 3600);
+      this.setCookie(response, CHALLENGE_COOKIE, '', 0);
+    } else this.setCookie(response, CHALLENGE_COOKIE, result.raw, 600);
     return result.data;
   }
   @Post('auth/invitations/accept') async accept(
@@ -72,7 +76,10 @@ export class AdminAuthController {
       body,
     );
     const result = await this.auth.accept(data, request.ip ?? 'unknown');
-    this.setCookie(response, CHALLENGE_COOKIE, result.raw, 600);
+    if ('account' in result.data) {
+      this.setCookie(response, ADMIN_COOKIE, result.raw, 8 * 3600);
+      this.setCookie(response, CHALLENGE_COOKIE, '', 0);
+    } else this.setCookie(response, CHALLENGE_COOKIE, result.raw, 600);
     return result.data;
   }
   @Post('auth/mfa/verify') async verify(

@@ -188,6 +188,7 @@ export default function AdminApp() {
           client={client}
           environment={status.environment}
           localTestPasswords={status.localTestPasswords === true}
+          localPasswordLogin={status.localPasswordLogin === true}
           onSuccess={(account) => {
             client.invalidate();
             setLogoutError('');

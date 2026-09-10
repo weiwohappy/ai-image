@@ -355,6 +355,7 @@ model AdminSession {
   tokenHash String @unique
   accountId String @db.Uuid
   authVersion Int
+  authMethod String @default("mfa")
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
   expiresAt DateTime @db.Timestamptz(6)

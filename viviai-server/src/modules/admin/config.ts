@@ -5,6 +5,7 @@ export interface AdminConfig {
   origins: string[];
   encryptionKey?: string;
   localTestEmails?: string[];
+  localPasswordLogin?: boolean;
 }
 const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost']);
 const loopbackAddresses = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -57,12 +58,20 @@ export function adminPasswordMinimum(
     ? 6
     : 12;
 }
+export function localPasswordLoginEnabled(config: LocalPasswordContext) {
+  return config.admin?.localPasswordLogin === true && localTestPasswordsEnabled(config);
+}
+export function allowsLocalPasswordLogin(config: LocalPasswordContext, email: string, ip: string) {
+  return localPasswordLoginEnabled(config) && adminPasswordMinimum(config, email, ip) === 6;
+}
 export function validateAdminConfig(
   config: AdminConfig | undefined,
   environment: string,
   host?: string,
 ) {
   const emails = validateLocalEmails(config?.localTestEmails ?? []);
+  if (config?.localPasswordLogin && !emails.length)
+    throw new Error('Local password-only login requires an explicit administrator allowlist');
   if (
     emails.length &&
     (environment !== 'development' ||
@@ -96,8 +105,11 @@ export function validateAdminConfig(
 export function loadAdminConfig(env: Record<string, string | undefined>): AdminConfig {
   if (env.ADMIN_ENABLED && !['true', 'false'].includes(env.ADMIN_ENABLED))
     throw new Error('Invalid ADMIN_ENABLED');
+  if (env.ADMIN_LOCAL_PASSWORD_LOGIN && !['true', 'false'].includes(env.ADMIN_LOCAL_PASSWORD_LOGIN))
+    throw new Error('Invalid ADMIN_LOCAL_PASSWORD_LOGIN');
   return {
     enabled: env.ADMIN_ENABLED === 'true',
+    localPasswordLogin: env.ADMIN_LOCAL_PASSWORD_LOGIN === 'true',
     origins:
       env.ADMIN_ORIGINS?.split(',')
         .map((x) => x.trim())

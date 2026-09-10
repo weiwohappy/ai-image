@@ -49,6 +49,7 @@ export interface AdminStatus {
   environment: string;
   stage: 'A';
   localTestPasswords?: boolean;
+  localPasswordLogin?: boolean;
 }
 export interface AuthChallenge {
   next: 'mfa' | 'enroll';

@@ -86,6 +86,19 @@ describe('admin cryptographic boundaries', () => {
       expect(() => loadAdminConfig({ ADMIN_LOCAL_TEST_EMAILS: value })).toThrow();
     }
   });
+  it('keeps password-only login explicit and requires a local allowlist even when admin is disabled', () => {
+    expect(loadAdminConfig({}).localPasswordLogin).not.toBe(true);
+    expect(loadAdminConfig({ ADMIN_LOCAL_PASSWORD_LOGIN: 'true' }).localPasswordLogin).toBe(true);
+    expect(loadAdminConfig({ ADMIN_LOCAL_PASSWORD_LOGIN: 'false' }).localPasswordLogin).toBe(false);
+    expect(() => loadAdminConfig({ ADMIN_LOCAL_PASSWORD_LOGIN: 'yes' })).toThrow();
+    expect(() =>
+      validateAdminConfig(
+        { enabled: false, origins: ['http://localhost:3010'], localPasswordLogin: true },
+        'development',
+        '127.0.0.1',
+      ),
+    ).toThrow();
+  });
   it.each([
     ['production', '127.0.0.1', 'http://localhost:3010'],
     ['test', '127.0.0.1', 'http://localhost:3010'],
