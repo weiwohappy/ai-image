@@ -19,6 +19,7 @@ import {
 } from './crypto.js';
 import { permissions } from './permissions.js';
 import type { AdminActor } from './contracts.js';
+import { adminPasswordMinimum } from './config.js';
 export const ADMIN_COOKIE = 'viviai_admin_session';
 export const CHALLENGE_COOKIE = 'viviai_admin_challenge';
 export const denied = () =>
@@ -49,6 +50,12 @@ export class AdminAuthService {
   ) {}
   enabled() {
     if (!this.config.admin?.enabled) throw denied();
+  }
+  private passwordMinimum(password: string, email: string, ip: string) {
+    const minimum = adminPasswordMinimum(this.config, email, ip);
+    if (password.length < minimum || password.length > 128)
+      throw new AppError(400, 'ADMIN_INVALID_INPUT', 'Invalid administrator request');
+    return minimum;
   }
   async rate(ip: string, credential: string, limit = 10) {
     const ok = await this.db.transaction(async (tx) => {
@@ -108,6 +115,7 @@ export class AdminAuthService {
   }
   async login(email: string, password: string, ip: string) {
     this.enabled();
+    this.passwordMinimum(password, email, ip);
     await this.rate(ip, email);
     const result = await this.db.transaction(async (tx) => {
       await lockAdmin(tx, `email:${email}`);
@@ -137,8 +145,9 @@ export class AdminAuthService {
     ip: string,
   ) {
     this.enabled();
+    const minimum = this.passwordMinimum(input.password, input.email, ip);
     await this.rate(ip, input.email);
-    const passwordHash = await hashPassword(input.password);
+    const passwordHash = await hashPassword(input.password, minimum);
     const result = await this.db.transaction(async (tx) => {
       await lockAdmin(tx, `email:${input.email}`);
       await lockAdmin(tx, `invitation:${digest(input.token)}`);

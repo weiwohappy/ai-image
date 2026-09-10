@@ -157,6 +157,7 @@ export default function AdminApp() {
         <AuthScreen
           client={client}
           environment={status.environment}
+          localTestPasswords={status.localTestPasswords === true}
           onSuccess={(account) => {
             client.invalidate();
             setLogoutError('');

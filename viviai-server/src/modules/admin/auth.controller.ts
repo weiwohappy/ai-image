@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { AppError } from '../../shared/http/errors.js';
 import { ADMIN_COOKIE, CHALLENGE_COOKIE, AdminAuthService } from './auth.service.js';
 import { AdminSessionGuard, cookie, type AdminRequest } from './session.guard.js';
+import { localTestPasswordsEnabled } from './config.js';
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success)
@@ -16,7 +17,8 @@ const email = z
   .email()
   .max(254)
   .transform((s) => s.toLowerCase());
-const password = z.string().min(12).max(128);
+// The service enforces 12 characters, except for explicit loopback development accounts.
+const password = z.string().min(1).max(128);
 @Controller('admin')
 export class AdminAuthController {
   constructor(@Inject(AdminAuthService) private readonly auth: AdminAuthService) {}
@@ -35,6 +37,7 @@ export class AdminAuthController {
       enabled: this.auth.config.admin?.enabled ?? false,
       environment: this.auth.config.nodeEnv,
       stage: 'A',
+      ...(localTestPasswordsEnabled(this.auth.config) ? { localTestPasswords: true } : {}),
     };
   }
   @Get('me') @UseGuards(AdminSessionGuard) me(@Req() request: AdminRequest) {

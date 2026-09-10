@@ -85,8 +85,10 @@ function derive(password: string, salt: Buffer): Promise<Buffer> {
     ),
   );
 }
-export async function hashPassword(password: string) {
-  if (password.length < 12 || password.length > 128) throw new Error('Invalid password length');
+export async function hashPassword(password: string, minimumLength: 6 | 12 = 12) {
+  // Callers may lower the minimum only after applying the local development policy.
+  if (![6, 12].includes(minimumLength) || password.length < minimumLength || password.length > 128)
+    throw new Error('Invalid password length');
   const salt = randomBytes(16);
   return `scrypt$${salt.toString('hex')}$${(await derive(password, salt)).toString('hex')}`;
 }

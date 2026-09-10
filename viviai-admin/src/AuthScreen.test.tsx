@@ -96,3 +96,57 @@ it('recognizes an invitation opened in an already mounted logged-out tab', () =>
   });
   expect(screen.getByRole('button', { name: '接受邀请并绑定验证器' })).toBeInTheDocument();
 });
+
+it('allows the native short-password form only in explicit development mode and still proceeds to MFA', async () => {
+  window.history.replaceState(null, '', '#/login');
+  const done = vi.fn();
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        json({ next: 'enroll', secret: 'LOCAL_TEST_SECRET', expiresAt: '2099-01-01T00:00:00Z' }),
+      ),
+  );
+  render(
+    <AuthScreen
+      client={new AdminClient()}
+      onSuccess={done}
+      environment="development"
+      localTestPasswords
+    />,
+  );
+  expect(screen.getByLabelText('密码')).toHaveAttribute('minlength', '6');
+  fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: actor.email } });
+  fireEvent.change(screen.getByLabelText('密码'), { target: { value: '123456' } });
+  fireEvent.click(screen.getByRole('button', { name: '继续验证' }));
+  expect(await screen.findByText('LOCAL_TEST_SECRET')).toBeInTheDocument();
+  expect(done).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['development', false],
+  ['production', true],
+  ['test', true],
+])(
+  'keeps the standard password requirement in %s without a valid local exception',
+  (environment, localTestPasswords) => {
+    window.history.replaceState(null, '', '#/login');
+    const fetcher = vi.fn();
+    vi.stubGlobal('fetch', fetcher);
+    render(
+      <AuthScreen
+        client={new AdminClient()}
+        onSuccess={vi.fn()}
+        environment={environment as string}
+        localTestPasswords={localTestPasswords as boolean}
+      />,
+    );
+    expect(screen.getByLabelText('密码')).toHaveAttribute('minlength', '12');
+    fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: actor.email } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: '123456' } });
+    fireEvent.submit(screen.getByRole('button', { name: '继续验证' }).closest('form')!);
+    expect(screen.getByRole('alert')).toHaveTextContent('12');
+    expect(fetcher).not.toHaveBeenCalled();
+  },
+);

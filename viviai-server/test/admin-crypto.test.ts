@@ -65,4 +65,42 @@ describe('admin cryptographic boundaries', () => {
       ),
     ).toThrow('Invalid admin encryption key');
   });
+  it('keeps short password hashing opt-in instead of changing the default policy', async () => {
+    await expect(hashPassword('123456')).rejects.toThrow();
+    const hash = await hashPassword('123456', 6);
+    expect(await verifyPassword('123456', hash)).toBe(true);
+    expect(await verifyPassword('123457', hash)).toBe(false);
+    await expect(hashPassword('12345', 6)).rejects.toThrow();
+  });
+  it('loads a bounded explicit local test allowlist without creating any default entries', () => {
+    expect(loadAdminConfig({}).localTestEmails ?? []).toEqual([]);
+    expect(
+      loadAdminConfig({ ADMIN_LOCAL_TEST_EMAILS: 'One@example.test,two@example.test' })
+        .localTestEmails,
+    ).toEqual(['one@example.test', 'two@example.test']);
+    for (const value of [
+      'not-an-email',
+      'same@example.test,same@example.test',
+      'a@example.test,b@example.test,c@example.test',
+    ]) {
+      expect(() => loadAdminConfig({ ADMIN_LOCAL_TEST_EMAILS: value })).toThrow();
+    }
+  });
+  it.each([
+    ['production', '127.0.0.1', 'http://localhost:3010'],
+    ['test', '127.0.0.1', 'http://localhost:3010'],
+    ['development', '0.0.0.0', 'http://localhost:3010'],
+    ['development', '127.0.0.1', 'https://admin.example.test'],
+  ])(
+    'refuses local password exceptions outside local development: %s %s %s',
+    (environment, host, origin) => {
+      expect(() =>
+        validateAdminConfig(
+          { enabled: false, origins: [origin], localTestEmails: ['one@example.test'] },
+          environment,
+          host,
+        ),
+      ).toThrow();
+    },
+  );
 });

@@ -164,7 +164,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 export function validateConfig(config: AppConfig): AppConfig {
-  validateAdminConfig(config.admin, config.nodeEnv);
+  validateAdminConfig(config.admin, config.nodeEnv, config.host);
   if (config.officialImages) validateOfficialConfig(config.officialImages);
   const issues: string[] = [];
   const hasAccessKey = config.s3AccessKeyId !== undefined;

@@ -12,11 +12,15 @@ export function AuthScreen({
   client,
   onSuccess,
   environment,
+  localTestPasswords = false,
 }: {
   client: AdminClient;
   onSuccess: (actor: AdminActor) => void;
   environment: string;
+  localTestPasswords?: boolean;
 }) {
+  const localPasswordMode = environment === 'development' && localTestPasswords;
+  const minimumPasswordLength = localPasswordMode ? 6 : 12;
   const [token, setToken] = useState(() =>
     typeof window !== 'undefined' && window.location.hash.startsWith('#/accept?')
       ? (new URLSearchParams(window.location.hash.split('?')[1]).get('token') ?? '')
@@ -78,6 +82,10 @@ export function AuthScreen({
     event.preventDefault();
     if (busy) return;
     setError('');
+    if (!challenge && (password.length < minimumPasswordLength || password.length > 128)) {
+      setError(`密码需为 ${minimumPasswordLength}–128 个字符`);
+      return;
+    }
     setBusy(true);
     pending.current?.abort();
     const controller = new AbortController();
@@ -217,14 +225,23 @@ export function AuthScreen({
                     type="password"
                     autoComplete={token ? 'new-password' : 'current-password'}
                     required
-                    minLength={12}
+                    minLength={minimumPasswordLength}
                     maxLength={128}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />
                 </label>
-                {token && (
-                  <p className="caption">密码需为 12–128 个字符。邀请与指定邮箱绑定，不可转让。</p>
+                {localPasswordMode ? (
+                  <p className="caption">
+                    仅预先授权的本机测试账号允许临时短密码，仍需双重验证。其他账号至少 12
+                    位；请勿用于正式环境。
+                  </p>
+                ) : (
+                  token && (
+                    <p className="caption">
+                      密码需为 12–128 个字符。邀请与指定邮箱绑定，不可转让。
+                    </p>
+                  )
                 )}
               </>
             ) : (
