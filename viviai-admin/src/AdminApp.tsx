@@ -220,6 +220,7 @@ export default function AdminApp() {
       environment={status.environment}
       stage={status.stage}
       teamWritesEnabled={status.teamWritesEnabled === true}
+      modelPricingWritesEnabled={status.modelPricingWritesEnabled === true}
       onPermissionsChanged={async () => {
         try {
           const next = await client.get<AdminActor>('/me');

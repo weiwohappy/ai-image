@@ -32,6 +32,18 @@ export function formatValue(value: Cell | undefined, kind?: Kind): string {
   return String(value);
 }
 export function safeRoute(path: string): string | null {
+  if (path === '/model-pricing') return path;
+  if (path.startsWith('/model-pricing?')) {
+    const params = new URLSearchParams(path.slice('/model-pricing?'.length));
+    const value = params.get('modelId');
+    return [...params.keys()].length === 1 &&
+      value &&
+      /^[a-zA-Z0-9_.-]+$/.test(value) &&
+      value !== '.' &&
+      value !== '..'
+      ? `/model-pricing?modelId=${encodeURIComponent(value)}`
+      : null;
+  }
   if (path.split('/').some((segment) => segment === '.' || segment === '..')) return null;
   return /^\/(?:dashboard|users|orders|jobs|attempts|models|provider-accounts|alerts|audit-events|administrators|roles)(?:\/[a-zA-Z0-9_.-]+)?$/.test(
     path,

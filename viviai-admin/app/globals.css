@@ -905,6 +905,122 @@ h1 {
   border-radius: 6px;
   background: #f1faf6;
 }
+.pricing-page .query-toolbar {
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.pricing-page .query-toolbar [data-slot='select-trigger'] {
+  min-width: 200px;
+}
+.pricing-table {
+  min-width: 1160px;
+}
+.pricing-table th:first-child,
+.pricing-table td:first-child {
+  padding-left: 24px;
+}
+.pricing-table td {
+  white-space: normal;
+}
+.pricing-credits {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap !important;
+}
+.pricing-resolution {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid #dfe4ec;
+  border-radius: 5px;
+  background: #f8fafc;
+  font-size: 14px;
+}
+.pricing-secondary {
+  color: #667085;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.pricing-block {
+  display: block;
+  margin-top: 5px;
+}
+.pricing-state {
+  display: inline-block;
+  border-radius: 5px;
+  padding: 3px 8px;
+  color: #667085;
+  background: #f3f5f8;
+  white-space: nowrap;
+}
+.pricing-active {
+  color: #147d55;
+  background: #eff9f3;
+}
+.pricing-specs summary,
+.pricing-spec-summary summary {
+  cursor: pointer;
+  color: #2459db;
+}
+.pricing-specs ul,
+.pricing-spec-summary ul {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  line-height: 1.9;
+  color: #667085;
+}
+.pricing-spec-summary,
+.pricing-change-preview {
+  padding: 16px;
+  border: 1px solid #dfe4ec;
+  border-radius: 8px;
+  background: #f8fafc;
+  line-height: 1.7;
+}
+.pricing-spec-summary details {
+  margin-top: 12px;
+}
+.pricing-change-preview > p {
+  margin-top: 6px;
+}
+.pricing-total-preview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid #dfe4ec;
+}
+.pricing-total-preview select {
+  margin-left: 12px;
+  padding: 6px 10px;
+  background: white;
+  border: 1px solid #dfe4ec;
+  border-radius: 6px;
+}
+.pricing-total-preview strong {
+  font-size: 22px;
+  color: #2459db;
+}
+.pricing-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pricing-history li {
+  padding: 20px 0;
+  border-bottom: 1px solid #dfe4ec;
+}
+.pricing-history time {
+  color: #667085;
+  font-size: 14px;
+}
+.pricing-history li > p {
+  margin-top: 12px;
+  line-height: 1.8;
+}
 .back-link {
   display: flex;
   align-items: center;

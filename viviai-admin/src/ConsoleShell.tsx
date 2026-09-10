@@ -41,6 +41,7 @@ import { DetailPage } from './DetailPage';
 import { useAdminQuery } from './useQuery';
 import { TeamPage } from './team/TeamPage';
 import { RolesPage } from './team/RolesPage';
+import { PricingPage } from './pricing/PricingPage';
 
 const icons = [
   LayoutDashboard,
@@ -48,6 +49,7 @@ const icons = [
   CreditCard,
   ListChecks,
   Layers,
+  CreditCard,
   Network,
   Bell,
   ScrollText,
@@ -61,6 +63,7 @@ export function ConsoleShell({
   onLogout,
   stage = 'A',
   teamWritesEnabled = false,
+  modelPricingWritesEnabled = false,
   onPermissionsChanged,
 }: {
   actor: AdminActor;
@@ -69,6 +72,7 @@ export function ConsoleShell({
   onLogout: () => void;
   stage?: AdminStatus['stage'];
   teamWritesEnabled?: boolean;
+  modelPricingWritesEnabled?: boolean;
   onPermissionsChanged: () => Promise<void>;
 }) {
   const initial = availableNavigation(actor)[0]?.path ?? '/dashboard';
@@ -79,12 +83,14 @@ export function ConsoleShell({
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
   }, [initial]);
-  const root = `/${path.split('/')[1]}`;
+  const pathname = path.split('?')[0];
+  const root = `/${pathname.split('/')[1]}`;
   const title = navigation.find((item) => item.path === root)?.label ?? '调用详情';
   const permission = routePermission(path);
   const allowed = permission && actor.permissions.includes(permission);
-  const detail = path.split('/').length > 2;
+  const detail = pathname.split('/').length > 2;
   const team = !detail && (root === '/administrators' || root === '/roles');
+  const pricing = root === '/model-pricing';
   return (
     <SidebarProvider style={{ '--sidebar-width': '224px' } as CSSProperties}>
       <Sidebar collapsible="offcanvas">
@@ -119,7 +125,11 @@ export function ConsoleShell({
           </div>
           <span className="environment">
             {environment} ·{' '}
-            {stage === 'B1' && teamWritesEnabled ? '团队管理 B1' : `只读查询 ${stage}`}
+            {modelPricingWritesEnabled
+              ? '团队与定价管理'
+              : stage === 'B1' && teamWritesEnabled
+                ? '团队管理 B1'
+                : `只读查询 ${stage}`}
           </span>
         </header>
         <div className="console-content">
@@ -128,9 +138,11 @@ export function ConsoleShell({
               <p className="eyebrow">
                 {detail
                   ? 'RECORD DETAIL'
-                  : team && teamWritesEnabled
-                    ? 'OPERATIONS / TEAM MANAGEMENT'
-                    : 'OPERATIONS / READ ONLY'}
+                  : pricing && modelPricingWritesEnabled
+                    ? 'OPERATIONS / CREDIT PRICING'
+                    : team && teamWritesEnabled
+                      ? 'OPERATIONS / TEAM MANAGEMENT'
+                      : 'OPERATIONS / READ ONLY'}
               </p>
               <h1>{detail ? `${title}详情` : title}</h1>
               <p>
@@ -138,9 +150,11 @@ export function ConsoleShell({
                   ? '关联记录、时间与状态统一追溯。'
                   : root === '/dashboard'
                     ? '只展示当前角色可见的真实业务数据。'
-                    : team
-                      ? '管理内部成员与岗位权限，变更即时校验并记录审计。'
-                      : '精确定位业务记录，所有查询均受权限与审计保护。'}
+                    : pricing
+                      ? '独立配置模型分辨率积分，价格与 API 成本分开管理。'
+                      : team
+                        ? '管理内部成员与岗位权限，变更即时校验并记录审计。'
+                        : '精确定位业务记录，所有查询均受权限与审计保护。'}
               </p>
             </div>
             {detail && root !== '/attempts' && (
@@ -160,6 +174,15 @@ export function ConsoleShell({
             <DetailPage key={path} path={path} client={client} permissions={actor.permissions} />
           ) : root === '/dashboard' ? (
             <DashboardQuery client={client} permissions={actor.permissions} />
+          ) : pricing ? (
+            <PricingPage
+              key={path}
+              actor={actor}
+              client={client}
+              writeEnabled={modelPricingWritesEnabled}
+              initialModelId={new URLSearchParams(path.split('?')[1]).get('modelId') ?? ''}
+              onPermissionsChanged={onPermissionsChanged}
+            />
           ) : root === '/administrators' ? (
             <TeamPage actor={actor} client={client} onPermissionsChanged={onPermissionsChanged} />
           ) : root === '/roles' ? (
@@ -173,7 +196,11 @@ export function ConsoleShell({
             </span>
             <span>
               数据时间：Asia/Shanghai ·{' '}
-              {teamWritesEnabled ? '团队管理已开放，业务模块仍为只读' : '当前环境写操作未开放'}
+              {modelPricingWritesEnabled
+                ? '团队与积分定价可管理，其他业务模块仍为只读'
+                : teamWritesEnabled
+                  ? '团队管理已开放，业务模块仍为只读'
+                  : '当前环境写操作未开放'}
             </span>
           </footer>
         </div>
@@ -202,7 +229,9 @@ function TeamNavigation({ actor, path }: { actor: AdminActor; path: string }) {
                           <SidebarMenuButton
                             className="nav-item"
                             render={<a href={`#${item.path}`} />}
-                            isActive={path === item.path || path.startsWith(`${item.path}/`)}
+                            isActive={
+                              path.split('?')[0] === item.path || path.startsWith(`${item.path}/`)
+                            }
                             onClick={() => setOpenMobile(false)}
                           >
                             <Icon />

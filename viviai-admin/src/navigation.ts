@@ -5,6 +5,7 @@ export const navigation = [
   { path: '/orders', label: '支付订单', permission: 'orders.read', group: '业务查询' },
   { path: '/jobs', label: '生成任务', permission: 'jobs.read', group: '业务查询' },
   { path: '/models', label: '模型与规格', permission: 'models.read', group: '模型运行' },
+  { path: '/model-pricing', label: '积分定价', permission: 'models.read', group: '模型运行' },
   {
     path: '/provider-accounts',
     label: 'API 提供方',
@@ -20,6 +21,7 @@ export function availableNavigation(actor: AdminActor) {
   return navigation.filter((item) => actor.permissions.includes(item.permission));
 }
 export function routePermission(path: string) {
+  path = path.split('?')[0];
   if (path.startsWith('/attempts/')) return 'jobs.read';
   if (/^\/users\/[^/]+\/credit-(lots|events)$/.test(path)) return 'credits.read';
   return navigation.find((item) => path === item.path || path.startsWith(`${item.path}/`))

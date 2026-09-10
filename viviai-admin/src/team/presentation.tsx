@@ -10,6 +10,9 @@ import {
 import type { AllowedAction, PermissionEntry, RoleOption, TeamAction } from './contracts';
 import { useFieldFeedback } from './FormField';
 const reasons: Record<string, string> = {
+  PRICE_VERSION_CONFLICT: '积分价格已被修改，请加载最新记录并核对后保存',
+  PRICE_CHANGED: '积分价格已变化，请重新获取报价',
+  PRICE_UNAVAILABLE: '该分辨率的积分价格尚未配置或已停用',
   ADMIN_FORBIDDEN: '当前账号没有此操作权限',
   ADMIN_TEAM_WRITES_DISABLED: '当前环境未开放团队写操作',
   ADMIN_SELF_PROTECTED: '不能对本人执行此操作',

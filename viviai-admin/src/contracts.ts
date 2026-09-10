@@ -49,6 +49,7 @@ export interface AdminStatus {
   environment: string;
   stage: 'A' | 'B1';
   teamWritesEnabled?: boolean;
+  modelPricingWritesEnabled?: boolean;
   localTestPasswords?: boolean;
   localPasswordLogin?: boolean;
 }

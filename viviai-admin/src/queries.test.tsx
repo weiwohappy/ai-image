@@ -32,7 +32,7 @@ it('shows navigation based on actual permissions rather than role names', () => 
     availableNavigation({ ...actor, roles: ['owner'], permissions: ['models.read'] }).map(
       (item) => item.path,
     ),
-  ).toEqual(['/models']);
+  ).toEqual(['/models', '/model-pricing']);
   const finance = availableNavigation({
     ...actor,
     roles: ['finance'],

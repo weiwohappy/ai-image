@@ -45,6 +45,14 @@ export function DetailPage({
       <section className="panel">
         <div className="panel-title">
           <h2>{detail.title}</h2>
+          {path.startsWith('/models/') && permissions.includes('models.read') && (
+            <a
+              className="back-link"
+              href={`#/model-pricing?modelId=${encodeURIComponent(detail.id)}`}
+            >
+              查看积分定价
+            </a>
+          )}
           <Button variant="outline" onClick={() => setRevision((n) => n + 1)}>
             刷新详情
           </Button>
