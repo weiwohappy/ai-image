@@ -75,6 +75,15 @@ try {
   assert.equal(verified.recoveryCodes.length, 8);
   const actor = await client.get('/me');
   assert.equal(actor.email, invitations[0].email);
+  const boundAccount = await db.database.client.adminAccount.findUniqueOrThrow({
+    where: { id: actor.id },
+    include: { roleBindings: true },
+  });
+  assert.deepEqual(
+    boundAccount.roleBindings.map((binding) => binding.roleKey),
+    ['owner'],
+  );
+  assert.deepEqual(actor.roles, ['owner']);
   assert(actor.permissions.includes('sensitive.read'));
   assert.equal((await client.get('/models')).rows.length, 5);
   const model = await client.get('/models/gemini-3.1-flash-lite-image');

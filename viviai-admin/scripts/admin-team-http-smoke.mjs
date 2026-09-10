@@ -140,23 +140,48 @@ try {
     ),
     expectedStatus(409),
   );
-  member = await manager.get(targetPath);
-  const disableBody = { expectedVersion: member.version, reason },
+  const disableFixture = await fixtureAdmin(db, ['support']);
+  const disableSession = clientFor(disableFixture.cookie);
+  const disablePath = `/team/members/${disableFixture.account.id}`;
+  let disableMember = await manager.get(disablePath);
+  const disableBody = { expectedVersion: disableMember.version, reason },
     disableKey = randomUUID();
-  const disabled = await manager.command('POST', `${targetPath}/disable`, disableBody, disableKey);
+  assert.equal((await disableSession.get('/me')).id, disableFixture.account.id);
+  const disabled = await manager.command('POST', `${disablePath}/disable`, disableBody, disableKey);
+  await assert.rejects(disableSession.get('/me'), expectedStatus(401));
   assert.equal(
-    (await manager.command('POST', `${targetPath}/disable`, disableBody, disableKey)).version,
+    (await manager.command('POST', `${disablePath}/disable`, disableBody, disableKey)).version,
     disabled.version,
   );
-  member = await manager.get(targetPath);
-  assert.equal(member.status, 'disabled');
+  disableMember = await manager.get(disablePath);
+  assert.equal(disableMember.status, 'disabled');
   await manager.command(
     'POST',
-    `${targetPath}/enable`,
-    { expectedVersion: member.version, reason },
+    `${disablePath}/enable`,
+    { expectedVersion: disableMember.version, reason },
     randomUUID(),
   );
-  await assert.rejects(ordinary.get('/me'), expectedStatus(401));
+  await assert.rejects(disableSession.get('/me'), expectedStatus(401));
+  // Reset starts with a newly authenticated session, not the role-revoked cookie.
+  const resetSession = clientFor();
+  assert.equal(
+    (
+      await resetSession.post(
+        '/auth/login',
+        { email: ordinaryFixture.account.email, password: 'test-only-long-password' },
+        undefined,
+        false,
+      )
+    ).next,
+    'mfa',
+  );
+  await resetSession.post(
+    '/auth/mfa/verify',
+    { method: 'totp', code: currentCode() },
+    undefined,
+    false,
+  );
+  assert.equal((await resetSession.get('/me')).id, ordinaryFixture.account.id);
   member = await manager.get(targetPath);
   const resetKey = randomUUID(),
     resetBody = { expectedVersion: member.version, reason };
@@ -166,6 +191,7 @@ try {
     resetBody,
     resetKey,
   );
+  await assert.rejects(resetSession.get('/me'), expectedStatus(401));
   const replay = await manager.command(
     'POST',
     `${targetPath}/password-resets`,
@@ -204,7 +230,7 @@ try {
   );
   const loggedIn = await recovering.post(
     '/auth/mfa/verify',
-    { method: 'totp', code: currentCode() },
+    { method: 'totp', code: currentCode(undefined, 1) },
     undefined,
     false,
   );
@@ -234,6 +260,12 @@ try {
     reason,
   };
   const invited = await manager.command('POST', '/team/invitations', inviteBody, randomUUID());
+  const pendingInvites = await manager.get(
+    `/team/invitations?q=${encodeURIComponent(inviteBody.email)}&limit=30`,
+  );
+  const createdInvite = pendingInvites.items.find((item) => item.id === invited.resourceId);
+  assert(createdInvite, 'Created invitation must be readable immediately');
+  assert.equal(createdInvite.status, 'pending');
   const original = readAuthLink(new URL(invited.link).hash);
   assert(original?.kind === 'invite');
   const rotated = await manager.command(
