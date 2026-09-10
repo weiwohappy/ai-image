@@ -166,10 +166,11 @@ describe('authoritative model credit prices', () => {
       });
       const quote = await catalog.quote(userId, input);
       const before = await wallet.balance(userId);
-      const [submitted] = await Promise.allSettled([
+      const [submitted, repriced] = await Promise.allSettled([
         jobs.create(userId, { quoteId: quote.id, input }, randomUUID(), 'create'),
         save(current.unitCredits + 10, true, current.version),
       ]);
+      expect(repriced.status).toBe('fulfilled');
       if (submitted.status === 'fulfilled') {
         expect((await wallet.balance(userId)).held - before.held).toBe(BigInt(quote.totalCredits));
         expect(submitted.value.estimatedCredits).toBe(quote.totalCredits);
