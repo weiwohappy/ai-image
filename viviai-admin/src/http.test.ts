@@ -6,6 +6,52 @@ const response = (data: unknown, status = 200) =>
     status,
   });
 describe('admin HTTP boundary', () => {
+  it('sends typed team mutations with a stable idempotency key and JSON version', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ resourceId: 'member-1', version: 2 }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new AdminClient();
+    const body = { displayName: '客服同事', expectedVersion: 1, reason: '更新成员显示名称' };
+    const key = 'a0d0188e-c11e-4a2f-b24b-e84607e84607';
+    expect(await client.command('PATCH', '/team/members/member-1', body, key)).toEqual({
+      resourceId: 'member-1',
+      version: 2,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      '/api/admin/team/members/member-1',
+      expect.objectContaining({
+        method: 'PATCH',
+        body: JSON.stringify(body),
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: expect.objectContaining({
+          'Idempotency-Key': key,
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+  });
+  it('retains a safe business error code without displaying the raw response message', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: null,
+            code: 'ADMIN_TEAM_VERSION_CONFLICT',
+            message: 'private internal details',
+            requestId: 'safe-id',
+          }),
+          { status: 409 },
+        ),
+      ),
+    );
+    await expect(new AdminClient().get('/team/members/member-1')).rejects.toMatchObject({
+      code: 'ADMIN_TEAM_VERSION_CONFLICT',
+      status: 409,
+      requestId: 'safe-id',
+      message: '状态已变化，请刷新后重试',
+    });
+  });
   it('uses same-origin cookies, no cache and an abort signal', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ id: 'a' }));
     vi.stubGlobal('fetch', fetcher);
@@ -82,17 +128,15 @@ describe('admin HTTP boundary', () => {
   it('accepts the existing backend success envelope without an error code', async () => {
     vi.stubGlobal(
       'fetch',
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              data: { enabled: false },
-              message: 'success',
-              requestId: 'request-1',
-            }),
-          ),
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: { enabled: false },
+            message: 'success',
+            requestId: 'request-1',
+          }),
         ),
+      ),
     );
     await expect(new AdminClient().get('/status')).resolves.toEqual({ enabled: false });
   });

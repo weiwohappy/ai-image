@@ -30,7 +30,7 @@ import {
   SidebarTrigger,
   useSidebar,
 } from '@/components/ui/sidebar';
-import type { AdminActor, Dashboard } from './contracts';
+import type { AdminActor, AdminStatus, Dashboard } from './contracts';
 import { AdminClient } from './http';
 import { Brand } from './AuthScreen';
 import { availableNavigation, navigation, roleLabels, routePermission } from './navigation';
@@ -39,6 +39,8 @@ import { ResourcePage } from './ResourcePage';
 import { DashboardPage } from './DashboardPage';
 import { DetailPage } from './DetailPage';
 import { useAdminQuery } from './useQuery';
+import { TeamPage } from './team/TeamPage';
+import { RolesPage } from './team/RolesPage';
 
 const icons = [
   LayoutDashboard,
@@ -57,11 +59,17 @@ export function ConsoleShell({
   client,
   environment,
   onLogout,
+  stage = 'A',
+  teamWritesEnabled = false,
+  onPermissionsChanged,
 }: {
   actor: AdminActor;
   client: AdminClient;
   environment: string;
   onLogout: () => void;
+  stage?: AdminStatus['stage'];
+  teamWritesEnabled?: boolean;
+  onPermissionsChanged: () => Promise<void>;
 }) {
   const initial = availableNavigation(actor)[0]?.path ?? '/dashboard';
   const [path, setPath] = useState(initial);
@@ -76,6 +84,7 @@ export function ConsoleShell({
   const permission = routePermission(path);
   const allowed = permission && actor.permissions.includes(permission);
   const detail = path.split('/').length > 2;
+  const team = !detail && (root === '/administrators' || root === '/roles');
   return (
     <SidebarProvider style={{ '--sidebar-width': '224px' } as CSSProperties}>
       <Sidebar collapsible="offcanvas">
@@ -108,19 +117,30 @@ export function ConsoleShell({
             <span className="breadcrumb-divider">/</span>
             <strong>{title}</strong>
           </div>
-          <span className="environment">{environment} · 只读查询 A</span>
+          <span className="environment">
+            {environment} ·{' '}
+            {stage === 'B1' && teamWritesEnabled ? '团队管理 B1' : `只读查询 ${stage}`}
+          </span>
         </header>
         <div className="console-content">
           <div className="page-heading">
             <div>
-              <p className="eyebrow">{detail ? 'RECORD DETAIL' : 'OPERATIONS / READ ONLY'}</p>
+              <p className="eyebrow">
+                {detail
+                  ? 'RECORD DETAIL'
+                  : team && teamWritesEnabled
+                    ? 'OPERATIONS / TEAM MANAGEMENT'
+                    : 'OPERATIONS / READ ONLY'}
+              </p>
               <h1>{detail ? `${title}详情` : title}</h1>
               <p>
                 {detail
                   ? '关联记录、时间与状态统一追溯。'
                   : root === '/dashboard'
                     ? '只展示当前角色可见的真实业务数据。'
-                    : '精确定位业务记录，所有查询均受权限与审计保护。'}
+                    : team
+                      ? '管理内部成员与岗位权限，变更即时校验并记录审计。'
+                      : '精确定位业务记录，所有查询均受权限与审计保护。'}
               </p>
             </div>
             {detail && root !== '/attempts' && (
@@ -140,6 +160,10 @@ export function ConsoleShell({
             <DetailPage key={path} path={path} client={client} permissions={actor.permissions} />
           ) : root === '/dashboard' ? (
             <DashboardQuery client={client} permissions={actor.permissions} />
+          ) : root === '/administrators' ? (
+            <TeamPage actor={actor} client={client} onPermissionsChanged={onPermissionsChanged} />
+          ) : root === '/roles' ? (
+            <RolesPage actor={actor} client={client} onPermissionsChanged={onPermissionsChanged} />
           ) : (
             <ResourcePage path={path} client={client} permissions={actor.permissions} />
           )}
@@ -147,7 +171,10 @@ export function ConsoleShell({
             <span>
               <Activity size={13} /> VIVIAI 内部运营平台
             </span>
-            <span>数据时间：Asia/Shanghai · 高风险写操作尚未开放</span>
+            <span>
+              数据时间：Asia/Shanghai ·{' '}
+              {teamWritesEnabled ? '团队管理已开放，业务模块仍为只读' : '当前环境写操作未开放'}
+            </span>
           </footer>
         </div>
       </SidebarInset>

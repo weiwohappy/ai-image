@@ -1,13 +1,18 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { AdminClient, AdminError, errorText } from './http';
 import type { AdminActor, AdminStatus } from './contracts';
 import { AuthScreen, Brand } from './AuthScreen';
 import { ConsoleShell } from './ConsoleShell';
+import { useAuthEntry } from './auth-link';
 
 export default function AdminApp() {
   const [client] = useState(() => new AdminClient());
+  const { entry, dismiss } = useAuthEntry();
+  const linkActive = Boolean(entry.link || entry.invalid);
+  const linkActiveRef = useRef(linkActive);
+  linkActiveRef.current = linkActive;
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [actor, setActor] = useState<AdminActor | null>(null);
   const [loading, setLoading] = useState(true);
@@ -15,6 +20,12 @@ export default function AdminApp() {
   const [retry, setRetry] = useState(0);
   const [logoutError, setLogoutError] = useState('');
   const [logoutPending, setLogoutPending] = useState(false);
+  useEffect(() => {
+    if (linkActive) {
+      client.invalidate();
+      setActor(null);
+    }
+  }, [client, entry, linkActive]);
   useEffect(() => {
     const controller = new AbortController();
     client.onUnauthorized = () => setActor(null);
@@ -25,10 +36,10 @@ export default function AdminApp() {
         const next = await client.get<AdminStatus>('/status', controller.signal);
         if (controller.signal.aborted) return;
         setStatus(next);
-        if (next.enabled) {
+        if (next.enabled && !linkActiveRef.current) {
           try {
             const account = await client.get<AdminActor>('/me', controller.signal);
-            if (!controller.signal.aborted) setActor(account);
+            if (!controller.signal.aborted && !linkActiveRef.current) setActor(account);
           } catch (failure) {
             if (!(failure instanceof AdminError && failure.status === 401)) throw failure;
           }
@@ -103,7 +114,7 @@ export default function AdminApp() {
     async function focus() {
       try {
         const next = await client.get<AdminActor>('/me', controller.signal);
-        if (!controller.signal.aborted) {
+        if (!controller.signal.aborted && !linkActiveRef.current) {
           if (authContext(next) !== authContext(actor!)) client.invalidate();
           setActor(next);
         }
@@ -173,7 +184,7 @@ export default function AdminApp() {
         </main>
       </div>
     );
-  if (!actor)
+  if (!actor || linkActive)
     return (
       <>
         {logoutError && (
@@ -186,10 +197,13 @@ export default function AdminApp() {
         )}
         <AuthScreen
           client={client}
+          entry={entry}
+          onLinkDone={dismiss}
           environment={status.environment}
           localTestPasswords={status.localTestPasswords === true}
           localPasswordLogin={status.localPasswordLogin === true}
           onSuccess={(account) => {
+            dismiss();
             client.invalidate();
             setLogoutError('');
             setActor(account);
@@ -203,6 +217,19 @@ export default function AdminApp() {
       actor={actor}
       client={client}
       environment={status.environment}
+      stage={status.stage}
+      teamWritesEnabled={status.teamWritesEnabled === true}
+      onPermissionsChanged={async () => {
+        try {
+          const next = await client.get<AdminActor>('/me');
+          if (authContext(next) !== authContext(actor)) client.invalidate();
+          setActor(next);
+        } catch (failure) {
+          client.invalidate();
+          setActor(null);
+          throw failure;
+        }
+      }}
       onLogout={logout}
     />
   );

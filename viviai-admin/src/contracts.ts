@@ -47,7 +47,8 @@ export interface Dashboard {
 export interface AdminStatus {
   enabled: boolean;
   environment: string;
-  stage: 'A';
+  stage: 'A' | 'B1';
+  teamWritesEnabled?: boolean;
   localTestPasswords?: boolean;
   localPasswordLogin?: boolean;
 }

@@ -5,7 +5,7 @@ import { AdminClient } from './http';
 import { actor, json } from './test/fixtures';
 
 it('accepts an invite, removes its URL token, verifies MFA, and requires recovery acknowledgement', async () => {
-  window.history.replaceState(null, '', '#/accept?token=invite-token');
+  window.history.replaceState(null, '', '#/accept?token=' + 'a'.repeat(43));
   const done = vi.fn();
   const fetcher = vi
     .fn()
@@ -91,7 +91,7 @@ it('recognizes an invitation opened in an already mounted logged-out tab', () =>
   window.history.replaceState(null, '', '#/login');
   render(<AuthScreen client={new AdminClient()} environment="test" onSuccess={vi.fn()} />);
   act(() => {
-    window.history.replaceState(null, '', '#/accept?token=new-invitation');
+    window.history.replaceState(null, '', '#/accept?token=' + 'b'.repeat(43));
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   });
   expect(screen.getByRole('button', { name: '接受邀请并绑定验证器' })).toBeInTheDocument();
@@ -103,17 +103,15 @@ it('clears an old enrollment screen when local password-only login is enabled wi
   const done = vi.fn();
   vi.stubGlobal(
     'fetch',
-    vi
-      .fn()
-      .mockImplementation(() =>
-        Promise.resolve(
-          json({
-            next: 'enroll',
-            secret: 'OLD_LOCAL_TEST_SECRET',
-            expiresAt: '2099-01-01T00:00:00Z',
-          }),
-        ),
+    vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        json({
+          next: 'enroll',
+          secret: 'OLD_LOCAL_TEST_SECRET',
+          expiresAt: '2099-01-01T00:00:00Z',
+        }),
       ),
+    ),
   );
   const { rerender } = render(
     <AuthScreen client={client} environment="development" localTestPasswords onSuccess={done} />,
@@ -144,7 +142,7 @@ it('clears an old enrollment screen when local password-only login is enabled wi
 });
 
 it('consumes a local direct-login invitation and removes its token without displaying recovery codes', async () => {
-  window.history.replaceState(null, '', '#/accept?token=local-invite');
+  window.history.replaceState(null, '', '#/accept?token=' + 'c'.repeat(43));
   const done = vi.fn();
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ account: actor })));
   render(

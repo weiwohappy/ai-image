@@ -12,6 +12,7 @@ export class AdminError extends Error {
   constructor(
     public status: number,
     public requestId?: string,
+    public code?: string,
   ) {
     super(messages[status] ?? '服务暂时不可用，请稍后重试');
     this.name = 'AdminError';
@@ -46,9 +47,24 @@ export class AdminClient {
   post<T>(path: string, body: unknown, signal?: AbortSignal, authenticated = true) {
     return this.request<T>(path, { method: 'POST', body, signal, authenticated });
   }
+  command<T>(
+    method: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
+    path: string,
+    body: unknown,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ) {
+    return this.request<T>(path, { method, body, signal, idempotencyKey });
+  }
   private async request<T>(
     path: string,
-    options: { method?: string; body?: unknown; signal?: AbortSignal; authenticated?: boolean },
+    options: {
+      method?: string;
+      body?: unknown;
+      signal?: AbortSignal;
+      authenticated?: boolean;
+      idempotencyKey?: string;
+    },
   ): Promise<T> {
     const generation = this.generation;
     const response = await fetch(adminPath(path), {
@@ -59,6 +75,7 @@ export class AdminClient {
       headers: {
         Accept: 'application/json',
         ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
       },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     });
@@ -76,7 +93,15 @@ export class AdminClient {
       /^[a-zA-Z0-9_-]{1,100}$/.test(envelope.requestId)
         ? envelope.requestId
         : undefined;
-    this.check(generation, response.status, options.authenticated !== false, requestId);
+    const code =
+      envelope &&
+      typeof envelope === 'object' &&
+      'code' in envelope &&
+      typeof envelope.code === 'string' &&
+      /^[A-Z0-9_]{1,80}$/.test(envelope.code)
+        ? envelope.code
+        : undefined;
+    this.check(generation, response.status, options.authenticated !== false, requestId, code);
     if (
       !envelope ||
       typeof envelope !== 'object' ||
@@ -104,12 +129,18 @@ export class AdminClient {
       throw new AdminError(502);
     return blob;
   }
-  private check(generation: number, status: number, authenticated: boolean, requestId?: string) {
+  private check(
+    generation: number,
+    status: number,
+    authenticated: boolean,
+    requestId?: string,
+    code?: string,
+  ) {
     if (generation !== this.generation) throw new DOMException('Session changed', 'AbortError');
     if (status === 401 && authenticated) {
       this.invalidate();
       this.onUnauthorized?.();
     }
-    if (status >= 400) throw new AdminError(status, requestId);
+    if (status >= 400) throw new AdminError(status, requestId, code);
   }
 }

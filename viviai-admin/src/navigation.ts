@@ -14,7 +14,7 @@ export const navigation = [
   { path: '/alerts', label: '运行告警', permission: 'alerts.read', group: '模型运行' },
   { path: '/audit-events', label: '操作审计', permission: 'audit.read', group: '团队安全' },
   { path: '/administrators', label: '团队成员', permission: 'admins.read', group: '团队安全' },
-  { path: '/roles', label: '角色与权限', permission: 'admins.read', group: '团队安全' },
+  { path: '/roles', label: '角色与权限', permission: 'roles.read', group: '团队安全' },
 ];
 export function availableNavigation(actor: AdminActor) {
   return navigation.filter((item) => actor.permissions.includes(item.permission));
@@ -26,6 +26,7 @@ export function routePermission(path: string) {
     ?.permission;
 }
 export const roleLabels: Record<string, string> = {
+  super_admin: '超级管理员',
   owner: '业务负责人',
   support: '客服',
   finance: '财务',

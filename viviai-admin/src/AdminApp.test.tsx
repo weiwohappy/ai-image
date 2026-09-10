@@ -2,6 +2,63 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { expect, it, vi } from 'vitest';
 import AdminApp from './AdminApp';
 import { actor, emptyTable, json } from './test/fixtures';
+import { permissionEntries, roleOptions, teamActor } from './team/test-fixtures';
+
+it('routes B1 team management to forms with the true super-administrator label', async () => {
+  window.history.replaceState(null, '', '#/administrators');
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.endsWith('/status'))
+        return json({
+          enabled: true,
+          environment: 'development',
+          stage: 'B1',
+          teamWritesEnabled: true,
+        });
+      if (url.endsWith('/me')) return json(teamActor);
+      if (url.endsWith('/team/permission-catalog'))
+        return json({
+          permissions: permissionEntries,
+          assignableRoles: roleOptions,
+          writeEnabled: true,
+        });
+      if (url.includes('/team/members'))
+        return json({
+          items: [],
+          nextCursor: null,
+          asOf: emptyTable.asOf,
+          allowedActions: [{ action: 'create', allowed: true, reasonCode: null }],
+        });
+      return json(emptyTable);
+    }),
+  );
+  render(<AdminApp />);
+  expect(await screen.findByText('超级管理员')).toBeInTheDocument();
+  expect(screen.getByText('development · 团队管理 B1')).toBeInTheDocument();
+  expect(await screen.findByRole('button', { name: '新增成员' })).toBeEnabled();
+  expect(screen.getByRole('tab', { name: '待激活邀请' })).toBeInTheDocument();
+});
+
+it('opens an anonymous reset link without showing a pre-existing account session', async () => {
+  window.history.replaceState(
+    null,
+    '',
+    '#/reset-password?token=' + 'a'.repeat(43) + '&email=lin%40example.test',
+  );
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) =>
+      url.endsWith('/status')
+        ? json({ enabled: true, environment: 'development', stage: 'B1' })
+        : json(actor),
+    ),
+  );
+  render(<AdminApp />);
+  expect(window.location.hash).toBe('#/login');
+  expect(await screen.findByRole('heading', { name: '设置新的登录密码' })).toBeInTheDocument();
+  expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+});
 
 it('does not use mock fallback when admin is disabled', async () => {
   const fetcher = vi

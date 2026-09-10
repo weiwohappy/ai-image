@@ -7,30 +7,66 @@ import { Input } from '@/components/ui/input';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import { AdminClient, errorText } from './http';
 import type { AdminActor, AuthChallenge, AuthResult } from './contracts';
+import { useAuthEntry, type AuthEntry, type AuthLink } from './auth-link';
+import { PasswordResetScreen } from './PasswordResetScreen';
 
-export function AuthScreen({
+interface AuthProps {
+  client: AdminClient;
+  onSuccess: (actor: AdminActor) => void;
+  environment: string;
+  localTestPasswords?: boolean;
+  localPasswordLogin?: boolean;
+  entry?: AuthEntry;
+  onLinkDone?: () => void;
+}
+export function AuthScreen(props: AuthProps) {
+  const local = useAuthEntry(props.entry === undefined);
+  const entry = props.entry ?? local.entry;
+  const dismiss = props.onLinkDone ?? local.dismiss;
+  if (entry.link?.kind === 'reset')
+    return (
+      <PasswordResetScreen
+        key={entry.link.token}
+        link={entry.link}
+        client={props.client}
+        onDone={dismiss}
+        localTestPasswords={
+          props.environment === 'development' && props.localTestPasswords === true
+        }
+      />
+    );
+  return (
+    <PasswordLoginScreen
+      key={entry.link?.token ?? (entry.invalid ? 'invalid-link' : 'login')}
+      {...props}
+      link={entry.link}
+      invalidLink={entry.invalid}
+    />
+  );
+}
+function PasswordLoginScreen({
   client,
   onSuccess,
   environment,
   localTestPasswords = false,
   localPasswordLogin = false,
+  link,
+  invalidLink,
 }: {
   client: AdminClient;
   onSuccess: (actor: AdminActor) => void;
   environment: string;
   localTestPasswords?: boolean;
   localPasswordLogin?: boolean;
+  link: AuthLink | null;
+  invalidLink: boolean;
 }) {
   const localPasswordMode = environment === 'development' && localTestPasswords;
   const passwordOnlyMode = localPasswordMode && localPasswordLogin;
   const minimumPasswordLength = localPasswordMode ? 6 : 12;
-  const [token, setToken] = useState(() =>
-    typeof window !== 'undefined' && window.location.hash.startsWith('#/accept?')
-      ? (new URLSearchParams(window.location.hash.split('?')[1]).get('token') ?? '')
-      : '',
-  );
-  const [email, setEmail] = useState('');
-  const [displayName, setDisplayName] = useState('');
+  const [token, setToken] = useState(link?.token ?? '');
+  const [email, setEmail] = useState(link?.email ?? '');
+  const [displayName, setDisplayName] = useState(link?.displayName ?? '');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [challenge, setChallenge] = useState<AuthChallenge | null>(null);
@@ -38,7 +74,7 @@ export function AuthScreen({
   const [result, setResult] = useState<AuthResult | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [error, setError] = useState(invalidLink ? '链接格式无效，请联系管理员重新生成' : '');
   const pending = useRef<AbortController | null>(null);
   useEffect(() => () => pending.current?.abort(), []);
   useEffect(() => {
@@ -48,27 +84,8 @@ export function AuthScreen({
     setChallenge(null);
     setCode('');
     setBusy(false);
-    setError('');
-  }, [passwordOnlyMode]);
-  useEffect(() => {
-    function changed() {
-      pending.current?.abort();
-      setToken(
-        window.location.hash.startsWith('#/accept?')
-          ? (new URLSearchParams(window.location.hash.split('?')[1]).get('token') ?? '')
-          : '',
-      );
-      setPassword('');
-      setCode('');
-      setChallenge(null);
-      setResult(null);
-      setSaved(false);
-      setBusy(false);
-      setError('');
-    }
-    window.addEventListener('hashchange', changed);
-    return () => window.removeEventListener('hashchange', changed);
-  }, []);
+    setError(invalidLink ? '链接格式无效，请联系管理员重新生成' : '');
+  }, [passwordOnlyMode, invalidLink]);
   useEffect(() => {
     if (!challenge) return;
     const expires = new Date(challenge.expiresAt).getTime();
