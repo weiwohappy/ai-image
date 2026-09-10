@@ -13,6 +13,74 @@ it('does not use mock fallback when admin is disabled', async () => {
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(screen.queryByLabelText('密码')).not.toBeInTheDocument();
 });
+it('refreshes a stale guest password policy on return without losing entered credentials', async () => {
+  let localTestPasswords = false;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/status')
+          ? json({ enabled: true, environment: 'development', stage: 'A', localTestPasswords })
+          : url.endsWith('/auth/login')
+            ? json({ next: 'enroll', expiresAt: new Date(Date.now() + 300_000).toISOString() })
+            : json(null, 401),
+      ),
+    ),
+  );
+  render(<AdminApp />);
+  const password = await screen.findByLabelText('密码');
+  expect(password).toHaveAttribute('minlength', '12');
+  fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: 'local@example.com' } });
+  fireEvent.change(password, { target: { value: '123456' } });
+  localTestPasswords = true;
+  fireEvent.focus(window);
+  await waitFor(() => expect(password).toHaveAttribute('minlength', '6'));
+  expect(screen.getByLabelText('工作邮箱')).toHaveValue('local@example.com');
+  expect(password).toHaveValue('123456');
+  fireEvent.click(screen.getByRole('button', { name: /继续/ }));
+  expect(await screen.findByRole('heading', { name: '绑定身份验证器' })).toBeInTheDocument();
+  expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+});
+
+it('removes the guest short-password exception when returning after it is disabled', async () => {
+  let localTestPasswords = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/status')
+          ? json({ enabled: true, environment: 'development', stage: 'A', localTestPasswords })
+          : json(null, 401),
+      ),
+    ),
+  );
+  render(<AdminApp />);
+  const password = await screen.findByLabelText('密码');
+  expect(password).toHaveAttribute('minlength', '6');
+  localTestPasswords = false;
+  fireEvent.focus(window);
+  await waitFor(() => expect(password).toHaveAttribute('minlength', '12'));
+});
+
+it('hides guest login when a return-to-page status check reports administration disabled', async () => {
+  let enabled = true;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url: string) =>
+      Promise.resolve(
+        url.endsWith('/status')
+          ? json({ enabled, environment: 'development', stage: 'A' })
+          : json(null, 401),
+      ),
+    ),
+  );
+  render(<AdminApp />);
+  await screen.findByLabelText('密码');
+  enabled = false;
+  fireEvent.focus(window);
+  expect(await screen.findByRole('heading', { name: '管理入口尚未启用' })).toBeInTheDocument();
+  expect(screen.queryByLabelText('密码')).not.toBeInTheDocument();
+});
 it('clears protected pages when a read returns 401', async () => {
   window.history.replaceState(null, '', '#/users');
   vi.stubGlobal(

@@ -45,6 +45,36 @@ export default function AdminApp() {
     };
   }, [client, retry]);
   useEffect(() => {
+    if (loading || actor || logoutPending) return;
+    let pending: AbortController | undefined;
+    // An open login form can outlive a server configuration change.
+    // Refresh on return without remounting the form or polling an idle session.
+    async function refreshStatus() {
+      pending?.abort();
+      const controller = new AbortController();
+      pending = controller;
+      try {
+        const next = await client.get<AdminStatus>('/status', controller.signal);
+        if (!controller.signal.aborted) {
+          setStatus(next);
+          setError('');
+        }
+      } catch (failure) {
+        if (!controller.signal.aborted) setError(errorText(failure));
+      }
+    }
+    function visible() {
+      if (document.visibilityState === 'visible') void refreshStatus();
+    }
+    window.addEventListener('focus', refreshStatus);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      pending?.abort();
+      window.removeEventListener('focus', refreshStatus);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [actor, client, loading, logoutPending]);
+  useEffect(() => {
     if (!actor) return;
     const controller = new AbortController();
     const delay = new Date(actor.sessionExpiresAt).getTime() - Date.now();
