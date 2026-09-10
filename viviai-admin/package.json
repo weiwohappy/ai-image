@@ -12,6 +12,7 @@
     "format": "oxfmt",
     "test": "vitest run",
     "smoke": "TSX_TSCONFIG_PATH=../viviai-server/tsconfig.json node --import ../viviai-server/node_modules/tsx/dist/loader.mjs scripts/admin-http-smoke.mjs",
+    "smoke:team": "TSX_TSCONFIG_PATH=../viviai-server/tsconfig.json node --import ../viviai-server/node_modules/tsx/dist/loader.mjs scripts/admin-team-http-smoke.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"
   },
