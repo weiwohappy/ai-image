@@ -21,7 +21,14 @@ import type {
   TeamInvitation,
   PermissionCatalog,
 } from './contracts';
-import { ActionButton, reasonText, RoleTags, TeamPagination, TeamSelect } from './presentation';
+import {
+  ActionButton,
+  canAct,
+  reasonText,
+  RoleTags,
+  TeamPagination,
+  TeamSelect,
+} from './presentation';
 import { MemberEditor } from './MemberEditor';
 import { InvitationEditor } from './InvitationEditor';
 const statuses: Record<string, string> = {
@@ -84,7 +91,11 @@ export function TeamPage({
           </TabsList>
         </Tabs>
         <Button
-          disabled={!write || !actor.permissions.includes('admins.create')}
+          disabled={
+            !write ||
+            !actor.permissions.includes('admins.create') ||
+            !canAct(query.data?.allowedActions ?? [], 'create')
+          }
           onClick={() => setEditor({ kind: 'invitation', action: 'create' })}
         >
           <Plus size={16} />

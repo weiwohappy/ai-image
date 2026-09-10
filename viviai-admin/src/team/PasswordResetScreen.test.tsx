@@ -1,9 +1,33 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
-import { AuthScreen } from './AuthScreen';
-import { AdminClient } from './http';
-import { json } from './test/fixtures';
+import { AuthScreen } from '../AuthScreen';
+import { AdminClient } from '../http';
+import { json } from '../test/fixtures';
 import { readAuthLink } from './auth-link';
+
+it('requires twelve characters for anonymous reset even with the global local-test flag', () => {
+  window.history.replaceState(
+    null,
+    '',
+    '#/reset-password?token=' + 'a'.repeat(43) + '&email=new%40example.test',
+  );
+  const fetcher = vi.fn();
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <AuthScreen
+      client={new AdminClient()}
+      environment="development"
+      localTestPasswords
+      localPasswordLogin
+      onSuccess={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('新密码'), { target: { value: '123456' } });
+  fireEvent.change(screen.getByLabelText('确认新密码'), { target: { value: '123456' } });
+  fireEvent.submit(screen.getByRole('button', { name: '重置密码' }).closest('form')!);
+  expect(screen.getByRole('alert')).toHaveTextContent('12');
+  expect(fetcher).not.toHaveBeenCalled();
+});
 
 it.each([
   '#/other?token=' + 'a'.repeat(43),

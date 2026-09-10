@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { AdminClient } from '../src/http.ts';
-import { readAuthLink } from '../src/auth-link.ts';
+import { readAuthLink } from '../src/team/auth-link.ts';
 import { createTestDatabase } from '../../viviai-server/test/helpers/database.ts';
 import { createTestStorage } from '../../viviai-server/test/helpers/storage.ts';
 import {

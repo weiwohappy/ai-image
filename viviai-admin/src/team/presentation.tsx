@@ -8,6 +8,7 @@ import {
   SelectItem,
 } from '@/components/ui/select';
 import type { AllowedAction, PermissionEntry, RoleOption, TeamAction } from './contracts';
+import { useFieldFeedback } from './FormField';
 const reasons: Record<string, string> = {
   ADMIN_FORBIDDEN: '当前账号没有此操作权限',
   ADMIN_TEAM_WRITES_DISABLED: '当前环境未开放团队写操作',
@@ -89,9 +90,20 @@ export function RoleChoices({
   onChange: (keys: string[]) => void;
   permissions: PermissionEntry[];
 }) {
+  const { error, errorId } = useFieldFeedback('roles');
   return (
-    <fieldset className="team-choices">
+    <fieldset
+      className="team-choices"
+      aria-invalid={Boolean(error)}
+      aria-describedby={error ? errorId : undefined}
+      tabIndex={error ? -1 : undefined}
+    >
       <legend>分配角色</legend>
+      {error && (
+        <p className="team-field-error" id={errorId}>
+          {error}
+        </p>
+      )}
       {roles.map((role) => (
         <label key={role.key} className="team-choice">
           <input

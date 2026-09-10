@@ -3,7 +3,8 @@ import { Input } from '@/components/ui/input';
 import type { AdminClient } from '../http';
 import type { PermissionCatalog, TeamAction, TeamMember } from './contracts';
 import { ActionForm } from './ActionForm';
-import { RoleChoices } from './presentation';
+import { RoleChoices, RoleTags } from './presentation';
+import { FormField, type FieldErrors } from './FormField';
 export function MemberEditor({
   member,
   action,
@@ -87,11 +88,11 @@ export function MemberEditor({
           summary: `${next.displayName}，${next.roles.map((r) => r.name).join('、')}`,
         };
       }}
-      validate={() =>
+      validate={(): FieldErrors | undefined =>
         action === 'edit' && !name.trim()
-          ? '请填写显示名称'
+          ? { displayName: '请填写显示名称' }
           : action === 'assignRoles' && !roles.length
-            ? '请至少选择一个角色'
+            ? { roles: '请至少选择一个角色' }
             : undefined
       }
       payload={() =>
@@ -103,10 +104,9 @@ export function MemberEditor({
         <Input readOnly value={member.email} />
       </label>
       {action === 'edit' && (
-        <label className="field">
-          显示名称
+        <FormField name="displayName" label="显示名称">
           <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-        </label>
+        </FormField>
       )}
       {action === 'assignRoles' && (
         <>
@@ -123,9 +123,15 @@ export function MemberEditor({
         </>
       )}
       {action === 'disable' && (
-        <p className="notices">
-          将立即停止该成员访问并撤销所有登录会话，业务数据和审计记录会保留。
-        </p>
+        <>
+          <div>
+            <p className="caption">当前角色</p>
+            <RoleTags roles={member.roles} />
+          </div>
+          <p className="notices">
+            将立即停止该成员访问并撤销所有登录会话，业务数据和审计记录会保留。
+          </p>
+        </>
       )}
       {action === 'enable' && (
         <p className="notices">成员可重新登录；尚未完成的身份验证仍需完成，旧会话不会恢复。</p>

@@ -119,7 +119,25 @@ export function RolesPage({
                     <small className="team-email">{role.key}</small>
                   </TableCell>
                   <TableCell>{role.builtIn ? '内置' : '自定义'}</TableCell>
-                  <TableCell>{role.permissions.length} 项</TableCell>
+                  <TableCell>
+                    <span
+                      title={role.permissions
+                        .map(
+                          (key) =>
+                            catalog.data?.permissions.find((p) => p.key === key)?.name ?? key,
+                        )
+                        .join('、')}
+                    >
+                      {role.permissions
+                        .slice(0, 3)
+                        .map(
+                          (key) =>
+                            catalog.data?.permissions.find((p) => p.key === key)?.name ?? key,
+                        )
+                        .join('、')}
+                      {role.permissions.length > 3 ? ` 等 ${role.permissions.length} 项` : ''}
+                    </span>
+                  </TableCell>
                   <TableCell>
                     {role.memberCount} / {role.invitationCount}
                   </TableCell>

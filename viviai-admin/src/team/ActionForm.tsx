@@ -12,6 +12,7 @@ import { AdminClient, AdminError, errorText } from '../http';
 import type { TeamMutationResult } from './contracts';
 import { LinkResult } from './LinkResult';
 import { reasonText } from './presentation';
+import { FieldErrorsProvider, FormField, type FieldErrors } from './FormField';
 interface Props {
   client: AdminClient;
   title: string;
@@ -23,7 +24,7 @@ interface Props {
   initialVersion?: number;
   children?: ReactNode;
   payload: () => Record<string, unknown>;
-  validate?: () => string | undefined;
+  validate?: () => FieldErrors | undefined;
   onReload?: () => Promise<{ version: number; summary: string }>;
   onClose: () => void;
   onChanged: () => void;
@@ -36,6 +37,11 @@ export function ActionForm(props: Props) {
     'editing',
   );
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const form = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    form.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [fieldErrors]);
   const [version, setVersion] = useState(props.initialVersion);
   const [latest, setLatest] = useState('');
   const [result, setResult] = useState<TeamMutationResult>();
@@ -96,13 +102,13 @@ export function ActionForm(props: Props) {
   function submit(event: FormEvent) {
     event.preventDefault();
     if (phase !== 'editing' || pending.current) return;
-    const invalid = props.validate?.();
-    if (invalid) {
-      setError(invalid);
-      return;
-    }
+    const invalid = props.validate?.() ?? {};
     if (reason.trim().length < 5 || reason.trim().length > 500) {
-      setError('操作原因需为 5–500 个字符');
+      invalid.reason = '操作原因需为 5–500 个字符';
+    }
+    setFieldErrors(invalid);
+    if (Object.keys(invalid).length) {
+      setError('请检查下方标记的字段');
       return;
     }
     const next = {
@@ -150,22 +156,23 @@ export function ActionForm(props: Props) {
               <Button onClick={props.onClose}>完成</Button>
             </div>
           ) : (
-            <form className="stack" noValidate onSubmit={submit}>
+            <form ref={form} className="stack" noValidate onSubmit={submit}>
               {latest && (
                 <p className="notices">最新记录：{latest}。你的草稿已保留，请核对后保存。</p>
               )}
-              <fieldset disabled={phase !== 'editing'} className="team-fields">
-                {props.children}
-                <label className="field">
-                  操作原因
-                  <Textarea
-                    maxLength={500}
-                    value={reason}
-                    onChange={(e) => setReason(e.target.value)}
-                    placeholder="请说明本次变更的原因，不要填写密码或密钥"
-                  />
-                </label>
-              </fieldset>
+              <FieldErrorsProvider value={fieldErrors}>
+                <fieldset disabled={phase !== 'editing'} className="team-fields">
+                  {props.children}
+                  <FormField name="reason" label="操作原因">
+                    <Textarea
+                      maxLength={500}
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                      placeholder="请说明本次变更的原因，不要填写密码或密钥"
+                    />
+                  </FormField>
+                </fieldset>
+              </FieldErrorsProvider>
               {error && (
                 <p className="error-banner" role="alert">
                   {error}

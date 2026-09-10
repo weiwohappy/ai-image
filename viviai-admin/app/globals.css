@@ -818,6 +818,13 @@ h1 {
   font-size: 14px;
   font-weight: 500;
 }
+.team-field-error {
+  color: #b42318;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  margin-top: 2px;
+}
 .team-fields .field input,
 .team-fields textarea,
 .team-sheet textarea {

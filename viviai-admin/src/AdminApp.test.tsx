@@ -4,6 +4,54 @@ import AdminApp from './AdminApp';
 import { actor, emptyTable, json } from './test/fixtures';
 import { permissionEntries, roleOptions, teamActor } from './team/test-fixtures';
 
+it('refetches all authorization-derived team state after403 even when me has identical grants', async () => {
+  window.history.replaceState(null, '', '#/administrators');
+  let write = true;
+  let catalogReads = 0;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, options?: RequestInit) => {
+      if (url.endsWith('/status'))
+        return json({
+          enabled: true,
+          environment: 'development',
+          stage: 'B1',
+          teamWritesEnabled: true,
+        });
+      if (url.endsWith('/me')) return json(teamActor);
+      if (options?.method === 'POST') {
+        write = false;
+        return json(null, 403);
+      }
+      if (url.endsWith('/team/permission-catalog')) {
+        catalogReads++;
+        return json({
+          permissions: permissionEntries,
+          assignableRoles: roleOptions,
+          writeEnabled: write,
+        });
+      }
+      return json({
+        items: [],
+        nextCursor: null,
+        asOf: emptyTable.asOf,
+        allowedActions: [{ action: 'create', allowed: write, reasonCode: null }],
+      });
+    }),
+  );
+  render(<AdminApp />);
+  const button = await screen.findByRole('button', { name: '新增成员' });
+  await waitFor(() => expect(button).toBeEnabled());
+  fireEvent.click(button);
+  fireEvent.change(screen.getByLabelText('工作邮箱'), { target: { value: 'new@example.test' } });
+  fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: '新同事' } });
+  fireEvent.click(screen.getByLabelText('客服'));
+  fireEvent.change(screen.getByLabelText('操作原因'), { target: { value: '批准新增普通同事' } });
+  fireEvent.click(screen.getByRole('button', { name: '创建邀请' }));
+  await waitFor(() => expect(catalogReads).toBe(2));
+  expect(screen.getByRole('button', { name: '新增成员' })).toBeDisabled();
+});
+
 it('routes B1 team management to forms with the true super-administrator label', async () => {
   window.history.replaceState(null, '', '#/administrators');
   vi.stubGlobal(
@@ -329,6 +377,7 @@ it('clears and reloads role-scoped data even when the permission union is unchan
   currentActor = { ...currentActor, roles: ['finance', 'model_operator'] };
   fireEvent.focus(window);
   await waitFor(() => expect(screen.queryByText('old-role-only-data')).not.toBeInTheDocument());
+  await waitFor(() => expect(finishNewDashboard).toBeTypeOf('function'));
   await act(async () => {
     finishNewDashboard(json({ ...dashboard, notices: ['new-role-data'] }));
   });

@@ -5,7 +5,7 @@ import { AdminClient, AdminError, errorText } from './http';
 import type { AdminActor, AdminStatus } from './contracts';
 import { AuthScreen, Brand } from './AuthScreen';
 import { ConsoleShell } from './ConsoleShell';
-import { useAuthEntry } from './auth-link';
+import { useAuthEntry } from './team/auth-link';
 
 export default function AdminApp() {
   const [client] = useState(() => new AdminClient());
@@ -15,6 +15,7 @@ export default function AdminApp() {
   linkActiveRef.current = linkActive;
   const [status, setStatus] = useState<AdminStatus | null>(null);
   const [actor, setActor] = useState<AdminActor | null>(null);
+  const [permissionEpoch, setPermissionEpoch] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [retry, setRetry] = useState(0);
@@ -213,7 +214,7 @@ export default function AdminApp() {
     );
   return (
     <ConsoleShell
-      key={authContext(actor)}
+      key={`${authContext(actor)}:${permissionEpoch}`}
       actor={actor}
       client={client}
       environment={status.environment}
@@ -222,7 +223,8 @@ export default function AdminApp() {
       onPermissionsChanged={async () => {
         try {
           const next = await client.get<AdminActor>('/me');
-          if (authContext(next) !== authContext(actor)) client.invalidate();
+          client.invalidate();
+          setPermissionEpoch((epoch) => epoch + 1);
           setActor(next);
         } catch (failure) {
           client.invalidate();

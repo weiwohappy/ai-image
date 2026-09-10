@@ -12,6 +12,7 @@ import {
 import type { AdminClient } from '../http';
 import type { PermissionCatalog, TeamRole } from './contracts';
 import { ActionForm } from './ActionForm';
+import { FormField, type FieldErrors } from './FormField';
 
 export function RoleEditor({
   role,
@@ -34,6 +35,15 @@ export function RoleEditor({
   const [key, setKey] = useState(role?.key ?? '');
   const [description, setDescription] = useState(role?.description ?? '');
   const [permissions, setPermissions] = useState(role?.permissions ?? ['dashboard.read']);
+  const [baselinePermissions, setBaselinePermissions] = useState(
+    role?.permissions ?? ['dashboard.read'],
+  );
+  const [impact, setImpact] = useState({
+    members: role?.memberCount ?? 0,
+    invitations: role?.invitationCount ?? 0,
+  });
+  const permissionsChanged =
+    [...permissions].sort().join(',') !== [...baselinePermissions].sort().join(',');
   const available = catalog.permissions.filter((p) => p.customRoleAllowed);
   function toggle(key: string, checked: boolean) {
     const next = new Set(permissions);
@@ -116,10 +126,12 @@ export function RoleEditor({
       }
       validate={() => {
         if (remove) return;
-        if (!name.trim() || name.trim().length > 80) return '角色名称需为 1–80 个字符';
+        const errors: FieldErrors = {};
+        if (!name.trim() || name.trim().length > 80) errors.name = '角色名称需为 1–80 个字符';
         if (create && (!/^custom_[a-z0-9_]+$/.test(key.trim()) || key.trim().length > 64))
-          return '角色标识需以 custom_ 开头，仅使用小写字母、数字和下划线，最多 64 字符';
-        if (description.trim().length > 500) return '角色说明最多 500 个字符';
+          errors.key = '角色标识需以 custom_ 开头，仅使用小写字母、数字和下划线，最多 64 字符';
+        if (description.trim().length > 500) errors.description = '角色说明最多 500 个字符';
+        return errors;
       }}
       onReload={
         role
@@ -127,6 +139,8 @@ export function RoleEditor({
               const latest = await client.get<TeamRole>(
                 `/team/roles/${encodeURIComponent(role.key)}`,
               );
+              setImpact({ members: latest.memberCount, invitations: latest.invitationCount });
+              setBaselinePermissions(latest.permissions);
               return {
                 version: latest.version,
                 summary: `${latest.name} · ${latest.permissions.map((k) => catalog.permissions.find((p) => p.key === k)?.name ?? k).join('、')}`,
@@ -138,16 +152,28 @@ export function RoleEditor({
       onChanged={onChanged}
       onPermissionsChanged={onPermissionsChanged}
     >
+      {!create && (
+        <div className="notices">
+          <p>
+            关联 {impact.members} 位成员、{impact.invitations} 个有效邀请。
+          </p>
+          {!remove && (
+            <p>
+              {permissionsChanged
+                ? `保存后将撤销 ${impact.members} 位成员的旧会话和验证挑战；未消费邀请激活时将使用更新后的权限。`
+                : '仅修改名称或说明不会撤销会话；权限变更后成员需重新登录。'}
+            </p>
+          )}
+        </div>
+      )}
       {remove ? (
         <p className="notices">即将删除「{role?.name}」。历史审计将保留。</p>
       ) : (
         <>
-          <label className="field">
-            角色名称
+          <FormField name="name" label="角色名称">
             <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="field">
-            角色标识
+          </FormField>
+          <FormField name="key" label="角色标识">
             <Input
               value={key}
               maxLength={64}
@@ -155,15 +181,14 @@ export function RoleEditor({
               onChange={(e) => setKey(e.target.value)}
               placeholder="custom_analyst"
             />
-          </label>
-          <label className="field">
-            角色说明
+          </FormField>
+          <FormField name="description" label="角色说明">
             <Textarea
               value={description}
               maxLength={500}
               onChange={(e) => setDescription(e.target.value)}
             />
-          </label>
+          </FormField>
           <fieldset className="team-choices">
             <legend>查询权限与数据范围</legend>
             <p className="caption">勾选权限会自动包含依赖权限；取消基础权限会同步取消依赖项。</p>

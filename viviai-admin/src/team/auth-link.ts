@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+// Shared by invitation entry, reset entry and the actual-client smoke harness.
 export interface AuthLink {
   kind: 'invite' | 'reset';
   token: string;

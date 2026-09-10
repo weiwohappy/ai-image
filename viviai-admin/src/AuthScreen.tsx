@@ -7,8 +7,8 @@ import { Input } from '@/components/ui/input';
 import { InputOTP, InputOTPGroup, InputOTPSlot } from '@/components/ui/input-otp';
 import { AdminClient, errorText } from './http';
 import type { AdminActor, AuthChallenge, AuthResult } from './contracts';
-import { useAuthEntry, type AuthEntry, type AuthLink } from './auth-link';
-import { PasswordResetScreen } from './PasswordResetScreen';
+import { useAuthEntry, type AuthEntry, type AuthLink } from './team/auth-link';
+import { PasswordResetScreen } from './team/PasswordResetScreen';
 
 interface AuthProps {
   client: AdminClient;
@@ -29,6 +29,7 @@ export function AuthScreen(props: AuthProps) {
         key={entry.link.token}
         link={entry.link}
         client={props.client}
+        environment={props.environment}
         onDone={dismiss}
         localTestPasswords={
           props.environment === 'development' && props.localTestPasswords === true

@@ -4,6 +4,7 @@ import type { AdminClient } from '../http';
 import type { PermissionCatalog, TeamAction, TeamInvitation } from './contracts';
 import { ActionForm } from './ActionForm';
 import { RoleChoices } from './presentation';
+import { FormField, type FieldErrors } from './FormField';
 export function InvitationEditor({
   invitation,
   action,
@@ -71,9 +72,11 @@ export function InvitationEditor({
       }
       validate={() => {
         if (!create && !edit) return;
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return '请填写有效的工作邮箱';
-        if (!name.trim()) return '请填写显示名称';
-        if (!roles.length) return '请至少选择一个角色';
+        const errors: FieldErrors = {};
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) errors.email = '请填写有效的工作邮箱';
+        if (!name.trim()) errors.displayName = '请填写显示名称';
+        if (!roles.length) errors.roles = '请至少选择一个角色';
+        return errors;
       }}
       payload={() =>
         create
@@ -85,8 +88,7 @@ export function InvitationEditor({
     >
       {create || edit ? (
         <>
-          <label className="field">
-            工作邮箱
+          <FormField name="email" label="工作邮箱">
             <Input
               type="email"
               value={email}
@@ -94,11 +96,10 @@ export function InvitationEditor({
               readOnly={!create}
               onChange={(e) => setEmail(e.target.value)}
             />
-          </label>
-          <label className="field">
-            显示名称
+          </FormField>
+          <FormField name="displayName" label="显示名称">
             <Input value={name} maxLength={80} onChange={(e) => setName(e.target.value)} />
-          </label>
+          </FormField>
           <RoleChoices
             roles={catalog.assignableRoles.filter((r) => r.key !== 'super_admin')}
             selected={roles}
