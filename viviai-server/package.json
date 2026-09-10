@@ -21,6 +21,7 @@
     "prisma:migrate": "prisma migrate deploy",
     "seed:dev": "tsx src/scripts/seed-dev.ts",
     "admin:bootstrap": "tsx src/scripts/admin-bootstrap.ts",
+    "admin:super-admin": "tsx src/scripts/admin-super-admin.ts",
     "pretest": "prisma generate",
     "test": "vitest run"
   },

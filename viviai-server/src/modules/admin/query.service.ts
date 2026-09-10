@@ -8,7 +8,7 @@ import { AppError } from '../../shared/http/errors.js';
 import { OFFICIAL_MODELS, officialSpecs } from '../providers/official-models.js';
 import { SIMULATED_PROFILES } from '../providers/provider-config.js';
 import { budgetKey } from '../providers/accounting.js';
-import { ROLE_PERMISSIONS, requirePermission } from './permissions.js';
+import { requirePermission } from './permissions.js';
 import { parse } from './auth.controller.js';
 import type { AdminActor, AdminDetail, AdminTable, Cell, Column, Dashboard } from './contracts.js';
 import { label } from './presentation.js';
@@ -852,13 +852,22 @@ export class AdminQueryService {
     const q = query(raw, ['q', 'status', 'from', 'to']);
     const rows = await this.db.client.adminAccount.findMany({
       ...pageArgs(q),
-      where: { ...exact(q.q, true), ...dateWhere(q), ...(q.status ? { status: q.status } : {}) },
+      where: {
+        ...exact(q.q, true),
+        ...dateWhere(q),
+        ...(q.status === 'disabled'
+          ? { disabledAt: { not: null } }
+          : q.status
+            ? { status: q.status, disabledAt: null }
+            : {}),
+      },
       select: {
         id: true,
         email: true,
         displayName: true,
         status: true,
-        roles: true,
+        roleBindings: { include: { role: true } },
+        disabledAt: true,
         createdAt: true,
       },
     });
@@ -869,20 +878,25 @@ export class AdminQueryService {
         id: r.id,
         email: maskEmail(r.email),
         displayName: r.displayName,
-        status: r.status,
-        roles: r.roles.join(', '),
+        status: r.disabledAt ? 'disabled' : r.status,
+        roles: r.roleBindings
+          .filter((b) => !b.role.deletedAt)
+          .map((b) => b.roleKey)
+          .join(', '),
         createdAt: r.createdAt.toISOString(),
       })),
       next(rows, q),
     );
   }
-  roles(actor: AdminActor, raw: unknown) {
+  async roles(actor: AdminActor, raw: unknown) {
     requirePermission(actor, 'admins.read');
     const q = query(raw, ['q']);
-    const rows = Object.entries(ROLE_PERMISSIONS)
-      .filter(([role]) => !q.q || role === q.q)
-      .sort(([a], [b]) => b.localeCompare(a))
-      .map(([role, permissions]) => ({ id: role, permissions: permissions.join(', ') }));
+    const rows = (
+      await this.db.client.adminRole.findMany({
+        where: { deletedAt: null, ...(q.q ? { key: q.q } : {}) },
+        orderBy: { key: 'desc' },
+      })
+    ).map((r) => ({ id: r.key, permissions: r.permissions.join(', ') }));
     const offset = q.cursorId ? rows.findIndex((r) => r.id === q.cursorId) + 1 : 0;
     if (q.cursorId && !offset) throw bad();
     const page = rows.slice(offset, offset + q.limit + 1);
@@ -894,9 +908,7 @@ export class AdminQueryService {
         page.map((r) => ({ id: r.id, createdAt: new Date(0) })),
         q,
       ),
-      [
-        'Optional sensitive.read is granted only through explicit offline invitations. Role editing is unavailable.',
-      ],
+      ['敏感读取仍需独立授权；角色编辑请使用团队角色管理。'],
     );
   }
   async auditEvents(actor: AdminActor, raw: unknown) {
@@ -933,11 +945,9 @@ export class AdminQueryService {
     const q = query(raw, ['q', 'from', 'to', 'status', 'source']);
     if (q.status && !['active', 'resolved'].includes(q.status)) throw bad();
     await this.refreshAlerts();
-    const categories = actor.roles.includes('owner')
-      ? ['service', 'model']
-      : actor.roles.includes('support')
-        ? ['service', ...(actor.roles.includes('model_operator') ? ['model'] : [])]
-        : ['model'];
+    const categories = ['service', 'model'].filter((category) =>
+      actor.permissions.includes(`alerts.${category}.read`),
+    );
     const rows = await this.db.client.adminAlert.findMany({
       ...pageArgs(q),
       where: {
@@ -1033,10 +1043,12 @@ export class AdminQueryService {
     requirePermission(actor, 'dashboard.read');
     parse(z.object({}).strict(), raw);
     const metrics: Dashboard['metrics'] = [];
-    const notices = [
-      'Increment A is read-only; financial and operational mutations are unavailable.',
-    ];
-    if (actor.permissions.includes('users.read')) {
+    const notices = ['团队管理 B1 已开放；本页业务指标及其他业务资源仍为只读。'];
+    if (
+      ['dashboard.business.read', 'users.read', 'orders.read', 'jobs.read'].every((p) =>
+        actor.permissions.includes(p),
+      )
+    ) {
       const [users, orders, jobs] = await Promise.all([
         this.db.client.user.count(),
         this.db.client.paymentOrder.count(),
@@ -1066,7 +1078,11 @@ export class AdminQueryService {
         },
       );
     }
-    if (actor.roles.some((r) => ['owner', 'finance'].includes(r))) {
+    if (
+      ['dashboard.finance.read', 'orders.read', 'credits.read'].every((p) =>
+        actor.permissions.includes(p),
+      )
+    ) {
       const [paid, credits] = await Promise.all([
         this.db.client.paymentOrder.aggregate({
           where: { status: { in: ['paid', 'fulfilled'] } },
@@ -1121,7 +1137,13 @@ export class AdminQueryService {
         },
       );
     }
-    if (actor.permissions.includes('costs.read'))
+    if (
+      actor.permissions.includes('costs.read') &&
+      [
+        ['dashboard.finance.read', 'orders.read', 'credits.read'],
+        ['dashboard.models.read', 'models.read'],
+      ].some((group) => group.every((p) => actor.permissions.includes(p)))
+    )
       for (const simulated of [false, true]) {
         const [usage, unknown] = await Promise.all([
           this.db.client.providerUsageRecord.aggregate({
@@ -1142,7 +1164,7 @@ export class AdminQueryService {
             : 'Recorded USD micros; simulation is separate',
         });
       }
-    if (actor.roles.some((r) => ['owner', 'model_operator'].includes(r))) {
+    if (['dashboard.models.read', 'models.read'].every((p) => actor.permissions.includes(p))) {
       const enabled = this.config.officialImages?.models.length ?? 0;
       metrics.push({
         key: 'enabledModels',
@@ -1152,7 +1174,7 @@ export class AdminQueryService {
         href: '/models',
       });
     }
-    if (actor.roles.some((r) => ['owner', 'system_admin'].includes(r)))
+    if (['dashboard.system.read', 'admins.read'].every((p) => actor.permissions.includes(p)))
       metrics.push({
         key: 'administrators',
         label: 'Administrators',
@@ -1160,7 +1182,7 @@ export class AdminQueryService {
         note: 'All administrator records',
         href: '/administrators',
       });
-    if (actor.roles.includes('content_operator'))
+    if (actor.permissions.includes('dashboard.content.read'))
       notices.push('Content operations are not integrated.');
     const alerts = actor.permissions.includes('alerts.read')
       ? await this.alerts(actor, { status: 'active', limit: '30' })

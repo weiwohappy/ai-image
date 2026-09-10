@@ -45,7 +45,7 @@ describe('explicit local password-only administrator login', () => {
       data: {
         email,
         tokenHash: digest(raw),
-        roles: ['system_admin'],
+        roleBindings: { create: { roleKey: 'system_admin' } },
         expiresAt: new Date(Date.now() + 86400000),
       },
     });
@@ -74,7 +74,11 @@ describe('explicit local password-only administrator login', () => {
     });
     expect(account.status).toBe('pending');
     expect(account.lastTotpCounter).toBeNull();
-    expect(account.roles).toEqual(['system_admin']);
+    expect(
+      (
+        await db.database.client.adminAccountRole.findMany({ where: { accountId: account.id } })
+      ).map((b) => b.roleKey),
+    ).toEqual(['system_admin']);
     expect(account.extraPermissions).toEqual([]);
     expect(
       await db.database.client.adminRecoveryCode.count({ where: { accountId: account.id } }),
@@ -111,7 +115,7 @@ describe('explicit local password-only administrator login', () => {
     ).toBe(401);
     await db.database.client.adminAccount.update({
       where: { email: emails[1] },
-      data: { status: 'disabled' },
+      data: { disabledAt: new Date() },
     });
     expect(
       (await post(local, 'auth/login').send({ email: emails[1], password: '123456' })).status,

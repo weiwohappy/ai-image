@@ -126,6 +126,24 @@ NODE_ENV=development npm run seed:dev
 
 ## 验证
 
+### 运营平台 B1 团队管理
+
+`/api/admin/team` 提供成员、邀请、普通自定义角色的持久化管理；原业务资源仍为只读。写入要求 `NODE_ENV=development`、`HOST` 为回环地址、全部 `ADMIN_ORIGINS` 为回环 Origin 且请求真实对端为回环 IP。生产启动阻断继续保留；`GET /api/admin/status` 返回 `stage: B1` 和实际 `teamWritesEnabled`。
+
+邀请有效期 24 小时，密码重置有效期 30 分钟。两者仅首次响应返回 fragment 链接，由操作者复制转交；不会发送真实邮件。幂等重放仅返回 `linkUnavailable: true`，需新操作重新生成链接。角色变化、禁用和密码重置撤销旧会话、挑战及敏感授权；密码重置保留 MFA。普通新成员仍使用原 12 字符密码和 MFA 流程；显式本地账号例外不扩展至新成员。
+
+迁移 `20260910030000_admin_team_management` 将旧角色数组转换为带外键的关系绑定，保留既有密码、MFA 和额外敏感授权。迁移必须在停用旧后台进程后的维护窗口执行；未知旧角色会使整个事务回滚。成功后旧代码不能直接恢复运行，须先准备与备份及绑定关系一致的反向迁移。
+
+首次超级管理员仅能在数据库尚无 `super_admin` 账号绑定时离线创建。默认 dry-run，检查目标规范化邮箱、版本、可登录状态及本机配置。以下参数中的邮箱和版本必须来自已核对的目标，原因不得包含秘密：
+
+```bash
+npm run admin:super-admin -- --email=operator@example.test --expected-version=1 --reason='批准初次建立超级管理员'
+# 核对 dry-run 后，仅增加 --apply 执行同一明确目标
+npm run admin:super-admin -- --email=operator@example.test --expected-version=1 --reason='批准初次建立超级管理员' --apply
+```
+
+命令只增加超级管理员绑定，保留其它角色及凭据，提升版本并撤销会话；记录离线操作者为空的审计。已有超级管理员后必须走团队界面，不允许重复离线提升。账号仅禁用/启用，不物理删除；角色逻辑删除后标识不可复用。
+
 测试必须使用任务专用数据库角色 / 数据库，允许创建自己的测试 schema。每个集成套件创建随机 `viviai_test_*` schema，只清理自己拥有的 schema；Redis 队列同样使用独立 UUID 命名空间，不执行 Redis flush。
 
 ```bash

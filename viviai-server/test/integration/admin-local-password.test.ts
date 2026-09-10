@@ -36,7 +36,7 @@ describe('explicit local-only administrator password exception', () => {
       data: {
         email,
         tokenHash: digest(raw),
-        roles: ['system_admin'],
+        roleBindings: { create: { roleKey: 'system_admin' } },
         expiresAt: new Date(Date.now() + 86400000),
       },
     });

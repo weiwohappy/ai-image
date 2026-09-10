@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { DatabaseService } from '../../shared/database/database.service.js';
 import { AdminAuditService } from './audit.service.js';
 import { lockAdmin } from './auth.service.js';
+import { lockTeam, invalidateAdmin } from './team/transaction.js';
 import { digest, token } from './crypto.js';
 import { ROLE_PERMISSIONS } from './permissions.js';
 const invite = z
@@ -13,7 +14,7 @@ const invite = z
       .max(254)
       .transform((s) => s.toLowerCase()),
     roles: z
-      .array(z.string().refine((r) => Object.hasOwn(ROLE_PERMISSIONS, r)))
+      .array(z.string().refine((r) => r !== 'super_admin' && Object.hasOwn(ROLE_PERMISSIONS, r)))
       .min(1)
       .max(6),
     extraPermissions: z.array(z.literal('sensitive.read')).max(1).default([]),
@@ -32,6 +33,7 @@ export async function bootstrapAdministrators(
       'Bootstrap requires exactly two distinct explicit administrator emails and role lists',
     );
   return db.transaction(async (tx) => {
+    await lockTeam(tx);
     await lockAdmin(tx, 'initial-bootstrap');
     if (
       (await tx.adminAccount.count()) ||
@@ -46,7 +48,8 @@ export async function bootstrapAdministrators(
       const invitation = await tx.adminInvitation.create({
         data: {
           email: item.email,
-          roles: [...new Set(item.roles)],
+          roleBindings: { create: [...new Set(item.roles)].map((roleKey) => ({ roleKey })) },
+          displayName: item.email,
           extraPermissions: item.extraPermissions,
           tokenHash: digest(raw),
           expiresAt,
@@ -77,6 +80,7 @@ export async function revokeAdministrator(db: DatabaseService, email: string, re
   if (reason.trim().length < 10 || reason.length > 500)
     throw new Error('A 10–500 character revocation reason is required');
   await db.transaction(async (tx) => {
+    await lockTeam(tx);
     await lockAdmin(tx, `email:${normalized}`);
     const account = await tx.adminAccount.findUnique({
       where: { email: normalized },
@@ -84,15 +88,17 @@ export async function revokeAdministrator(db: DatabaseService, email: string, re
     });
     if (!account) throw new Error('Administrator not found');
     await lockAdmin(tx, account.id);
+    if (
+      await tx.adminAccountRole.findUnique({
+        where: { accountId_roleKey: { accountId: account.id, roleKey: 'super_admin' } },
+      })
+    )
+      throw new Error('Super administrators must be managed through the protected team interface');
     await tx.adminAccount.update({
       where: { id: account.id },
-      data: { status: 'disabled', authVersion: { increment: 1 } },
+      data: { disabledAt: new Date(), version: { increment: 1 }, authVersion: { increment: 1 } },
     });
-    await tx.adminChallenge.deleteMany({ where: { accountId: account.id } });
-    await tx.adminSession.updateMany({
-      where: { accountId: account.id },
-      data: { expiresAt: new Date(0) },
-    });
+    await invalidateAdmin(tx, account.id);
     await new AdminAuditService().write(
       tx,
       'account.revoke',

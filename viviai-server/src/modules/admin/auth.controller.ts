@@ -5,6 +5,7 @@ import { AppError } from '../../shared/http/errors.js';
 import { ADMIN_COOKIE, CHALLENGE_COOKIE, AdminAuthService } from './auth.service.js';
 import { AdminSessionGuard, cookie, type AdminRequest } from './session.guard.js';
 import { localTestPasswordsEnabled, localPasswordLoginEnabled } from './config.js';
+import { teamWritesEnabled } from './team/policy.js';
 export function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const parsed = schema.safeParse(input);
   if (!parsed.success)
@@ -32,11 +33,15 @@ export class AdminAuthController {
     });
     response.setHeader('Cache-Control', 'no-store');
   }
-  @Get('status') status() {
+  @Get('status') status(@Req() request: Request) {
     return {
       enabled: this.auth.config.admin?.enabled ?? false,
       environment: this.auth.config.nodeEnv,
-      stage: 'A',
+      stage: 'B1',
+      teamWritesEnabled: teamWritesEnabled(
+        this.auth.config,
+        request.socket.remoteAddress ?? 'unknown',
+      ),
       ...(localTestPasswordsEnabled(this.auth.config) ? { localTestPasswords: true } : {}),
       ...(localPasswordLoginEnabled(this.auth.config) ? { localPasswordLogin: true } : {}),
     };

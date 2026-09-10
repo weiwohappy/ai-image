@@ -17,7 +17,8 @@ import {
   verifyPassword,
   verifyTotp,
 } from './crypto.js';
-import { permissions } from './permissions.js';
+import { AdminPermissionService, roleInclude } from './permission.service.js';
+import { lockTeam } from './team/transaction.js';
 import type { AdminActor } from './contracts.js';
 import { adminPasswordMinimum, allowsLocalPasswordLogin } from './config.js';
 export const ADMIN_COOKIE = 'viviai_admin_session';
@@ -27,13 +28,16 @@ export const denied = () =>
 export async function lockAdmin(tx: DbTransaction, id: string) {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`admin:${id}`}, 0))`;
 }
-export function actor(account: AdminAccount, session: AdminSession): AdminActor {
+export function actor(
+  account: AdminAccount,
+  session: AdminSession,
+  resolved: { roles: string[]; permissions: string[] },
+): AdminActor {
   return {
     id: account.id,
     email: account.email,
     displayName: account.displayName,
-    roles: account.roles,
-    permissions: permissions(account.roles, account.extraPermissions),
+    ...resolved,
     sessionExpiresAt: session.expiresAt.toISOString(),
   };
 }
@@ -48,6 +52,7 @@ export class AdminAuthService {
     @Inject(DatabaseService) readonly db: DatabaseService,
     @Inject(APP_CONFIG) readonly config: AppConfig,
     @Inject(AdminAuditService) private readonly audit: AdminAuditService,
+    @Inject(AdminPermissionService) private readonly permissionService: AdminPermissionService,
   ) {}
   enabled() {
     if (!this.config.admin?.enabled) throw denied();
@@ -130,13 +135,19 @@ export class AdminAuthService {
     // Password-only testing must never mark an account as MFA-enrolled.
     await tx.adminChallenge.deleteMany({ where: { accountId: account.id } });
     await this.audit.write(tx, 'auth.local_password', 'allowed', account.id, session.id);
-    return { raw, data: { account: actor(account, session) } };
+    return {
+      raw,
+      data: {
+        account: actor(account, session, await this.permissionService.account(tx, account.id)),
+      },
+    };
   }
   async login(email: string, password: string, ip: string) {
     this.enabled();
     this.passwordMinimum(password, email, ip);
     await this.rate(ip, email);
     const result = await this.db.transaction(async (tx) => {
+      await lockTeam(tx);
       await lockAdmin(tx, `email:${email}`);
       const initial = await tx.adminAccount.findUnique({ where: { email } });
       if (initial) await lockAdmin(tx, initial.id);
@@ -147,8 +158,9 @@ export class AdminAuthService {
       if (
         !account ||
         !valid ||
+        account.disabledAt ||
         !['active', 'pending'].includes(account.status) ||
-        !permissions(account.roles, account.extraPermissions).length
+        !(await this.permissionService.account(tx, account.id)).permissions.length
       ) {
         await this.audit.write(tx, 'auth.login', 'denied', account?.id);
         return null;
@@ -168,15 +180,21 @@ export class AdminAuthService {
     await this.rate(ip, input.email);
     const passwordHash = await hashPassword(input.password, minimum);
     const result = await this.db.transaction(async (tx) => {
+      await lockTeam(tx);
       await lockAdmin(tx, `email:${input.email}`);
       await lockAdmin(tx, `invitation:${digest(input.token)}`);
       const invite = await tx.adminInvitation.findUnique({
         where: { tokenHash: digest(input.token) },
+        include: roleInclude,
       });
       if (
         !invite ||
         invite.email !== input.email ||
         invite.consumedAt ||
+        invite.revokedAt ||
+        !this.permissionService.resolve(invite.roleBindings, invite.extraPermissions).permissions
+          .length ||
+        invite.roleBindings.some((b) => b.roleKey === 'super_admin') ||
         invite.expiresAt <= new Date() ||
         (await tx.adminAccount.findUnique({ where: { email: input.email } }))
       ) {
@@ -191,14 +209,14 @@ export class AdminAuthService {
           displayName: input.displayName,
           passwordHash,
           status: 'pending',
-          roles: invite.roles,
+          roleBindings: { create: invite.roleBindings.map((b) => ({ roleKey: b.roleKey })) },
           extraPermissions: invite.extraPermissions,
           encryptedMfaSecret: encryptSecret(newSecret(), this.config.admin!.encryptionKey!, id),
         },
       });
       await tx.adminInvitation.update({
         where: { id: invite.id },
-        data: { consumedAt: new Date() },
+        data: { consumedAt: new Date(), version: { increment: 1 } },
       });
       await this.audit.write(tx, 'invitation.accept', 'allowed', id, undefined, invite.id);
       return this.afterPassword(tx, account, ip);
@@ -214,12 +232,15 @@ export class AdminAuthService {
       : null;
     if (!initial) throw denied();
     const result = await this.db.transaction(async (tx) => {
+      await lockTeam(tx);
       await lockAdmin(tx, initial.accountId);
       const challenge = await tx.adminChallenge.findUnique({ where: { id: initial.id } });
       const account = await tx.adminAccount.findUnique({ where: { id: initial.accountId } });
       if (
         !account ||
         !challenge ||
+        account.disabledAt ||
+        !(await this.permissionService.account(tx, account.id)).permissions.length ||
         challenge.expiresAt <= new Date() ||
         challenge.attempts >= 5 ||
         challenge.authVersion !== account.authVersion ||
@@ -264,7 +285,10 @@ export class AdminAuthService {
         await tx.adminRecoveryCode.createMany({
           data: codes.map((code) => ({ accountId: account.id, codeHash: digest(code) })),
         });
-        await tx.adminAccount.update({ where: { id: account.id }, data: { status: 'active' } });
+        await tx.adminAccount.update({
+          where: { id: account.id },
+          data: { status: 'active', version: { increment: 1 } },
+        });
       }
       const sessionRaw = token();
       const session = await tx.adminSession.create({
@@ -279,7 +303,10 @@ export class AdminAuthService {
       await this.audit.write(tx, 'mfa.verify', 'allowed', account.id, session.id);
       return {
         raw: sessionRaw,
-        data: { account: actor(account, session), ...(codes ? { recoveryCodes: codes } : {}) },
+        data: {
+          account: actor(account, session, await this.permissionService.account(tx, account.id)),
+          ...(codes ? { recoveryCodes: codes } : {}),
+        },
       };
     });
     if (!result) throw denied();
@@ -293,6 +320,7 @@ export class AdminAuthService {
     });
     if (!session) throw denied();
     return this.db.transaction(async (tx) => {
+      await lockTeam(tx);
       await lockAdmin(tx, session.accountId);
       const context = await this.reauthorize(tx, session.id, session.accountId, ip);
       await tx.adminSession.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } });
@@ -310,6 +338,7 @@ export class AdminAuthService {
     if (
       !session ||
       !account ||
+      account.disabledAt ||
       session.accountId !== account.id ||
       (session.authMethod === 'local_password'
         ? !['active', 'pending'].includes(account.status) ||
@@ -319,14 +348,19 @@ export class AdminAuthService {
       session.expiresAt <= new Date() ||
       session.createdAt.getTime() + 8 * 3600000 <= Date.now() ||
       session.lastSeenAt.getTime() + 30 * 60000 <= Date.now() ||
-      !permissions(account.roles, account.extraPermissions).length
+      !(await this.permissionService.account(tx, account.id)).permissions.length
     )
       throw denied();
-    return { actor: actor(account, session), sessionId, requestIp: ip };
+    return {
+      actor: actor(account, session, await this.permissionService.account(tx, account.id)),
+      sessionId,
+      requestIp: ip,
+    };
   }
   async logout(sessionRaw: string, challengeRaw: string) {
     this.enabled();
     await this.db.transaction(async (tx) => {
+      await lockTeam(tx);
       const session = await tx.adminSession.findUnique({
         where: { tokenHash: digest(sessionRaw) },
       });

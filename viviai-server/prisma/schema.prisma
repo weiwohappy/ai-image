@@ -323,7 +323,11 @@ model AdminAccount {
   displayName String
   passwordHash String
   status String @default("pending")
-  roles String[]
+  roleBindings AdminAccountRole[]
+  version Int @default(1)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  disabledAt DateTime? @db.Timestamptz(6)
+  passwordResets AdminPasswordReset[]
   extraPermissions String[] @default([])
   encryptedMfaSecret String
   lastTotpCounter BigInt?
@@ -334,7 +338,12 @@ model AdminInvitation {
   id String @id @default(uuid()) @db.Uuid
   tokenHash String @unique
   email String @unique
-  roles String[]
+  roleBindings AdminInvitationRole[]
+  displayName String @default("")
+  version Int @default(1)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+  createdBy String? @db.Uuid
   extraPermissions String[] @default([])
   expiresAt DateTime @db.Timestamptz(6)
   consumedAt DateTime? @db.Timestamptz(6)
@@ -376,6 +385,7 @@ model AdminAuditEvent {
   resourceId String?
   outcome String
   reasonDigest String?
+  metadata Json?
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   @@index([createdAt, id])
 }
@@ -388,6 +398,57 @@ model AdminSensitiveGrant {
   reason String @db.VarChar(500)
   expiresAt DateTime @db.Timestamptz(6)
   createdAt DateTime @default(now()) @db.Timestamptz(6)
+}
+model AdminRole {
+  key String @id
+  name String
+  description String @default("")
+  builtIn Boolean @default(false)
+  permissions String[]
+  version Int @default(1)
+  deletedAt DateTime? @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  accounts AdminAccountRole[]
+  invitations AdminInvitationRole[]
+}
+model AdminAccountRole {
+  accountId String @db.Uuid
+  roleKey String
+  account AdminAccount @relation(fields: [accountId], references: [id])
+  role AdminRole @relation(fields: [roleKey], references: [key])
+  @@id([accountId, roleKey])
+}
+model AdminInvitationRole {
+  invitationId String @db.Uuid
+  roleKey String
+  invitation AdminInvitation @relation(fields: [invitationId], references: [id])
+  role AdminRole @relation(fields: [roleKey], references: [key])
+  @@id([invitationId, roleKey])
+}
+model AdminPasswordReset {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  account AdminAccount @relation(fields: [accountId], references: [id])
+  tokenHash String @unique
+  expiresAt DateTime @db.Timestamptz(6)
+  consumedAt DateTime? @db.Timestamptz(6)
+  revokedAt DateTime? @db.Timestamptz(6)
+  createdBy String @db.Uuid
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  @@index([accountId])
+}
+model AdminCommandReceipt {
+  id String @id @default(uuid()) @db.Uuid
+  accountId String @db.Uuid
+  sessionId String @db.Uuid
+  idempotencyKey String @db.Uuid
+  action String
+  target String
+  requestDigest String
+  result Json
+  completedAt DateTime @default(now()) @db.Timestamptz(6)
+  @@unique([accountId, idempotencyKey])
 }
 model AdminAlert {
   id String @id @default(uuid()) @db.Uuid

@@ -21,7 +21,12 @@ describe('isolated admin HTTP boundary', () => {
   it('publishes only disabled stage status by default', async () => {
     const response = await request(app.getHttpServer()).get('/api/admin/status');
     expect(response.status).toBe(200);
-    expect(response.body.data).toEqual({ enabled: false, environment: 'test', stage: 'A' });
+    expect(response.body.data).toEqual({
+      enabled: false,
+      environment: 'test',
+      stage: 'B1',
+      teamWritesEnabled: false,
+    });
   });
   it('does not let a consumer cookie authorize admin queries', async () => {
     const response = await request(app.getHttpServer())
@@ -118,7 +123,7 @@ describe('admin invitation and MFA', () => {
       data: {
         tokenHash: digest(raw),
         email,
-        roles: ['support'],
+        roleBindings: { create: { roleKey: 'support' } },
         expiresAt: new Date(Date.now() + 86400000),
       },
     });
@@ -162,6 +167,9 @@ describe('admin invitation and MFA', () => {
     expect(verified.status).toBe(201);
     expect(verified.body.data.recoveryCodes).toHaveLength(8);
     expect(verified.body.data.account.permissions).not.toContain('costs.read');
+    expect(
+      (await db.database.client.adminAccount.findUniqueOrThrow({ where: { email } })).version,
+    ).toBe(2);
     expect(
       (await request(app.getHttpServer()).get('/api/admin/me').set('Cookie', cookies(verified)))
         .status,
@@ -280,7 +288,7 @@ describe('admin invitation and MFA', () => {
       data: {
         tokenHash: digest(raw),
         email: 'expired@example.test',
-        roles: ['owner'],
+        roleBindings: { create: { roleKey: 'owner' } },
         expiresAt: new Date(Date.now() - 1),
       },
     });
@@ -406,9 +414,15 @@ describe('offline bootstrap guard', () => {
     const saved = await db.database.client.adminAccount.findUnique({
       where: { id: admin.account.id },
     });
-    expect(saved?.status).toBe('disabled');
+    expect(saved?.disabledAt).not.toBeNull();
     expect(saved?.authVersion).toBe(2);
-    expect(saved?.roles).toEqual(['support']);
+    expect(
+      (
+        await db.database.client.adminAccountRole.findMany({
+          where: { accountId: admin.account.id },
+        })
+      ).map((b) => b.roleKey),
+    ).toEqual(['support']);
     expect(
       await db.database.client.adminAuditEvent.count({
         where: { action: 'account.revoke', resourceId: admin.account.id },

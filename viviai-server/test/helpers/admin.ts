@@ -8,20 +8,37 @@ import {
   totp,
 } from '../../src/modules/admin/crypto.js';
 import type { TestDatabase } from './database.js';
+import { createTestStorage } from './storage.js';
 export const adminKey = Buffer.alloc(32, 12).toString('base64');
 export const adminOrigin = 'http://localhost:3010';
 export const testSecret = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 export const adminConfig = { enabled: true, origins: [adminOrigin], encryptionKey: adminKey };
 export async function adminApp(db: TestDatabase, extra = {}) {
-  const app = await createApp({
-    databaseUrl: db.url,
-    nodeEnv: 'test',
-    admin: adminConfig,
-    ...extra,
-  });
-  // Own one listener for concurrent requests; Supertest's per-request auto-close can race.
-  await app.listen(0, '127.0.0.1');
-  return app;
+  const storage = await createTestStorage();
+  try {
+    const app = await createApp({
+      databaseUrl: db.url,
+      nodeEnv: 'test',
+      admin: adminConfig,
+      localStorageRoot: storage.root,
+      devMailboxRoot: `${storage.root}/mailbox`,
+      ...extra,
+    });
+    // Own one listener for concurrent requests; Supertest's per-request auto-close can race.
+    await app.listen(0, '127.0.0.1');
+    const close = app.close.bind(app);
+    app.close = async () => {
+      try {
+        await close();
+      } finally {
+        await storage.cleanup();
+      }
+    };
+    return app;
+  } catch (error) {
+    await storage.cleanup();
+    throw error;
+  }
 }
 export function cookies(response: { headers: Record<string, unknown> }) {
   return ((response.headers['set-cookie'] as string[]) ?? [])
@@ -43,9 +60,10 @@ export async function fixtureAdmin(
       id,
       email: `${id}@example.test`,
       displayName: 'Test operator',
-      roles,
+      roleBindings: { create: roles.map((roleKey) => ({ roleKey })) },
       extraPermissions,
       status: 'active',
+      lastTotpCounter: 1n,
       passwordHash: await hashPassword('test-only-long-password'),
       encryptedMfaSecret: encryptSecret(testSecret, adminKey, id),
     },

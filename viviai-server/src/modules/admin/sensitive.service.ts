@@ -8,6 +8,7 @@ import { AdminAuthService, lockAdmin, type AdminContext } from './auth.service.j
 import { AdminAuditService } from './audit.service.js';
 import { digest } from './crypto.js';
 import { requirePermission } from './permissions.js';
+import { lockTeam } from './team/transaction.js';
 const missing = () => new AppError(404, 'ADMIN_NOT_FOUND', 'Resource not found');
 @Injectable()
 export class AdminSensitiveService {
@@ -30,6 +31,7 @@ export class AdminSensitiveService {
     throw error;
   }
   private async check(tx: DbTransaction, context: AdminContext) {
+    await lockTeam(tx);
     await lockAdmin(tx, context.actor.id);
     const current = await this.auth.reauthorize(
       tx,

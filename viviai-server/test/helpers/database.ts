@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { readFile, readdir } from 'node:fs/promises';
 import pg from 'pg';
 import { DatabaseService } from '../../src/shared/database/database.service.js';
 
@@ -21,7 +22,9 @@ function requireTestSchema(schema: string): void {
   }
 }
 
-export async function createTestDatabase(): Promise<TestDatabase> {
+export async function createTestDatabase(
+  options: { migrateThrough?: string } = {},
+): Promise<TestDatabase> {
   const baseUrl = process.env.DATABASE_URL;
   if (!baseUrl) {
     throw new Error('DATABASE_URL is required for integration tests');
@@ -43,11 +46,33 @@ export async function createTestDatabase(): Promise<TestDatabase> {
   const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
   try {
-    await execFileAsync(resolve(projectRoot, 'node_modules/.bin/prisma'), ['migrate', 'deploy'], {
-      cwd: projectRoot,
-      env: { ...process.env, DATABASE_URL: url },
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    if (options.migrateThrough) {
+      const migrations = (await readdir(resolve(projectRoot, 'prisma/migrations')))
+        .filter((name) => /^\d+_/.test(name))
+        .sort();
+      if (!migrations.includes(options.migrateThrough))
+        throw new Error('Unknown migration boundary');
+      const migrationClient = new pg.Client({ connectionString: baseUrl });
+      await migrationClient.connect();
+      try {
+        await migrationClient.query(`SET search_path TO "${schema}"`);
+        for (const name of migrations.filter((name) => name <= options.migrateThrough!))
+          await migrationClient.query(
+            await readFile(
+              resolve(projectRoot, 'prisma/migrations', name, 'migration.sql'),
+              'utf8',
+            ),
+          );
+      } finally {
+        await migrationClient.end();
+      }
+    } else {
+      await execFileAsync(resolve(projectRoot, 'node_modules/.bin/prisma'), ['migrate', 'deploy'], {
+        cwd: projectRoot,
+        env: { ...process.env, DATABASE_URL: url },
+        maxBuffer: 4 * 1024 * 1024,
+      });
+    }
   } catch (error) {
     await dropOwnedTestSchema(baseUrl, schema);
     throw error;

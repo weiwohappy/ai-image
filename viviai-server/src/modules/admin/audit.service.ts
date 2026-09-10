@@ -1,5 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import type { DbTransaction } from '../../shared/database/database.service.js';
+export interface AuditMetadata {
+  code?: string;
+  changedFields?: string[];
+  beforeRoles?: string[];
+  afterRoles?: string[];
+  beforeStatus?: string;
+  afterStatus?: string;
+  beforeVersion?: number;
+  afterVersion?: number;
+  credentialId?: string;
+  memberCount?: number;
+  invitationCount?: number;
+}
 @Injectable()
 export class AdminAuditService {
   write(
@@ -10,6 +23,7 @@ export class AdminAuditService {
     sessionId?: string,
     resourceId?: string,
     reasonDigest?: string,
+    metadata?: AuditMetadata,
   ) {
     return tx.adminAuditEvent.create({
       data: {
@@ -19,6 +33,27 @@ export class AdminAuditService {
         ...(sessionId ? { sessionId } : {}),
         ...(resourceId ? { resourceId } : {}),
         ...(reasonDigest ? { reasonDigest } : {}),
+        ...(metadata
+          ? {
+              metadata: Object.fromEntries(
+                Object.entries(metadata).filter(([key]) =>
+                  [
+                    'code',
+                    'changedFields',
+                    'beforeRoles',
+                    'afterRoles',
+                    'beforeStatus',
+                    'afterStatus',
+                    'beforeVersion',
+                    'afterVersion',
+                    'credentialId',
+                    'memberCount',
+                    'invitationCount',
+                  ].includes(key),
+                ),
+              ),
+            }
+          : {}),
       },
       select: { id: true },
     });
