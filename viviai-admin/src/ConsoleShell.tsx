@@ -126,7 +126,9 @@ export function ConsoleShell({
           <span className="environment">
             {environment} ·{' '}
             {modelPricingWritesEnabled
-              ? '团队与定价管理'
+              ? teamWritesEnabled
+                ? '团队与定价管理'
+                : '积分定价管理'
               : stage === 'B1' && teamWritesEnabled
                 ? '团队管理 B1'
                 : `只读查询 ${stage}`}
@@ -197,7 +199,9 @@ export function ConsoleShell({
             <span>
               数据时间：Asia/Shanghai ·{' '}
               {modelPricingWritesEnabled
-                ? '团队与积分定价可管理，其他业务模块仍为只读'
+                ? teamWritesEnabled
+                  ? '团队与积分定价可管理，其他业务模块仍为只读'
+                  : '积分定价可管理；团队及其他业务模块写操作未开放'
                 : teamWritesEnabled
                   ? '团队管理已开放，业务模块仍为只读'
                   : '当前环境写操作未开放'}

@@ -28,6 +28,16 @@ export function PriceEditor({
   const [count, setCount] = useState(1);
   const [baseline, setBaseline] = useState(row);
   const stateOnly = action === 'enable' || action === 'disable';
+  const canAct = (name: PriceAction) =>
+    baseline.allowedActions.some((rule) => rule.action === name && rule.allowed);
+  const effectiveAction = baseline.priceId === null ? 'create' : stateOnly ? action : 'edit';
+  const canChangeState =
+    baseline.priceId === null ? canAct('create') : canAct(baseline.enabled ? 'disable' : 'enable');
+  const permitted =
+    canAct(effectiveAction) &&
+    (baseline.priceId === null ||
+      enabled === baseline.enabled ||
+      canAct(enabled ? 'enable' : 'disable'));
   const valid = /^\d+$/.test(credits) && Number(credits) >= 1 && Number(credits) <= 1_000_000;
   const path = `/model-pricing/${encodeURIComponent(row.modelId)}/${encodeURIComponent(row.resolution)}`;
   const summary = (price: ModelPriceRow) =>
@@ -55,6 +65,7 @@ export function PriceEditor({
       path={path}
       initialVersion={row.version}
       payload={() => ({ unitCredits: Number(credits), enabled })}
+      submitDisabled={!permitted}
       validate={() => (valid ? undefined : { unitCredits: '单张积分需为 1–1,000,000 的整数' })}
       onReload={async () => {
         const latest = await client.get<ModelPriceRow>(path);
@@ -98,13 +109,18 @@ export function PriceEditor({
           type="checkbox"
           aria-label="价格启用"
           checked={enabled}
-          disabled={stateOnly}
+          disabled={stateOnly || !canChangeState}
           onChange={(e) => setEnabled(e.target.checked)}
         />
         <span>
           价格启用<small>停用后不再接受此分辨率的新报价，历史记录仍保留。</small>
         </span>
       </label>
+      {!permitted && (
+        <p className="error-banner" role="alert">
+          当前记录已不允许此操作，请关闭后刷新列表。
+        </p>
+      )}
       <div className="pricing-change-preview">
         <span className="pricing-secondary">本次变更</span>
         <p>
@@ -132,6 +148,9 @@ export function PriceEditor({
       </div>
       <p className="notices">
         保存后新报价立即生效；旧报价需重新确认，已提交任务不变。积分启用不会自动启用 API 渠道。
+      </p>
+      <p className="pricing-secondary">
+        操作原因中不要填写密码、密钥或客户内容（包括提示词与参考图信息）。
       </p>
     </ActionForm>
   );

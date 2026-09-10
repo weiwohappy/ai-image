@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -39,7 +39,11 @@ export function PricingPage({
 }) {
   const [modelId, setModelId] = useState(initialModelId);
   const [revision, setRevision] = useState(0);
-  const [editor, setEditor] = useState<{ row: ModelPriceRow; action: PriceAction }>();
+  const [editor, setEditor] = useState<{
+    row: ModelPriceRow;
+    action: PriceAction;
+    saved?: boolean;
+  }>();
   const [history, setHistory] = useState<ModelPriceRow>();
   const query = useAdminQuery<ModelPriceList>(
     client,
@@ -48,6 +52,18 @@ export function PricingPage({
   );
   const permission = actor.permissions.includes('model-pricing.write');
   const write = permission && writeEnabled && query.data?.writeEnabled === true;
+  const editorAllowed =
+    write &&
+    query.data?.items.some(
+      (row) =>
+        row.modelId === editor?.row.modelId &&
+        row.resolution === editor?.row.resolution &&
+        row.allowedActions.some((rule) => rule.action === editor.action && rule.allowed),
+    );
+  useEffect(() => {
+    if (editor && (!permission || !writeEnabled || (!editor.saved && !editorAllowed)))
+      setEditor(undefined);
+  }, [editor, editorAllowed, permission, writeEnabled]);
   const refresh = () => setRevision((n) => n + 1);
   const models = Array.from(
     new Map((query.data?.items ?? []).map((row) => [row.modelId, row.name])).entries(),
@@ -207,13 +223,17 @@ export function PricingPage({
           价格按张计费，已提交任务保留原价
         </p>
       )}
-      {editor && permission && writeEnabled && query.data?.writeEnabled !== false && (
+      {editor && permission && writeEnabled && (editor.saved || editorAllowed) && (
         <PriceEditor
           key={`${editor.row.modelId}:${editor.row.resolution}:${editor.action}`}
           {...editor}
           client={client}
           onClose={() => setEditor(undefined)}
-          onChanged={refresh}
+          onChanged={() => {
+            // Keep only the read-only success acknowledgement during the post-save refresh.
+            setEditor((current) => (current ? { ...current, saved: true } : current));
+            refresh();
+          }}
           onPermissionsChanged={async () => {
             setEditor(undefined);
             await onPermissionsChanged();

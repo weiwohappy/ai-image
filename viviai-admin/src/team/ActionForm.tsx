@@ -25,6 +25,7 @@ interface Props {
   children?: ReactNode;
   payload: () => Record<string, unknown>;
   validate?: () => FieldErrors | undefined;
+  submitDisabled?: boolean;
   onReload?: () => Promise<{ version: number; summary: string }>;
   onClose: () => void;
   onChanged: () => void;
@@ -101,7 +102,7 @@ export function ActionForm(props: Props) {
   }
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (phase !== 'editing' || pending.current) return;
+    if (phase !== 'editing' || pending.current || props.submitDisabled) return;
     const invalid = props.validate?.() ?? {};
     if (reason.trim().length < 5 || reason.trim().length > 500) {
       invalid.reason = '操作原因需为 5–500 个字符';
@@ -200,7 +201,7 @@ export function ActionForm(props: Props) {
                     重试同一操作
                   </Button>
                 ) : (
-                  <Button type="submit" disabled={phase !== 'editing'}>
+                  <Button type="submit" disabled={phase !== 'editing' || props.submitDisabled}>
                     {phase === 'saving' ? '正在保存…' : props.submitLabel}
                   </Button>
                 )}
