@@ -307,4 +307,69 @@ describe('account engagement', () => {
       .expect(409);
     expect(conflict.body.code).toBe('IDEMPOTENCY_CONFLICT');
   });
+
+  it('baselines a legacy null replay snapshot once without issuing another reward', async () => {
+    const legacy = await register('legacy@example.test', 'legacy_user');
+    const legacyId = legacy.body.data.id as string;
+    const legacyCookie = responseCookie(legacy);
+    const rawCode = 'LEGACY-2026';
+    const campaign = await database.database.client.redemptionCampaign.create({
+      data: {
+        name: 'Legacy',
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 60_000),
+        credits: 20,
+      },
+    });
+    const code = await database.database.client.redemptionCode.create({
+      data: {
+        campaignId: campaign.id,
+        digest: createHash('sha256').update(rawCode).digest('hex'),
+        displayMask: 'LEGACY-****',
+        maxUses: 5,
+        usedCount: 1,
+      },
+    });
+    const key = 'legacy-key-00000001';
+    await database.database.client.redemptionClaim.create({
+      data: { userId: legacyId, codeId: code.id, credits: 20, idempotencyKey: key },
+    });
+    const lotsBefore = await database.database.client.creditLot.count({
+      where: { userId: legacyId },
+    });
+
+    const first = await post('/account/redeem', { code: rawCode }, legacyCookie)
+      .set('Idempotency-Key', key)
+      .expect(201);
+    expect(first.body.data).toMatchObject({ username: 'legacy_user', credits: 0 });
+    expect(await database.database.client.creditLot.count({ where: { userId: legacyId } })).toBe(
+      lotsBefore,
+    );
+    expect(
+      (await database.database.client.redemptionCode.findUniqueOrThrow({ where: { id: code.id } }))
+        .usedCount,
+    ).toBe(1);
+    expect(
+      await database.database.client.redemptionClaim.findUniqueOrThrow({
+        where: { idempotencyKey: key },
+      }),
+    ).not.toMatchObject({ responseSnapshot: null });
+    await request(app.getHttpServer())
+      .patch('/api/account/profile')
+      .set('Origin', origin)
+      .set('Cookie', legacyCookie)
+      .send({ username: 'legacy_changed' })
+      .expect(200);
+    await database.database.transaction((tx) =>
+      new WalletService(database.database).grant(tx, legacyId, 'legacy-mutation', 9n, null),
+    );
+    const replay = await post('/account/redeem', { code: rawCode }, legacyCookie)
+      .set('Idempotency-Key', key)
+      .expect(201);
+    expect(replay.body.data).toEqual(first.body.data);
+    const different = await post('/account/redeem', { code: 'OTHER-CODE' }, legacyCookie)
+      .set('Idempotency-Key', key)
+      .expect(409);
+    expect(different.body.code).toBe('IDEMPOTENCY_CONFLICT');
+  });
 });

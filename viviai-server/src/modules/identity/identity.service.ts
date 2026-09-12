@@ -10,6 +10,40 @@ import { ReferralService } from '../engagement/referral.service.js';
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const sessionTokenHash = digest;
+function accountConstraint(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const normalized = value.toLowerCase();
+  return (
+    normalized === 'email' ||
+    normalized === 'username' ||
+    normalized === 'users_email_key' ||
+    normalized === 'users_username_key'
+  );
+}
+function accountConstraintMetadata(value: unknown): boolean {
+  if (accountConstraint(value)) return true;
+  if (typeof value !== 'object' || value === null) return false;
+  const metadata = value as Record<string, unknown>;
+  if (accountConstraint(metadata.constraint) || accountConstraint(metadata.index)) return true;
+  if (typeof metadata.constraint !== 'object' || metadata.constraint === null) return false;
+  const constraint = metadata.constraint as Record<string, unknown>;
+  return accountConstraint(constraint.index);
+}
+export function isAccountExistsError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 'P2002')
+    return false;
+  if (!('meta' in error) || typeof error.meta !== 'object' || error.meta === null) return false;
+  const meta = error.meta as Record<string, unknown>;
+  const target = meta.target;
+  if (accountConstraint(target) || (Array.isArray(target) && target.some(accountConstraint)))
+    return true;
+  if (accountConstraintMetadata(meta)) return true;
+  const driver = meta.driverAdapterError;
+  if (typeof driver !== 'object' || driver === null || !('cause' in driver)) return false;
+  const cause = driver.cause;
+  if (typeof cause !== 'object' || cause === null) return false;
+  return accountConstraintMetadata(cause);
+}
 export function inviteCodeCandidate(email: string, username: string, attempt: number): string {
   return createHash('sha256')
     .update(`${email}:${username}:${attempt}`)
@@ -136,18 +170,7 @@ export class IdentityService {
         return assigned;
       });
     } catch (error) {
-      if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        error.code === 'P2002' &&
-        'meta' in error &&
-        typeof error.meta === 'object' &&
-        error.meta !== null &&
-        'target' in error.meta &&
-        Array.isArray(error.meta.target) &&
-        error.meta.target.some((target) => target === 'email' || target === 'username')
-      )
+      if (isAccountExistsError(error))
         throw new AppError(409, 'ACCOUNT_EXISTS', 'Email or username is already registered');
       throw error;
     }

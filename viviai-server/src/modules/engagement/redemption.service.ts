@@ -19,6 +19,26 @@ export class RedemptionService {
     @Inject(NotificationService) private readonly notifications: NotificationService,
   ) {}
 
+  private async snapshot(tx: Parameters<WalletService['balanceInTransaction']>[0], userId: string) {
+    const user = await tx.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        avatarAssetId: true,
+        inviteCode: true,
+        authVersion: true,
+      },
+    });
+    const balance = await this.wallet.balanceInTransaction(tx, userId);
+    return {
+      ...accountDto(user as PublicAccount),
+      credits: safeInteger(balance.available),
+      frozenCredits: safeInteger(balance.held),
+    };
+  }
+
   async claim(userId: string, code: string, idempotencyKey: string) {
     const normalized = code.trim().toUpperCase();
     if (
@@ -32,6 +52,8 @@ export class RedemptionService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:key:${idempotencyKey}`}, 0))`;
       const previous = await tx.redemptionClaim.findUnique({ where: { idempotencyKey } });
       if (previous) {
+        await lockWallet(tx, userId);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:code:${codeDigest}`}, 0))`;
         const redemptionCode = await tx.redemptionCode.findUnique({
           where: { digest: codeDigest },
         });
@@ -41,9 +63,17 @@ export class RedemptionService {
             'IDEMPOTENCY_CONFLICT',
             'Idempotency key was used with different input',
           );
-        if (!previous.responseSnapshot)
-          throw new AppError(409, 'IDEMPOTENCY_CONFLICT', 'Replay result is unavailable');
-        return previous.responseSnapshot as unknown as AccountSnapshot;
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:campaign:${redemptionCode.campaignId}`}, 0))`;
+        if (previous.responseSnapshot)
+          return previous.responseSnapshot as unknown as AccountSnapshot;
+        // Task 1 and Task 4 ship together, so normal deployments have no old claims.
+        // A manually migrated legacy row gets one current-account baseline, never another grant.
+        const snapshot = await this.snapshot(tx, userId);
+        await tx.redemptionClaim.update({
+          where: { id: previous.id },
+          data: { responseSnapshot: snapshot },
+        });
+        return snapshot;
       }
       await lockWallet(tx, userId);
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:code:${codeDigest}`}, 0))`;
@@ -108,23 +138,7 @@ export class RedemptionService {
         body: `${claim.credits} 积分已到账。`,
         action: { href: '/account' },
       });
-      const user = await tx.user.findUniqueOrThrow({
-        where: { id: userId },
-        select: {
-          id: true,
-          email: true,
-          username: true,
-          avatarAssetId: true,
-          inviteCode: true,
-          authVersion: true,
-        },
-      });
-      const balance = await this.wallet.balanceInTransaction(tx, userId);
-      const snapshot = {
-        ...accountDto(user as PublicAccount),
-        credits: safeInteger(balance.available),
-        frozenCredits: safeInteger(balance.held),
-      };
+      const snapshot = await this.snapshot(tx, userId);
       await tx.redemptionClaim.update({
         where: { id: claim.id },
         data: { responseSnapshot: snapshot },

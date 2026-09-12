@@ -8,6 +8,7 @@ import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { responseCookie } from '../helpers/http.js';
+import { isAccountExistsError } from '../../src/modules/identity/identity.service.js';
 
 const origin = 'http://127.0.0.1:3000';
 describe('private accounts', () => {
@@ -19,13 +20,14 @@ describe('private accounts', () => {
   const post = (path: string, body: object) =>
     request(app.getHttpServer()).post(`/api${path}`).set('Origin', origin).send(body);
   async function code(email: string, purpose = 'register') {
+    const existing = new Set(await readdir(mailbox));
     await post('/auth/send-code', { email, purpose }).expect(201);
     const mails = await Promise.all(
-      (await readdir(mailbox)).map(async (name) =>
-        JSON.parse(await readFile(join(mailbox, name), 'utf8')),
-      ),
+      (await readdir(mailbox))
+        .filter((name) => !existing.has(name))
+        .map(async (name) => JSON.parse(await readFile(join(mailbox, name), 'utf8'))),
     );
-    return mails.find((mail) => mail.email === email && mail.purpose === purpose).code as string;
+    return mails.find((mail) => mail.email === email && mail.purpose === purpose)?.code as string;
   }
   beforeAll(async () => {
     db = await createTestDatabase();
@@ -66,6 +68,46 @@ describe('private accounts', () => {
     });
     expect(JSON.stringify(response.body)).not.toMatch(/passwordHash|tokenHash/);
     await request(app.getHttpServer()).get('/api/me').set('Cookie', cookie).expect(200);
+  });
+  it('classifies only account email and username P2002 metadata shapes', () => {
+    expect(isAccountExistsError({ code: 'P2002', meta: { target: ['email'] } })).toBe(true);
+    expect(isAccountExistsError({ code: 'P2002', meta: { target: 'users_username_key' } })).toBe(
+      true,
+    );
+    expect(
+      isAccountExistsError({
+        code: 'P2002',
+        meta: { driverAdapterError: { cause: { constraint: { index: 'users_email_key' } } } },
+      }),
+    ).toBe(true);
+    expect(
+      isAccountExistsError({
+        code: 'P2002',
+        meta: { driverAdapterError: { cause: { index: 'users_invite_code_key' } } },
+      }),
+    ).toBe(false);
+  });
+  it('returns ACCOUNT_EXISTS for duplicate email and username without referral or reward side effects', async () => {
+    await db.database.client.emailChallenge.update({
+      where: { email_purpose: { email: 'alice@example.test', purpose: 'register' } },
+      data: { sentAt: new Date(Date.now() - 60_000) },
+    });
+    const emailDuplicate = await post('/auth/register', {
+      username: 'email_duplicate',
+      email: 'alice@example.test',
+      password,
+      code: await code('alice@example.test'),
+    }).expect(409);
+    expect(emailDuplicate.body.code).toBe('ACCOUNT_EXISTS');
+    const usernameDuplicate = await post('/auth/register', {
+      username: 'alice',
+      email: 'username-duplicate@example.test',
+      password,
+      code: await code('username-duplicate@example.test'),
+    }).expect(409);
+    expect(usernameDuplicate.body.code).toBe('ACCOUNT_EXISTS');
+    expect(await db.database.client.referral.count()).toBe(0);
+    expect(await db.database.client.creditLot.count()).toBe(0);
   });
   it('rejects wrong password and accepts correct login by username', async () => {
     await post('/auth/login', { account: 'alice', password: 'wrong password' }).expect(401);
