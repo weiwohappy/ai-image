@@ -115,6 +115,12 @@ describe('authenticated account commands', () => {
     await post('/account/change-password', { password: nextPassword, code: emailCode }, passwordCookie).expect(400);
 
     const passwordCode = await code('password@example.test', 'change-password');
+    const rejectedPassword = await post(
+      '/account/change-password',
+      { password: 'too short', code: passwordCode },
+      passwordCookie,
+    ).expect(400);
+    expect(rejectedPassword.body.code).toBe('INVALID_INPUT');
     await post('/account/change-password', { password: nextPassword, code: passwordCode }, passwordCookie).expect(201);
     await post('/account/change-password', { password: 'yet another correct horse battery', code: passwordCode }, passwordCookie).expect(400);
     await request(app.getHttpServer()).get('/api/me').set('Cookie', passwordCookie).expect(200);
