@@ -239,6 +239,9 @@ export async function seedContent(
   templates: number;
   tools: number;
   mediaCounts: { created: number; updated: number; unchanged: number };
+  inspirationCounts: SeedOperationCounts;
+  templateCounts: SeedOperationCounts;
+  toolCounts: SeedOperationCounts;
   cleanupWarnings: string[];
 }> {
   const parsed = contentSeedManifestSchema.safeParse(options.manifest ?? contentSeedManifest);
@@ -253,6 +256,9 @@ export async function seedContent(
   const newlyWritten: string[] = [];
   const obsoleteObjectKeys: string[] = [];
   const mediaCounts = { created: 0, updated: 0, unchanged: 0 };
+  const inspirationCounts: SeedOperationCounts = { created: 0, updated: 0, unchanged: 0 };
+  const templateCounts: SeedOperationCounts = { created: 0, updated: 0, unchanged: 0 };
+  const toolCounts: SeedOperationCounts = { created: 0, updated: 0, unchanged: 0 };
   const changedMediaExternalIds = new Set<string>();
   const cleanupWarnings: string[] = [];
   try {
@@ -375,23 +381,29 @@ export async function seedContent(
           }
 
           for (const row of manifest.inspirations) {
-            await upsertInspiration(
-              tx,
-              row,
-              mediaIds,
-              changedMediaExternalIds.has(row.coverMediaExternalId) ||
-                (row.caseMediaExternalId !== undefined &&
-                  changedMediaExternalIds.has(row.caseMediaExternalId)),
+            incrementSeedOperation(
+              inspirationCounts,
+              await upsertInspiration(
+                tx,
+                row,
+                mediaIds,
+                changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                  (row.caseMediaExternalId !== undefined &&
+                    changedMediaExternalIds.has(row.caseMediaExternalId)),
+              ),
             );
           }
           for (const row of manifest.templates) {
-            await upsertTemplate(
-              tx,
-              row,
-              mediaIds,
-              changedMediaExternalIds.has(row.coverMediaExternalId) ||
-                (row.referenceMediaExternalId !== undefined &&
-                  changedMediaExternalIds.has(row.referenceMediaExternalId)),
+            incrementSeedOperation(
+              templateCounts,
+              await upsertTemplate(
+                tx,
+                row,
+                mediaIds,
+                changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                  (row.referenceMediaExternalId !== undefined &&
+                    changedMediaExternalIds.has(row.referenceMediaExternalId)),
+              ),
             );
           }
           for (const row of manifest.tools) {
@@ -414,13 +426,16 @@ export async function seedContent(
                 throw error;
               }
             }
-            await upsertTool(
-              tx,
-              row,
-              mediaIds,
-              changedMediaExternalIds.has(row.coverMediaExternalId) ||
-                (row.iconMediaExternalId !== undefined &&
-                  changedMediaExternalIds.has(row.iconMediaExternalId)),
+            incrementSeedOperation(
+              toolCounts,
+              await upsertTool(
+                tx,
+                row,
+                mediaIds,
+                changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                  (row.iconMediaExternalId !== undefined &&
+                    changedMediaExternalIds.has(row.iconMediaExternalId)),
+              ),
             );
           }
         });
@@ -456,13 +471,24 @@ export async function seedContent(
     templates: manifest.templates.length,
     tools: manifest.tools.length,
     mediaCounts,
+    inspirationCounts,
+    templateCounts,
+    toolCounts,
     cleanupWarnings,
   };
+}
+
+type SeedOperation = 'created' | 'updated' | 'unchanged';
+type SeedOperationCounts = Record<SeedOperation, number>;
+
+function incrementSeedOperation(counts: SeedOperationCounts, operation: SeedOperation): void {
+  counts[operation]++;
 }
 
 export class SeedCleanupError extends Error {
   constructor(readonly warningCount: number) {
     super(`Content seed failed with ${warningCount} cleanup warning(s)`);
+    this.name = 'SeedCleanupError';
   }
 }
 
@@ -527,16 +553,18 @@ async function upsertInspiration(
     sortOrder: row.sortOrder,
   };
   const current = await tx.inspiration.findUnique({ where: { externalId: row.externalId } });
-  if (!current)
-    return tx.inspiration.create({
+  if (!current) {
+    await tx.inspiration.create({
       data: {
         externalId: row.externalId,
         ...data,
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data) && !mediaChanged) return current;
-  return tx.inspiration.update({
+    return 'created';
+  }
+  if (sameRecord(current, data) && !mediaChanged) return 'unchanged';
+  await tx.inspiration.update({
     where: { id: current.id },
     data: {
       ...data,
@@ -544,6 +572,7 @@ async function upsertInspiration(
       publishedAt: row.status === 'published' ? (current.publishedAt ?? new Date()) : null,
     },
   });
+  return 'updated';
 }
 
 async function upsertTemplate(
@@ -579,16 +608,18 @@ async function upsertTemplate(
     sortOrder: row.sortOrder,
   };
   const current = await tx.remixTemplate.findUnique({ where: { externalId: row.externalId } });
-  if (!current)
-    return tx.remixTemplate.create({
+  if (!current) {
+    await tx.remixTemplate.create({
       data: {
         externalId: row.externalId,
         ...data,
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data) && !mediaChanged) return current;
-  return tx.remixTemplate.update({
+    return 'created';
+  }
+  if (sameRecord(current, data) && !mediaChanged) return 'unchanged';
+  await tx.remixTemplate.update({
     where: { id: current.id },
     data: {
       ...data,
@@ -596,6 +627,7 @@ async function upsertTemplate(
       publishedAt: row.status === 'published' ? (current.publishedAt ?? new Date()) : null,
     },
   });
+  return 'updated';
 }
 
 async function upsertTool(
@@ -627,16 +659,18 @@ async function upsertTool(
     sortOrder: row.sortOrder,
   };
   const current = await tx.toolDefinition.findUnique({ where: { externalId: row.externalId } });
-  if (!current)
-    return tx.toolDefinition.create({
+  if (!current) {
+    await tx.toolDefinition.create({
       data: {
         externalId: row.externalId,
         ...data,
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data) && !mediaChanged) return current;
-  return tx.toolDefinition.update({
+    return 'created';
+  }
+  if (sameRecord(current, data) && !mediaChanged) return 'unchanged';
+  await tx.toolDefinition.update({
     where: { id: current.id },
     data: {
       ...data,
@@ -644,6 +678,7 @@ async function upsertTool(
       publishedAt: row.status === 'published' ? (current.publishedAt ?? new Date()) : null,
     },
   });
+  return 'updated';
 }
 
 async function prepareMedia(row: ContentSeedManifest['media'][number]): Promise<PreparedMedia> {
@@ -751,11 +786,15 @@ export async function seedContentCommand(env: NodeJS.ProcessEnv = process.env): 
       isModelSpecEnabled: (modelId, outputSpecId) => enabled.has(`${modelId}:${outputSpecId}`),
     });
     console.info(
-      `Seeded content catalogs: ${result.media} media, ${result.inspirations} inspirations, ${result.templates} templates, ${result.tools} tools; media ${result.mediaCounts.created} created, ${result.mediaCounts.updated} updated, ${result.mediaCounts.unchanged} unchanged; ${result.cleanupWarnings.length} cleanup warnings`,
+      `Seeded content catalogs: ${result.media} media (${formatSeedCounts(result.mediaCounts)}), ${result.inspirations} inspirations (${formatSeedCounts(result.inspirationCounts)}), ${result.templates} templates (${formatSeedCounts(result.templateCounts)}), ${result.tools} tools (${formatSeedCounts(result.toolCounts)}); ${result.cleanupWarnings.length} cleanup warnings`,
     );
   } finally {
     await db.onModuleDestroy();
   }
+}
+
+function formatSeedCounts(counts: SeedOperationCounts): string {
+  return `${counts.created} created, ${counts.updated} updated, ${counts.unchanged} unchanged`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
