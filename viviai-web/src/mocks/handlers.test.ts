@@ -218,6 +218,25 @@ describe('Mock workflow and account boundaries', () => {
     await expect(api.register({ username: 'valid_user', email: 'schema@example.com', password: 'registration-12', code: '123456' })).resolves.toMatchObject({ username: 'valid_user' });
   });
 
+  it('matches backend Zod email validation without consuming a corrected registration challenge', async () => {
+    await api.sendCode('valid.user@example.co', 'register');
+    const before = structuredClone(loadDb());
+    const credentialBefore = getCredentialHash();
+    const invalidEmails = [
+      'valid.user@example..co',
+      'valid.user@example.c',
+      `${'a'.repeat(244)}@example.co`,
+    ];
+
+    for (const email of invalidEmails) {
+      await expect(api.register({ username: 'email_user', email, password: 'registration-12', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT', status: 400 }));
+      expect(loadDb()).toEqual(before);
+      expect(getCredentialHash()).toBe(credentialBefore);
+    }
+
+    await expect(api.register({ username: 'email_user', email: '  Valid.User@EXAMPLE.CO  ', password: 'registration-12', code: '123456' })).resolves.toMatchObject({ username: 'email_user', email: 'valid.user@example.co' });
+  });
+
   it('isolates verification code purposes and consumes each code once', async () => {
     await api.sendCode('next@example.com', 'change-email');
     await expect(api.changePassword({ code: '123456', password: 'password-long-12' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CODE', status: 400 }));

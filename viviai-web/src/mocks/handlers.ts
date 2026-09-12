@@ -1,4 +1,5 @@
 import { delay, http, HttpResponse } from 'msw';
+import { z } from 'zod';
 
 import { estimateCredits } from '@/src/lib/pricing';
 import type {
@@ -16,6 +17,7 @@ import { getCredentialHash, loadDb, mutateDb, resetDb, setCredentialHash, settle
 import { hasReferenceUpload, saveReferenceUpload } from './referenceUploads';
 
 const api = '*/api';
+const registrationEmail = z.string().trim().toLowerCase().email().max(254);
 
 function requestId(): string {
   return crypto.randomUUID();
@@ -182,11 +184,12 @@ export const handlers = [
   http.post(`${api}/auth/register`, async ({ request }) => {
     const input = (await request.json()) as Partial<{ username: string; email: string; password: string; code: string; inviteCode: string }>;
     const username = typeof input.username === 'string' ? input.username.trim().toLocaleLowerCase() : '';
-    const email = typeof input.email === 'string' ? input.email.trim().toLocaleLowerCase() : '';
+    const parsedEmail = registrationEmail.safeParse(input.email);
+    const email = parsedEmail.success ? parsedEmail.data : '';
     const password = typeof input.password === 'string' ? input.password : '';
     const code = typeof input.code === 'string' ? input.code : '';
     const inviter = input.inviteCode === undefined ? undefined : typeof input.inviteCode === 'string' ? input.inviteCode.trim().toUpperCase() : '';
-    if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || password.length < 12 || password.length > 128 || !/^\d{6}$/.test(code) || (inviter !== undefined && !/^[A-Z0-9-]{4,64}$/.test(inviter))) {
+    if (!/^[a-z0-9_]{3,32}$/.test(username) || !parsedEmail.success || password.length < 12 || password.length > 128 || !/^\d{6}$/.test(code) || (inviter !== undefined && !/^[A-Z0-9-]{4,64}$/.test(inviter))) {
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
     const current = loadDb();
