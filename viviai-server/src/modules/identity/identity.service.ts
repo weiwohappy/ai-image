@@ -1,16 +1,19 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { createHash, randomBytes, randomInt, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
+import { DatabaseService } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
-import { MAIL_DELIVERY, type MailDelivery } from './mail-delivery.js';
+import { EmailChallengeService, type ChallengePurpose } from './challenge.service.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+export const sessionTokenHash = digest;
 export interface PublicAccount {
   id: string;
   email: string;
   username: string;
+  avatarAssetId: string | null;
+  inviteCode: string;
 }
 export const SESSION_COOKIE = 'viviai_session';
 export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -31,25 +34,21 @@ export function accountDto(user: PublicAccount) {
     id: user.id,
     username: user.username,
     email: user.email,
-    planId: 'free',
-    planName: 'Free',
+    planId: 'free' as const,
+    planName: 'Free' as const,
     credits: 0,
     frozenCredits: 0,
-    concurrency: 1,
-    inviteCode: '',
+    concurrency: 1 as const,
+    ...(user.avatarAssetId ? { avatarUrl: `/api/assets/${user.avatarAssetId}/content` } : {}),
+    inviteCode: user.inviteCode,
   };
-}
-const challengeError = () =>
-  new AppError(400, 'INVALID_CODE', 'Verification code is invalid or expired');
-async function lock(tx: DbTransaction, key: string) {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
 }
 
 @Injectable()
 export class IdentityService {
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
-    @Inject(MAIL_DELIVERY) private readonly mail: MailDelivery,
+    @Inject(EmailChallengeService) private readonly challenges: EmailChallengeService,
   ) {}
 
   async rateLimit(operation: string, credential: string, ip: string): Promise<void> {
@@ -59,7 +58,7 @@ export class IdentityService {
       [`${operation}:ip:${digest(ip)}`, 100],
     ] as const) {
       const allowed = await this.db.transaction(async (tx) => {
-        await lock(tx, `rate:${key}`);
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`rate:${key}`}, 0))`;
         const bucket = await tx.authRateBucket.findUnique({ where: { key } });
         const expired = !bucket || bucket.expiresAt.getTime() <= Date.now();
         if (!expired && bucket.count >= limit) return false;
@@ -76,77 +75,8 @@ export class IdentityService {
     }
   }
 
-  async sendCode(
-    email: string,
-    purpose: 'register' | 'reset-password',
-  ): Promise<{ expiresIn: number }> {
-    const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
-    const salt = randomBytes(16).toString('hex');
-    // Scrypt protects low-entropy codes if a database snapshot is exposed.
-    const codeHash = ((await derive(code, salt, 64)) as Buffer).toString('hex');
-    await this.db.transaction(async (tx) => {
-      await lock(tx, `challenge:${email}:${purpose}`);
-      const existing = await tx.emailChallenge.findUnique({
-        where: { email_purpose: { email, purpose } },
-      });
-      if (existing && existing.sentAt.getTime() > Date.now() - 60_000)
-        throw new AppError(429, 'RATE_LIMITED', 'Please wait before requesting another code');
-      const data = {
-        codeHash,
-        salt,
-        attempts: 0,
-        sentAt: new Date(),
-        expiresAt: new Date(Date.now() + 600_000),
-        consumedAt: null,
-      };
-      await tx.emailChallenge.upsert({
-        where: { email_purpose: { email, purpose } },
-        create: { email, purpose, ...data },
-        update: data,
-      });
-    });
-    try {
-      await this.mail.sendChallenge({ email, purpose, code });
-    } catch {
-      throw new AppError(503, 'MAIL_UNAVAILABLE', 'Verification delivery is unavailable');
-    }
-    return { expiresIn: 600 };
-  }
-
-  private async consume<T>(
-    email: string,
-    purpose: string,
-    code: string,
-    action: (tx: DbTransaction) => Promise<T>,
-  ): Promise<T> {
-    const result = await this.db.transaction(async (tx) => {
-      await lock(tx, `challenge:${email}:${purpose}`);
-      const challenge = await tx.emailChallenge.findUnique({
-        where: { email_purpose: { email, purpose } },
-      });
-      if (
-        !challenge ||
-        challenge.consumedAt ||
-        challenge.expiresAt.getTime() <= Date.now() ||
-        challenge.attempts >= 5
-      )
-        return { error: true } as const;
-      const actual = (await derive(code, challenge.salt, 64)) as Buffer;
-      if (!timingSafeEqual(actual, Buffer.from(challenge.codeHash, 'hex'))) {
-        await tx.emailChallenge.update({
-          where: { email_purpose: { email, purpose } },
-          data: { attempts: { increment: 1 } },
-        });
-        return { error: true } as const;
-      }
-      await tx.emailChallenge.update({
-        where: { email_purpose: { email, purpose } },
-        data: { consumedAt: new Date() },
-      });
-      return { value: await action(tx) } as const;
-    });
-    if ('error' in result) throw challengeError();
-    return result.value;
+  async sendCode(email: string, purpose: ChallengePurpose): Promise<{ expiresIn: number }> {
+    return this.challenges.send(email, purpose);
   }
 
   async register(input: {
@@ -157,10 +87,10 @@ export class IdentityService {
   }): Promise<PublicAccount> {
     const passwordHash = await hashPassword(input.password);
     try {
-      return await this.consume(input.email, 'register', input.code, (tx) =>
+      return await this.challenges.consume(input.email, 'register', input.code, (tx) =>
         tx.user.create({
           data: { email: input.email, username: input.username, passwordHash },
-          select: { id: true, email: true, username: true },
+          select: { id: true, email: true, username: true, avatarAssetId: true, inviteCode: true },
         }),
       );
     } catch (error) {
@@ -180,13 +110,20 @@ export class IdentityService {
     );
     if (!user || !valid)
       throw new AppError(401, 'INVALID_CREDENTIALS', 'Account or password is incorrect');
-    return { id: user.id, email: user.email, username: user.username };
+    return {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      avatarAssetId: user.avatarAssetId,
+      inviteCode: user.inviteCode,
+    };
   }
   async resetPassword(email: string, code: string, password: string): Promise<{ success: true }> {
     const passwordHash = await hashPassword(password);
-    await this.consume(email, 'reset-password', code, async (tx) => {
+    await this.challenges.consume(email, 'reset-password', code, async (tx) => {
       const user = await tx.user.findUnique({ where: { email } });
-      if (!user) throw challengeError();
+      if (!user)
+        throw new AppError(400, 'INVALID_CODE', 'Verification code is invalid or expired');
       await tx.user.update({ where: { id: user.id }, data: { passwordHash } });
       await tx.session.deleteMany({ where: { userId: user.id } });
     });
@@ -207,7 +144,9 @@ export class IdentityService {
     if (!/^[A-Za-z0-9_-]{43}$/.test(token)) return null;
     const session = await this.db.client.session.findUnique({
       where: { tokenHash: digest(token) },
-      include: { user: { select: { id: true, email: true, username: true } } },
+      include: {
+        user: { select: { id: true, email: true, username: true, avatarAssetId: true, inviteCode: true } },
+      },
     });
     return session && session.expiresAt.getTime() > Date.now() ? session.user : null;
   }

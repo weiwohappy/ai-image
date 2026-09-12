@@ -9,6 +9,7 @@ import { CatalogModule } from './modules/catalog/catalog.module.js';
 import { GenerationModule } from './modules/generation/generation.module.js';
 import { BillingModule } from './modules/billing/billing.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
+import { AccountModule } from './modules/account/account.module.js';
 export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
@@ -48,6 +49,7 @@ export class AppModule {
         GenerationModule,
         BillingModule,
         AdminModule,
+        AccountModule,
       ],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],

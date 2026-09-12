@@ -42,7 +42,13 @@ export class IdentityController {
   @Post('auth/send-code')
   async sendCode(@Body() body: unknown, @Req() req: Request) {
     const input = parseInput(
-      z.object({ email, purpose: z.enum(['register', 'reset-password']).default('register') }),
+      z
+        .object({
+          email,
+          purpose: z
+            .enum(['register', 'reset-password', 'change-email', 'change-password'])
+            .default('register'),
+        }),
       body,
     );
     await this.identity.rateLimit('send-code', input.email, req.ip ?? 'unknown');

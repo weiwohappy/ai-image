@@ -6,11 +6,13 @@ import { IdentityController } from './identity.controller.js';
 import { SessionGuard } from './session.guard.js';
 import { createMailDelivery, MAIL_DELIVERY } from './mail-delivery.js';
 import { WalletModule } from '../wallet/wallet.module.js';
+import { EmailChallengeService } from './challenge.service.js';
 @Module({
   imports: [WalletModule],
   controllers: [IdentityController],
   providers: [
     IdentityService,
+    EmailChallengeService,
     SessionGuard,
     {
       provide: MAIL_DELIVERY,
@@ -18,6 +20,6 @@ import { WalletModule } from '../wallet/wallet.module.js';
       useFactory: (config: AppConfig) => createMailDelivery(config),
     },
   ],
-  exports: [IdentityService, SessionGuard, MAIL_DELIVERY],
+  exports: [IdentityService, EmailChallengeService, SessionGuard, MAIL_DELIVERY],
 })
 export class IdentityModule {}
