@@ -20,6 +20,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "seed:dev": "tsx src/scripts/seed-dev.ts",
+    "seed:content": "tsx src/scripts/seed-content.ts",
     "admin:bootstrap": "tsx src/scripts/admin-bootstrap.ts",
     "admin:super-admin": "tsx src/scripts/admin-super-admin.ts",
     "admin:import-model-prices": "tsx src/scripts/admin-import-model-prices.ts",
