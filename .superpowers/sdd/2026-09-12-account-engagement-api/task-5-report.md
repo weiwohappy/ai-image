@@ -1,8 +1,8 @@
 # Task 5 report — account and engagement web integration
 
-Status: complete (review fix round 1/5)
+Status: complete (review fix round 3/5)
 
-Commit: `a1452e8 feat(web): connect account and engagement APIs` (review fix round 1/5)
+Latest implementation commit: `0a08e97 fix(web): close account redemption and mock races`
 
 ## Files
 
@@ -75,3 +75,27 @@ Commit: `7202383 fix(web): harden redemption retries and mocks`
 Round 2 self-review: replacement attempts cannot race the baseline refresh; no stale cached balance is used after abandoning an uncertain attempt. Mock error/status and idempotency behavior were read directly against the server implementations. No admin, payment, backend, database, or secret files changed.
 
 Concerns: none. No payment or admin files changed, and no database or secrets were accessed.
+
+## Review fix round 3/5
+
+Commit: `0a08e97 fix(web): close account redemption and mock races`
+
+- Redemption now acquires a synchronous ref/state submission lock before baseline refresh or mutation. The code field and submit button stay disabled until the entire logical attempt reaches success, a definitive failure, an uncertain response, or a failed replacement-baseline refresh. The ref guard also rejects same-tick Enter/double-click attempts before React re-renders.
+- Mock registration normalizes and validates the backend registration schema before it reads or mutates persistent registration state. Existing email/username conflicts return `409 ACCOUNT_EXISTS` before challenge consumption. The final commit re-checks duplicate, challenge, and invite state before consuming the code and applying account/reward/session changes.
+- Invalid and unknown invites now have deep state assertions: user, session, ledger, notifications, referrals, challenges, and credential hash remain unchanged. Registration fixtures use backend-valid lowercase usernames.
+
+### Round 3 RED / GREEN
+
+- RED: `npm test -- --run src/features/account/AccountPage.test.tsx src/mocks/handlers.test.ts` failed 4 focused regressions on the pre-fix code: two editable redemption races, existing-email/self-invite account replacement, and duplicate-username account replacement.
+- GREEN: the same focused command passed 2 files / 33 tests. The pending-A test verifies the input remains `A` and exactly one `A` request is sent; the pending replacement-baseline test verifies the edited input remains `B` and only `B` is submitted after the authoritative refresh. Mock tests assert deep rollback state and an unconsumed code remains usable after rejected validation/invite attempts.
+
+### Round 3 verification
+
+- Full `npm test`: passed 20 files / 78 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed (existing `punycode` deprecation and vinext dynamic-route classification notices only).
+- `git diff --check`: passed before commit; staged diff check passed before commit.
+
+Round 3 self-review: the lock prevents code edits and duplicate submits while any mutation or authoritative replacement-balance fetch is active, while preserving unchanged uncertain retries and existing refresh-failure behavior. Registration never calls `setCredentialHash` or consumes the challenge before all observable validation passes. No payment, admin, server, database, or secret files changed.
+
+Concerns: browser UI tests cover controlled input and click behavior; the synchronous ref additionally guards the brief interval before disabled attributes render.
