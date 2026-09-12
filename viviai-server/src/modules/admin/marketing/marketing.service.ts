@@ -30,7 +30,9 @@ const campaignFieldsSchema = z
     totalLimit: z.number().int().min(1).max(1_000_000_000).nullable(),
   })
   .strict()
-  .refine((input) => input.startsAt < input.endsAt, { path: ['endsAt'] });
+  .refine((input) => Date.parse(input.startsAt) < Date.parse(input.endsAt), {
+    path: ['endsAt'],
+  });
 const createCampaignSchema = campaignFieldsSchema.extend({ reason: reasonSchema }).strict();
 const updateCampaignSchema = campaignFieldsSchema
   .extend({ version: versionSchema, reason: reasonSchema })
@@ -55,7 +57,9 @@ const campaignListSchema = z
     limit: z.coerce.number().int().min(1).max(50).default(30),
   })
   .strict()
-  .refine((input) => !input.from || !input.to || input.from <= input.to, { path: ['from'] });
+  .refine((input) => !input.from || !input.to || Date.parse(input.from) < Date.parse(input.to), {
+    path: ['from'],
+  });
 const codeListSchema = z
   .object({
     campaignId: z.uuid().optional(),
@@ -67,7 +71,9 @@ const codeListSchema = z
     limit: z.coerce.number().int().min(1).max(50).default(30),
   })
   .strict()
-  .refine((input) => !input.from || !input.to || input.from <= input.to, { path: ['from'] });
+  .refine((input) => !input.from || !input.to || Date.parse(input.from) < Date.parse(input.to), {
+    path: ['from'],
+  });
 const claimListSchema = z
   .object({
     campaignId: z.uuid().optional(),
@@ -79,7 +85,9 @@ const claimListSchema = z
     limit: z.coerce.number().int().min(1).max(50).default(30),
   })
   .strict()
-  .refine((input) => !input.from || !input.to || input.from <= input.to, { path: ['from'] });
+  .refine((input) => !input.from || !input.to || Date.parse(input.from) < Date.parse(input.to), {
+    path: ['from'],
+  });
 const referralListSchema = z
   .object({
     status: z.enum(['pending', 'rewarded']).optional(),
@@ -90,7 +98,46 @@ const referralListSchema = z
     limit: z.coerce.number().int().min(1).max(50).default(30),
   })
   .strict()
-  .refine((input) => !input.from || !input.to || input.from <= input.to, { path: ['from'] });
+  .refine((input) => !input.from || !input.to || Date.parse(input.from) < Date.parse(input.to), {
+    path: ['from'],
+  });
+
+const codeSelect = {
+  id: true,
+  campaignId: true,
+  displayMask: true,
+  status: true,
+  maxUses: true,
+  usedCount: true,
+  version: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.RedemptionCodeSelect;
+
+const claimSelect = {
+  id: true,
+  credits: true,
+  createdAt: true,
+  user: { select: { id: true, email: true } },
+  code: {
+    select: {
+      id: true,
+      displayMask: true,
+      campaign: { select: { id: true, name: true } },
+    },
+  },
+} satisfies Prisma.RedemptionClaimSelect;
+
+const referralSelect = {
+  id: true,
+  status: true,
+  rewardCredits: true,
+  qualifiedAt: true,
+  rewardedAt: true,
+  createdAt: true,
+  inviter: { select: { id: true, email: true } },
+  invitee: { select: { id: true, email: true } },
+} satisfies Prisma.ReferralSelect;
 
 const cursorSchema = z
   .object({
@@ -468,6 +515,9 @@ export class AdminMarketingService {
           throw failure(422, 'REDEMPTION_CAMPAIGN_UNAVAILABLE', '兑换活动已过期');
         if (before.status === 'archived')
           throw failure(422, 'REDEMPTION_INVALID_TRANSITION', '归档活动不可编辑');
+        const reservedCapacity = await this.reservedCapacity(tx, id);
+        if (input.totalLimit !== null && reservedCapacity > input.totalLimit)
+          throw failure(422, 'REDEMPTION_CAMPAIGN_LIMIT_EXCEEDED', '活动容量低于已承诺兑换数量');
         const data = {
           name: input.name,
           startsAt: new Date(input.startsAt),
@@ -570,7 +620,9 @@ export class AdminMarketingService {
         this.version(campaign.version, input.campaignVersion);
         if (campaign.status !== 'active' || campaign.endsAt <= new Date())
           throw failure(422, 'REDEMPTION_CAMPAIGN_UNAVAILABLE', '兑换活动不可用');
-        if (campaign.totalLimit !== null && input.quantity * input.maxUses > campaign.totalLimit)
+        const newCapacity = input.quantity * input.maxUses;
+        const reservedCapacity = await this.reservedCapacity(tx, campaign.id);
+        if (campaign.totalLimit !== null && reservedCapacity + newCapacity > campaign.totalLimit)
           throw failure(422, 'REDEMPTION_CAMPAIGN_LIMIT_EXCEEDED', '兑换码容量超过活动上限');
         const generated = await this.uniqueCodes(tx, input.quantity);
         await tx.redemptionCode.createMany({
@@ -584,6 +636,11 @@ export class AdminMarketingService {
         const rows = await tx.redemptionCode.findMany({
           where: { digest: { in: generated.map((item) => item.digest) } },
         });
+        const campaignVersion = campaign.version + 1;
+        await tx.redemptionCampaign.update({
+          where: { id: campaign.id },
+          data: { version: campaignVersion },
+        });
         const byDigest = new Map(rows.map((row) => [row.digest, row]));
         const codes = generated.map((item) => {
           const row = byDigest.get(item.digest)!;
@@ -592,6 +649,7 @@ export class AdminMarketingService {
         const safe = {
           resourceId: campaign.id,
           campaignId: campaign.id,
+          campaignVersion,
           generated: rows.length,
           codeIds: rows.map((row) => row.id).sort(),
           codesUnavailable: true,
@@ -600,6 +658,7 @@ export class AdminMarketingService {
           result: {
             resourceId: campaign.id,
             campaignId: campaign.id,
+            campaignVersion,
             generated: codes.length,
             codes,
           },
@@ -636,6 +695,7 @@ export class AdminMarketingService {
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
+      select: codeSelect,
     });
     return {
       rows: rows.slice(0, query.limit).map((row) => this.codeDto(row)),
@@ -653,7 +713,10 @@ export class AdminMarketingService {
   async code(context: AdminContext, id: string) {
     requirePermission(context.actor, 'redemptions.read');
     mutationId(id);
-    const row = await this.db.client.redemptionCode.findUnique({ where: { id } });
+    const row = await this.db.client.redemptionCode.findUnique({
+      where: { id },
+      select: codeSelect,
+    });
     if (!row) throw failure(404, 'REDEMPTION_CODE_NOT_FOUND', '兑换码不存在');
     return this.codeDto(row);
   }
@@ -726,16 +789,7 @@ export class AdminMarketingService {
         ...dateWhere(query.from, query.to),
         ...descendingAfter(anchor, 'createdAt'),
       },
-      include: {
-        user: { select: { id: true, email: true } },
-        code: {
-          select: {
-            id: true,
-            displayMask: true,
-            campaign: { select: { id: true, name: true } },
-          },
-        },
-      },
+      select: claimSelect,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
     });
@@ -786,10 +840,7 @@ export class AdminMarketingService {
         ...dateWhere(query.from, query.to),
         ...descendingAfter(anchor, 'createdAt'),
       },
-      include: {
-        inviter: { select: { id: true, email: true } },
-        invitee: { select: { id: true, email: true } },
-      },
+      select: referralSelect,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: query.limit + 1,
     });
@@ -836,6 +887,15 @@ export class AdminMarketingService {
       }
     }
     return [...generated.values()];
+  }
+
+  private async reservedCapacity(tx: DbTransaction, campaignId: string): Promise<number> {
+    const claimed = await tx.redemptionClaim.count({ where: { code: { campaignId } } });
+    const active = await tx.redemptionCode.aggregate({
+      where: { campaignId, status: 'active' },
+      _sum: { maxUses: true, usedCount: true },
+    });
+    return claimed + (active._sum.maxUses ?? 0) - (active._sum.usedCount ?? 0);
   }
 
   private campaignDto(row: {

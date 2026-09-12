@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import pg from 'pg';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { DatabaseService } from '../../src/shared/database/database.service.js';
 import { adminApp, adminOrigin, fixtureAdmin } from '../helpers/admin.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
 
@@ -394,6 +395,177 @@ describe('admin redemption and referral operations', () => {
     ).toBe(0);
   });
 
+  it('serializes campaign capacity, versions generated batches, and releases only disabled-code remaining uses', async () => {
+    const capacityInput = { ...campaignInput('Capacity campaign'), totalLimit: 10 };
+    const created = await call('post', superAdmin.cookie, '/redemption-campaigns', capacityInput);
+    const campaignId = created.body.data.id as string;
+    const users = await Promise.all(
+      [0, 1].map((index) =>
+        db.database.client.user.create({
+          data: {
+            email: `capacity-${randomUUID()}@example.test`,
+            username: `capacity-user-${randomUUID()}`,
+            passwordHash: `capacity-hash-${index}`,
+          },
+        }),
+      ),
+    );
+    const active = await db.database.client.redemptionCode.create({
+      data: {
+        campaignId,
+        digest: createHash('sha256').update(`capacity-active-${randomUUID()}`).digest('hex'),
+        displayMask: 'CAPACITY-****-0001',
+        maxUses: 4,
+        usedCount: 1,
+      },
+    });
+    const disabled = await db.database.client.redemptionCode.create({
+      data: {
+        campaignId,
+        digest: createHash('sha256').update(`capacity-disabled-${randomUUID()}`).digest('hex'),
+        displayMask: 'CAPACITY-****-0002',
+        status: 'disabled',
+        maxUses: 4,
+        usedCount: 1,
+      },
+    });
+    await db.database.client.redemptionClaim.createMany({
+      data: [
+        {
+          userId: users[0]!.id,
+          codeId: active.id,
+          credits: capacityInput.credits,
+          idempotencyKey: randomUUID(),
+        },
+        {
+          userId: users[1]!.id,
+          codeId: disabled.id,
+          credits: capacityInput.credits,
+          idempotencyKey: randomUUID(),
+        },
+      ],
+    });
+
+    const belowReserved = await call(
+      'patch',
+      superAdmin.cookie,
+      `/redemption-campaigns/${campaignId}`,
+      { ...capacityInput, totalLimit: 4, version: 1 },
+    );
+    expect(belowReserved.status).toBe(422);
+    expect(belowReserved.body.code).toBe('REDEMPTION_CAMPAIGN_LIMIT_EXCEEDED');
+
+    const disabledActive = await call(
+      'post',
+      superAdmin.cookie,
+      `/redemption-codes/${active.id}/disable`,
+      { version: 1, reason },
+    );
+    expect(disabledActive.status).toBe(201);
+    const exactlyClaims = await call(
+      'patch',
+      superAdmin.cookie,
+      `/redemption-campaigns/${campaignId}`,
+      { ...capacityInput, totalLimit: 2, version: 1 },
+    );
+    expect(exactlyClaims.status).toBe(200);
+    expect(exactlyClaims.body.data).toMatchObject({ totalLimit: 2, version: 2 });
+
+    const concurrentInput = { ...campaignInput('Concurrent capacity campaign'), totalLimit: 2 };
+    const concurrentCampaign = await call(
+      'post',
+      superAdmin.cookie,
+      '/redemption-campaigns',
+      concurrentInput,
+    );
+    const attempts = await Promise.all(
+      [randomUUID(), randomUUID()].map((key) =>
+        call(
+          'post',
+          superAdmin.cookie,
+          '/redemption-codes',
+          {
+            campaignId: concurrentCampaign.body.data.id,
+            campaignVersion: 1,
+            quantity: 1,
+            maxUses: 2,
+            reason,
+          },
+          key,
+        ),
+      ),
+    );
+    expect(attempts.map((response) => response.status).sort()).toEqual([201, 409]);
+    const winner = attempts.find((response) => response.status === 201)!;
+    expect(winner.body.data).toMatchObject({ campaignVersion: 2, generated: 1 });
+    expect(
+      await db.database.client.redemptionCode.count({
+        where: { campaignId: concurrentCampaign.body.data.id },
+      }),
+    ).toBe(1);
+    expect(
+      (
+        await db.database.client.redemptionCampaign.findUniqueOrThrow({
+          where: { id: concurrentCampaign.body.data.id },
+        })
+      ).version,
+    ).toBe(2);
+    const sequentialOverflow = await call('post', superAdmin.cookie, '/redemption-codes', {
+      campaignId: concurrentCampaign.body.data.id,
+      campaignVersion: 2,
+      quantity: 1,
+      maxUses: 1,
+      reason,
+    });
+    expect(sequentialOverflow.status).toBe(422);
+    expect(sequentialOverflow.body.code).toBe('REDEMPTION_CAMPAIGN_LIMIT_EXCEEDED');
+  });
+
+  it('compares campaign and list timestamps by epoch across offsets and rejects equal or reversed ranges', async () => {
+    const validCampaign = await call('post', superAdmin.cookie, '/redemption-campaigns', {
+      ...campaignInput('Offset-valid campaign'),
+      startsAt: '2030-01-01T12:00:00+08:00',
+      endsAt: '2030-01-01T05:00:00Z',
+    });
+    expect(validCampaign.status).toBe(201);
+    for (const [startsAt, endsAt] of [
+      ['2030-01-01T04:30:00Z', '2030-01-01T12:00:00+08:00'],
+      ['2030-01-01T12:00:00+08:00', '2030-01-01T04:00:00Z'],
+    ]) {
+      expect(
+        (
+          await call('post', superAdmin.cookie, '/redemption-campaigns', {
+            ...campaignInput('Offset-invalid campaign'),
+            startsAt,
+            endsAt,
+          })
+        ).status,
+      ).toBe(400);
+    }
+
+    for (const path of [
+      '/redemption-campaigns',
+      '/redemption-codes',
+      '/redemption-claims',
+      '/referrals',
+    ]) {
+      expect(
+        (
+          await call('get', superAdmin.cookie, path, {
+            from: '2026-06-01T10:00:00+08:00',
+            to: '2026-06-01T03:00:00Z',
+          })
+        ).status,
+      ).toBe(200);
+      for (const [from, to] of [
+        ['2026-06-01T02:30:00Z', '2026-06-01T10:00:00+08:00'],
+        ['2026-06-01T10:00:00+08:00', '2026-06-01T02:00:00Z'],
+        ['not-a-date', '2026-06-01T03:00:00Z'],
+      ])
+        expect((await call('get', superAdmin.cookie, path, { from, to })).status).toBe(400);
+    }
+  });
+
   it('lists only masked codes and disables one with optimistic versioning', async () => {
     const { row: campaign } = await createCampaign();
     const generated = await call('post', superAdmin.cookie, '/redemption-codes', {
@@ -573,6 +745,108 @@ describe('admin redemption and referral operations', () => {
     ])
       expect(safe).not.toContain(forbidden);
     expect((await call('get', contentOperator.cookie, '/referrals')).status).toBe(403);
+  });
+
+  it('queries codes, claims, and referrals through explicit minimal top-level projections', async () => {
+    const campaign = await db.database.client.redemptionCampaign.create({
+      data: {
+        name: 'Projection campaign',
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 60_000),
+        perUserLimit: 1,
+        credits: 1,
+        totalLimit: 1,
+      },
+    });
+    const code = await db.database.client.redemptionCode.create({
+      data: {
+        campaignId: campaign.id,
+        digest: createHash('sha256').update(`projection-${randomUUID()}`).digest('hex'),
+        displayMask: 'PROJECTION-****-0001',
+        maxUses: 1,
+      },
+    });
+    const user = await db.database.client.user.create({
+      data: {
+        email: `projection-${randomUUID()}@example.test`,
+        username: `projection-private-${randomUUID()}`,
+        passwordHash: 'projection-private-password-hash',
+      },
+    });
+    await db.database.client.redemptionClaim.create({
+      data: {
+        userId: user.id,
+        codeId: code.id,
+        credits: 1,
+        idempotencyKey: randomUUID(),
+        responseSnapshot: { private: 'projection-private-snapshot' },
+      },
+    });
+    const invitee = await db.database.client.user.create({
+      data: {
+        email: `projection-invitee-${randomUUID()}@example.test`,
+        username: `projection-invitee-private-${randomUUID()}`,
+        passwordHash: 'projection-invitee-private-password-hash',
+      },
+    });
+    await db.database.client.referral.create({
+      data: { inviterUserId: user.id, inviteeUserId: invitee.id },
+    });
+
+    const applicationDatabase = app.get(DatabaseService);
+    const codeList = vi.spyOn(applicationDatabase.client.redemptionCode, 'findMany');
+    const codeDetail = vi.spyOn(applicationDatabase.client.redemptionCode, 'findUnique');
+    const claimList = vi.spyOn(applicationDatabase.client.redemptionClaim, 'findMany');
+    const referralList = vi.spyOn(applicationDatabase.client.referral, 'findMany');
+    try {
+      expect(
+        (await call('get', superAdmin.cookie, '/redemption-codes', { campaignId: campaign.id }))
+          .status,
+      ).toBe(200);
+      expect((await call('get', superAdmin.cookie, `/redemption-codes/${code.id}`)).status).toBe(
+        200,
+      );
+      expect(
+        (await call('get', superAdmin.cookie, '/redemption-claims', { campaignId: campaign.id }))
+          .status,
+      ).toBe(200);
+      expect((await call('get', superAdmin.cookie, '/referrals', { userId: user.id })).status).toBe(
+        200,
+      );
+
+      expect(codeList).toHaveBeenLastCalledWith(
+        expect.objectContaining({ select: expect.any(Object) }),
+      );
+      expect(codeDetail).toHaveBeenLastCalledWith(
+        expect.objectContaining({ select: expect.any(Object) }),
+      );
+      expect(claimList).toHaveBeenLastCalledWith(
+        expect.objectContaining({ select: expect.any(Object) }),
+      );
+      expect(referralList).toHaveBeenLastCalledWith(
+        expect.objectContaining({ select: expect.any(Object) }),
+      );
+      const serializedArguments = JSON.stringify([
+        codeList.mock.lastCall?.[0],
+        codeDetail.mock.lastCall?.[0],
+        claimList.mock.lastCall?.[0],
+        referralList.mock.lastCall?.[0],
+      ]);
+      for (const forbidden of [
+        'digest',
+        'idempotencyKey',
+        'responseSnapshot',
+        'passwordHash',
+        'authVersion',
+        'username',
+      ])
+        expect(serializedArguments).not.toContain(`\"${forbidden}\":true`);
+    } finally {
+      codeList.mockRestore();
+      codeDetail.mockRestore();
+      claimList.mockRestore();
+      referralList.mockRestore();
+    }
   });
 });
 
