@@ -96,30 +96,31 @@ export class WalletService {
       });
     }
   }
-  async balance(userId: string, now = new Date()) {
-    return this.db.transaction(async (tx) => {
-      await lockWallet(tx, userId);
-      await this.expire(tx, userId, now);
-      const result = await tx.creditLot.aggregate({
-        where: { userId },
-        _sum: {
-          issued: true,
-          available: true,
-          held: true,
-          consumed: true,
-          expired: true,
-          revoked: true,
-        },
-      });
-      return {
-        issued: result._sum.issued ?? 0n,
-        available: result._sum.available ?? 0n,
-        held: result._sum.held ?? 0n,
-        consumed: result._sum.consumed ?? 0n,
-        expired: result._sum.expired ?? 0n,
-        revoked: result._sum.revoked ?? 0n,
-      };
+  async balanceInTransaction(tx: DbTransaction, userId: string, now = new Date()) {
+    await lockWallet(tx, userId);
+    await this.expire(tx, userId, now);
+    const result = await tx.creditLot.aggregate({
+      where: { userId },
+      _sum: {
+        issued: true,
+        available: true,
+        held: true,
+        consumed: true,
+        expired: true,
+        revoked: true,
+      },
     });
+    return {
+      issued: result._sum.issued ?? 0n,
+      available: result._sum.available ?? 0n,
+      held: result._sum.held ?? 0n,
+      consumed: result._sum.consumed ?? 0n,
+      expired: result._sum.expired ?? 0n,
+      revoked: result._sum.revoked ?? 0n,
+    };
+  }
+  async balance(userId: string, now = new Date()) {
+    return this.db.transaction((tx) => this.balanceInTransaction(tx, userId, now));
   }
   async freeze(
     tx: DbTransaction,

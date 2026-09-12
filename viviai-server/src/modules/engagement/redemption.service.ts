@@ -5,8 +5,11 @@ import { lockWallet } from '../../shared/database/locks.js';
 import { AppError } from '../../shared/http/errors.js';
 import { WalletService } from '../wallet/wallet.service.js';
 import { NotificationService } from './notification.service.js';
+import { accountDto, type PublicAccount } from '../identity/identity.service.js';
+import { safeInteger } from '../../shared/database/locks.js';
 
 const digest = (code: string) => createHash('sha256').update(code).digest('hex');
+type AccountSnapshot = ReturnType<typeof accountDto>;
 
 @Injectable()
 export class RedemptionService {
@@ -25,28 +28,42 @@ export class RedemptionService {
       throw new AppError(400, 'INVALID_INPUT', 'Redemption input or idempotency key is invalid');
     const codeDigest = digest(normalized);
     return this.db.transaction(async (tx) => {
-      await lockWallet(tx, userId);
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:code:${codeDigest}`}, 0))`;
+      // All redemption operations acquire locks in this order: global key, wallet user, code, campaign.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:key:${idempotencyKey}`}, 0))`;
       const previous = await tx.redemptionClaim.findUnique({ where: { idempotencyKey } });
-      const redemptionCode = await tx.redemptionCode.findUnique({
-        where: { digest: codeDigest },
-        include: { campaign: true },
-      });
       if (previous) {
+        const redemptionCode = await tx.redemptionCode.findUnique({
+          where: { digest: codeDigest },
+        });
         if (previous.userId !== userId || previous.codeId !== redemptionCode?.id)
           throw new AppError(
             409,
             'IDEMPOTENCY_CONFLICT',
             'Idempotency key was used with different input',
           );
-        return { claim: previous, replayed: true };
+        if (!previous.responseSnapshot)
+          throw new AppError(409, 'IDEMPOTENCY_CONFLICT', 'Replay result is unavailable');
+        return previous.responseSnapshot as unknown as AccountSnapshot;
       }
+      await lockWallet(tx, userId);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:code:${codeDigest}`}, 0))`;
+      const redemptionCode = await tx.redemptionCode.findUnique({
+        where: { digest: codeDigest },
+        include: { campaign: true },
+      });
       if (!redemptionCode)
         throw new AppError(
           422,
           'REDEMPTION_INVALID_OR_EXPIRED',
           'Redemption code is invalid or expired',
         );
+      if (
+        await tx.redemptionClaim.findUnique({
+          where: { userId_codeId: { userId, codeId: redemptionCode.id } },
+          select: { id: true },
+        })
+      )
+        throw new AppError(422, 'REDEMPTION_LIMIT_REACHED', 'Redemption limit has been reached');
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`redemption:campaign:${redemptionCode.campaignId}`}, 0))`;
       const current = await tx.redemptionCode.findUniqueOrThrow({
         where: { id: redemptionCode.id },
@@ -91,7 +108,28 @@ export class RedemptionService {
         body: `${claim.credits} 积分已到账。`,
         action: { href: '/account' },
       });
-      return { claim, replayed: false };
+      const user = await tx.user.findUniqueOrThrow({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          avatarAssetId: true,
+          inviteCode: true,
+          authVersion: true,
+        },
+      });
+      const balance = await this.wallet.balanceInTransaction(tx, userId);
+      const snapshot = {
+        ...accountDto(user as PublicAccount),
+        credits: safeInteger(balance.available),
+        frozenCredits: safeInteger(balance.held),
+      };
+      await tx.redemptionClaim.update({
+        where: { id: claim.id },
+        data: { responseSnapshot: snapshot },
+      });
+      return snapshot;
     });
   }
 }

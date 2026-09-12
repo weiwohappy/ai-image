@@ -10,6 +10,13 @@ import { ReferralService } from '../engagement/referral.service.js';
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 export const sessionTokenHash = digest;
+export function inviteCodeCandidate(email: string, username: string, attempt: number): string {
+  return createHash('sha256')
+    .update(`${email}:${username}:${attempt}`)
+    .digest('hex')
+    .slice(0, 8)
+    .toUpperCase();
+}
 export interface PublicAccount {
   id: string;
   email: string;
@@ -104,45 +111,43 @@ export class IdentityService {
             authVersion: true,
           },
         });
-        let assigned = user;
+        let assigned: PublicAccount | null = null;
         for (let attempt = 0; attempt < 32; attempt++) {
-          const inviteCode = createHash('sha256')
-            .update(`${user.id}:${attempt}`)
-            .digest('hex')
-            .slice(0, 8)
-            .toUpperCase();
-          try {
-            assigned = await tx.user.update({
-              where: { id: user.id },
-              data: { inviteCode },
-              select: {
-                id: true,
-                email: true,
-                username: true,
-                avatarAssetId: true,
-                inviteCode: true,
-                authVersion: true,
-              },
-            });
-            break;
-          } catch (error) {
-            if (
-              !(
-                typeof error === 'object' &&
-                error !== null &&
-                'code' in error &&
-                error.code === 'P2002'
-              ) ||
-              attempt === 31
-            )
-              throw error;
-          }
+          const inviteCode = inviteCodeCandidate(input.email, input.username, attempt);
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`invite-code:${inviteCode}`}, 0))`;
+          if (await tx.user.findUnique({ where: { inviteCode }, select: { id: true } })) continue;
+          assigned = await tx.user.update({
+            where: { id: user.id },
+            data: { inviteCode },
+            select: {
+              id: true,
+              email: true,
+              username: true,
+              avatarAssetId: true,
+              inviteCode: true,
+              authVersion: true,
+            },
+          });
+          break;
         }
+        if (!assigned)
+          throw new AppError(503, 'INVITE_CODE_UNAVAILABLE', 'Invite code is unavailable');
         await this.referrals.bindAtRegistration(tx, assigned.id, input.inviteCode);
         return assigned;
       });
     } catch (error) {
-      if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002')
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        error.code === 'P2002' &&
+        'meta' in error &&
+        typeof error.meta === 'object' &&
+        error.meta !== null &&
+        'target' in error.meta &&
+        Array.isArray(error.meta.target) &&
+        error.meta.target.some((target) => target === 'email' || target === 'username')
+      )
         throw new AppError(409, 'ACCOUNT_EXISTS', 'Email or username is already registered');
       throw error;
     }

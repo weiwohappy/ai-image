@@ -10,11 +10,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { z } from 'zod';
-import { safeInteger } from '../../shared/database/locks.js';
 import { parseInput } from '../identity/identity.controller.js';
-import { accountDto } from '../identity/identity.service.js';
 import { SessionGuard, type AuthenticatedRequest } from '../identity/session.guard.js';
-import { WalletService } from '../wallet/wallet.service.js';
 import { NotificationService } from './notification.service.js';
 import { RedemptionService } from './redemption.service.js';
 import { ReferralService } from './referral.service.js';
@@ -26,7 +23,6 @@ export class EngagementController {
     @Inject(NotificationService) private readonly notifications: NotificationService,
     @Inject(ReferralService) private readonly referrals: ReferralService,
     @Inject(RedemptionService) private readonly redemption: RedemptionService,
-    @Inject(WalletService) private readonly wallet: WalletService,
   ) {}
 
   @Get('notifications') listNotifications(@Req() req: AuthenticatedRequest) {
@@ -50,16 +46,10 @@ export class EngagementController {
     @Body() body: unknown,
     @Headers('idempotency-key') key: string,
   ) {
-    await this.redemption.claim(
+    return this.redemption.claim(
       req.userId,
       parseInput(z.object({ code: z.string() }).strict(), body).code,
       key,
     );
-    const balance = await this.wallet.balance(req.userId);
-    return {
-      ...accountDto(req.user),
-      credits: safeInteger(balance.available),
-      frozenCredits: safeInteger(balance.held),
-    };
   }
 }

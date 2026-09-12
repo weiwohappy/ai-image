@@ -224,6 +224,30 @@ describe('account engagement', () => {
     expect(aliceInviteCode).toMatch(/^[A-F0-9]{8}$/);
   });
 
+  it('skips a locked invite-code collision and completes the atomic registration with the next candidate', async () => {
+    const email = 'collision@example.test';
+    const username = 'collision_user';
+    const candidate = (attempt: number) =>
+      createHash('sha256')
+        .update(`${email}:${username}:${attempt}`)
+        .digest('hex')
+        .slice(0, 8)
+        .toUpperCase();
+    await database.database.client.user.create({
+      data: {
+        email: 'collision-owner@example.test',
+        username: 'collision_owner',
+        passwordHash: 'test-only-hash',
+        inviteCode: candidate(0),
+      },
+    });
+
+    const registered = await register(email, username);
+    expect(registered.status).toBe(201);
+    expect(registered.body.data.inviteCode).toBe(candidate(1));
+    expect(await database.database.client.user.count({ where: { email } })).toBe(1);
+  });
+
   it('rejects a self referral at the service boundary', async () => {
     const referrals = app.get(ReferralService);
     await expect(
@@ -257,6 +281,15 @@ describe('account engagement', () => {
       .set('Idempotency-Key', key)
       .expect(201);
     expect(first.body.data.credits).toBe(125);
+    await request(app.getHttpServer())
+      .patch('/api/account/profile')
+      .set('Origin', origin)
+      .set('Cookie', aliceCookie)
+      .send({ username: 'alice_replayed' })
+      .expect(200);
+    await database.database.transaction((tx) =>
+      new WalletService(database.database).grant(tx, aliceId, 'replay-mutation', 7n, null),
+    );
     const replay = await post('/account/redeem', { code: rawCode }, aliceCookie)
       .set('Idempotency-Key', key)
       .expect(201);
