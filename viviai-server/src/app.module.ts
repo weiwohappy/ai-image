@@ -11,6 +11,7 @@ import { BillingModule } from './modules/billing/billing.module.js';
 import { AdminModule } from './modules/admin/admin.module.js';
 import { AccountModule } from './modules/account/account.module.js';
 import { EngagementModule } from './modules/engagement/engagement.module.js';
+import { ContentModule } from './modules/content/content.module.js';
 export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
@@ -52,6 +53,7 @@ export class AppModule {
         AdminModule,
         AccountModule,
         EngagementModule,
+        ContentModule,
       ],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],

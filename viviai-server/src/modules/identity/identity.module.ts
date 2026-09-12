@@ -8,6 +8,7 @@ import { createMailDelivery, MAIL_DELIVERY } from './mail-delivery.js';
 import { WalletModule } from '../wallet/wallet.module.js';
 import { EngagementModule } from '../engagement/engagement.module.js';
 import { EmailChallengeService } from './challenge.service.js';
+import { OptionalSessionGuard } from './optional-session.guard.js';
 @Module({
   imports: [WalletModule, forwardRef(() => EngagementModule)],
   controllers: [IdentityController],
@@ -15,12 +16,19 @@ import { EmailChallengeService } from './challenge.service.js';
     IdentityService,
     EmailChallengeService,
     SessionGuard,
+    OptionalSessionGuard,
     {
       provide: MAIL_DELIVERY,
       inject: [APP_CONFIG],
       useFactory: (config: AppConfig) => createMailDelivery(config),
     },
   ],
-  exports: [IdentityService, EmailChallengeService, SessionGuard, MAIL_DELIVERY],
+  exports: [
+    IdentityService,
+    EmailChallengeService,
+    SessionGuard,
+    OptionalSessionGuard,
+    MAIL_DELIVERY,
+  ],
 })
 export class IdentityModule {}
