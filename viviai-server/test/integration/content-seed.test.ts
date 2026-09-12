@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import pg from 'pg';
 import type { Prisma } from '../../src/generated/prisma/client.js';
 import { SessionAdvisoryLockTimeoutError } from '../../src/shared/database/database.service.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
@@ -160,19 +161,11 @@ describe('operational content seed', () => {
     let puts = 0;
     let releasePut: (() => void) | undefined;
     let enteredPut: (() => void) | undefined;
-    let lockAcquired: (() => void) | undefined;
-    let secondAttemptingLock: (() => void) | undefined;
     const firstPut = new Promise<void>((resolve) => {
       enteredPut = resolve;
     });
     const release = new Promise<void>((resolve) => {
       releasePut = resolve;
-    });
-    const firstLock = new Promise<void>((resolve) => {
-      lockAcquired = resolve;
-    });
-    const secondLockAttempt = new Promise<void>((resolve) => {
-      secondAttemptingLock = resolve;
     });
     const delayedStore: ObjectStore = {
       get: (key) => storage.store.get(key),
@@ -187,17 +180,10 @@ describe('operational content seed', () => {
       },
     };
 
-    const first = seedContent(database.database, delayedStore, {
-      manifest,
-      lifecycle: { afterLockAcquired: () => lockAcquired!() },
-    });
-    await firstLock;
+    const first = seedContent(database.database, delayedStore, { manifest });
     await firstPut;
-    const second = seedContent(database.database, delayedStore, {
-      manifest,
-      lifecycle: { beforeLockAttempt: () => secondAttemptingLock!() },
-    });
-    await secondLockAttempt;
+    const second = seedContent(database.database, delayedStore, { manifest });
+    await waitForAdvisoryLockWait(database.url);
     expect(puts).toBe(1);
     releasePut!();
     const [firstResult, secondResult] = await Promise.all([first, second]);
@@ -210,80 +196,45 @@ describe('operational content seed', () => {
   });
 
   it('finishes rollback cleanup before a waiting retry writes the same object', async () => {
-    const manifest = structuredClone(contentSeedManifest);
-    manifest.media[0]!.externalId = 'content-media-rollback-retry';
-    manifest.media = [manifest.media[0]!];
-    manifest.inspirations = [];
-    manifest.templates = [];
-    manifest.tools = [];
+    const manifest = freshMediaManifest('content-media-rollback-retry');
+    const removeConstraint = await rejectMediaExternalId(database, manifest.media[0]!.externalId);
     const events: string[] = [];
-    let releasePut: (() => void) | undefined;
-    let enteredPut: (() => void) | undefined;
     let releaseCleanup: (() => void) | undefined;
     let enteredCleanup: (() => void) | undefined;
-    let secondAttemptingLock: (() => void) | undefined;
-    const firstPut = new Promise<void>((resolve) => {
-      enteredPut = resolve;
-    });
-    const release = new Promise<void>((resolve) => {
-      releasePut = resolve;
-    });
     const cleanup = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupStarted = new Promise<void>((resolve) => {
       enteredCleanup = resolve;
     });
-    const secondLockAttempt = new Promise<void>((resolve) => {
-      secondAttemptingLock = resolve;
-    });
     const orderedStore: ObjectStore = {
       get: (key) => storage.store.get(key),
       delete: async (key) => {
+        events.push('cleanup-start');
+        enteredCleanup!();
+        await cleanup;
         events.push('delete');
         await storage.store.delete(key);
       },
       put: async (key, bytes, contentType) => {
         events.push('put');
-        if (events.filter((event) => event === 'put').length === 1) {
-          enteredPut!();
-          await release;
-        }
         await storage.store.put(key, bytes, contentType);
       },
     };
-    const failing = seedContent(database.database, orderedStore, {
-      manifest,
-      beforeTransaction: () => {
-        throw new Error('injected transaction failure');
-      },
-      lifecycle: {
-        beforeCleanup: async (category) => {
-          if (category === 'rollback') {
-            events.push('cleanup-start');
-            enteredCleanup!();
-            await cleanup;
-          }
-        },
-      },
-    });
-    await firstPut;
-    releasePut!();
+    const failing = seedContent(database.database, orderedStore, { manifest });
     await cleanupStarted;
-    const retry = seedContent(database.database, orderedStore, {
-      manifest,
-      lifecycle: { beforeLockAttempt: () => secondAttemptingLock!() },
-    });
-    await secondLockAttempt;
+    const retry = seedContent(database.database, orderedStore, { manifest });
+    await waitForAdvisoryLockWait(database.url);
     expect(events).toEqual(['put', 'cleanup-start']);
+    await removeConstraint();
     releaseCleanup!();
-    await expect(failing).rejects.toThrow('injected transaction failure');
+    await expect(failing).rejects.toThrow();
     await retry;
     expect(events).toEqual(['put', 'cleanup-start', 'delete', 'put']);
     const media = await database.database.client.contentMedia.findUniqueOrThrow({
       where: { externalId: manifest.media[0]!.externalId },
     });
-    expect(await storage.store.get(media.objectKey)).toHaveLength(media.byteSize);
+    expect(digest(await storage.store.get(media.objectKey))).toBe(media.sha256);
   });
 
   it('applies an identical concurrent material update once and retains a readable matching object', async () => {
@@ -296,15 +247,11 @@ describe('operational content seed', () => {
     changed.media[0]!.colors = ['#c01020', '#20c010', '#1020c0'];
     let releasePut: (() => void) | undefined;
     let enteredPut: (() => void) | undefined;
-    let secondAttemptingLock: (() => void) | undefined;
     const release = new Promise<void>((resolve) => {
       releasePut = resolve;
     });
     const firstPut = new Promise<void>((resolve) => {
       enteredPut = resolve;
-    });
-    const secondLockAttempt = new Promise<void>((resolve) => {
-      secondAttemptingLock = resolve;
     });
     const delayedStore: ObjectStore = {
       get: (key) => storage.store.get(key),
@@ -317,11 +264,8 @@ describe('operational content seed', () => {
     };
     const first = seedContent(database.database, delayedStore, { manifest: changed });
     await firstPut;
-    const second = seedContent(database.database, delayedStore, {
-      manifest: changed,
-      lifecycle: { beforeLockAttempt: () => secondAttemptingLock!() },
-    });
-    await secondLockAttempt;
+    const second = seedContent(database.database, delayedStore, { manifest: changed });
+    await waitForAdvisoryLockWait(database.url);
     releasePut!();
     const [firstResult, secondResult] = await Promise.all([first, second]);
     expect(firstResult.mediaCounts.updated + secondResult.mediaCounts.updated).toBe(1);
@@ -340,15 +284,11 @@ describe('operational content seed', () => {
     const events: string[] = [];
     let releaseCleanup: (() => void) | undefined;
     let enteredCleanup: (() => void) | undefined;
-    let secondAttemptingLock: (() => void) | undefined;
     const cleanup = new Promise<void>((resolve) => {
       releaseCleanup = resolve;
     });
     const cleanupStarted = new Promise<void>((resolve) => {
       enteredCleanup = resolve;
-    });
-    const secondLockAttempt = new Promise<void>((resolve) => {
-      secondAttemptingLock = resolve;
     });
     const orderedStore: ObjectStore = {
       get: (key) => storage.store.get(key),
@@ -358,28 +298,15 @@ describe('operational content seed', () => {
       },
       delete: async (key) => {
         events.push(`delete:${key}`);
+        enteredCleanup!();
+        await cleanup;
         await storage.store.delete(key);
       },
     };
-    const first = seedContent(database.database, orderedStore, {
-      manifest: changed,
-      lifecycle: {
-        beforeCleanup: async (category) => {
-          if (category === 'obsolete') {
-            events.push('cleanup-start');
-            enteredCleanup!();
-            await cleanup;
-          }
-        },
-      },
-    });
+    const first = seedContent(database.database, orderedStore, { manifest: changed });
     await cleanupStarted;
-    const reversion = seedContent(database.database, orderedStore, {
-      manifest: baseline,
-      lifecycle: { beforeLockAttempt: () => secondAttemptingLock!() },
-    });
-    await secondLockAttempt;
-    expect(events).toContain('cleanup-start');
+    const reversion = seedContent(database.database, orderedStore, { manifest: baseline });
+    await waitForAdvisoryLockWait(database.url);
     expect(events.filter((event) => event.startsWith('put:'))).toHaveLength(1);
     releaseCleanup!();
     await Promise.all([first, reversion]);
@@ -549,17 +476,9 @@ describe('operational content seed', () => {
   });
 
   it('cleans newly stored objects when its database transaction fails', async () => {
-    const manifest = structuredClone(contentSeedManifest);
-    manifest.media.push({ ...manifest.media[0]!, externalId: 'content-media-cleanup' });
-    manifest.inspirations[0]!.coverMediaExternalId = 'content-media-cleanup';
-    await expect(
-      seedContent(database.database, storage.store, {
-        manifest,
-        beforeTransaction: () => {
-          throw new Error('injected database failure');
-        },
-      }),
-    ).rejects.toThrow('injected database failure');
+    const manifest = freshMediaManifest('content-media-cleanup');
+    await rejectMediaExternalId(database, manifest.media[0]!.externalId);
+    await expect(seedContent(database.database, storage.store, { manifest })).rejects.toThrow();
     await expect(
       database.database.client.contentMedia.findUnique({
         where: { externalId: 'content-media-cleanup' },
@@ -568,9 +487,8 @@ describe('operational content seed', () => {
   });
 
   it('reports a safe cleanup warning count when rollback object cleanup also fails', async () => {
-    const manifest = structuredClone(contentSeedManifest);
-    manifest.media.push({ ...manifest.media[0]!, externalId: 'content-media-cleanup-warning' });
-    manifest.inspirations[0]!.coverMediaExternalId = 'content-media-cleanup-warning';
+    const manifest = freshMediaManifest('content-media-cleanup-warning');
+    await rejectMediaExternalId(database, manifest.media[0]!.externalId);
     const failingCleanupStore: ObjectStore = {
       get: (key) => storage.store.get(key),
       put: (key, bytes, contentType) => storage.store.put(key, bytes, contentType),
@@ -580,12 +498,7 @@ describe('operational content seed', () => {
     };
 
     await expect(
-      seedContent(database.database, failingCleanupStore, {
-        manifest,
-        beforeTransaction: () => {
-          throw new Error('injected database failure');
-        },
-      }),
+      seedContent(database.database, failingCleanupStore, { manifest }),
     ).rejects.toMatchObject({
       name: SeedCleanupError.name,
       warningCount: 1,
@@ -616,15 +529,11 @@ describe('operational content seed', () => {
     const manifest = freshMediaManifest('content-media-lock-timeout');
     let releasePut: (() => void) | undefined;
     let enteredPut: (() => void) | undefined;
-    let secondAttemptingLock: (() => void) | undefined;
     const release = new Promise<void>((resolve) => {
       releasePut = resolve;
     });
     const firstPut = new Promise<void>((resolve) => {
       enteredPut = resolve;
-    });
-    const secondLockAttempt = new Promise<void>((resolve) => {
-      secondAttemptingLock = resolve;
     });
     const delayedStore: ObjectStore = {
       get: (key) => storage.store.get(key),
@@ -640,9 +549,8 @@ describe('operational content seed', () => {
     const timedOut = seedContent(database.database, delayedStore, {
       manifest,
       lockTimeoutMs: 1,
-      lifecycle: { beforeLockAttempt: () => secondAttemptingLock!() },
     });
-    await secondLockAttempt;
+    await waitForAdvisoryLockWait(database.url);
     await expect(timedOut).rejects.toBeInstanceOf(SessionAdvisoryLockTimeoutError);
     releasePut!();
     await holder;
@@ -739,4 +647,64 @@ function freshMediaManifest(externalId: string): ContentSeedManifest {
 
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function waitForAdvisoryLockWait(databaseUrl: string): Promise<void> {
+  const url = new URL(databaseUrl);
+  url.searchParams.delete('schema');
+  const client = new pg.Client({ connectionString: url.toString() });
+  await client.connect();
+  try {
+    const deadline = Date.now() + 3_000;
+    while (Date.now() < deadline) {
+      const result = await client.query<{ waiting: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM pg_stat_activity
+           WHERE application_name = 'viviai-content-seed-lock'
+             AND wait_event_type = 'Lock'
+             AND wait_event = 'advisory'
+         ) AS waiting`,
+      );
+      if (result.rows[0]?.waiting) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Timed out waiting for content seed advisory lock state');
+  } finally {
+    await client.end();
+  }
+}
+
+let rejectedConstraint = 0;
+
+async function rejectMediaExternalId(
+  database: TestDatabase,
+  externalId: string,
+): Promise<() => Promise<void>> {
+  const constraint = `content_seed_reject_${rejectedConstraint++}`;
+  if (!/^[a-z0-9-]+$/.test(externalId)) throw new Error('Unsafe test media external ID');
+  const url = new URL(database.url);
+  const schema = url.searchParams.get('schema');
+  if (!schema || !/^viviai_test_[a-f0-9]+$/.test(schema)) throw new Error('Unsafe test schema');
+  url.searchParams.delete('schema');
+  const client = new pg.Client({ connectionString: url.toString() });
+  await client.connect();
+  try {
+    await client.query(`SET search_path TO "${schema}"`);
+    await client.query(
+      `ALTER TABLE content_media ADD CONSTRAINT "${constraint}" CHECK (external_id <> '${externalId}')`,
+    );
+  } finally {
+    await client.end();
+  }
+  return async () => {
+    const cleanup = new pg.Client({ connectionString: url.toString() });
+    await cleanup.connect();
+    try {
+      await cleanup.query(`SET search_path TO "${schema}"`);
+      await cleanup.query(`ALTER TABLE content_media DROP CONSTRAINT "${constraint}"`);
+    } finally {
+      await cleanup.end();
+    }
+  };
 }

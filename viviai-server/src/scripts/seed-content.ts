@@ -213,14 +213,6 @@ export interface SeedContentOptions {
   isModelSpecEnabled?: (modelId: string, outputSpecId: string) => boolean | Promise<boolean>;
   // Bounded to protect the command from waiting indefinitely for another seed session.
   lockTimeoutMs?: number;
-  // Test-only lifecycle probes; they do not alter seeding behavior.
-  lifecycle?: {
-    beforeLockAttempt?: () => void | Promise<void>;
-    afterLockAcquired?: () => void | Promise<void>;
-    beforeCleanup?: (category: CleanupWarningCategory) => void | Promise<void>;
-  };
-  // Injectable only for owned test cleanup verification; production callers must not use it.
-  beforeTransaction?: () => void | Promise<void>;
 }
 
 interface PreparedMedia {
@@ -311,7 +303,6 @@ export async function seedContent(
           }
 
           await db.transaction(async (tx) => {
-            await options.beforeTransaction?.();
             const mediaIds = new Map<string, string>();
             for (const media of preparedMedia) {
               const current = await tx.contentMedia.findUnique({
@@ -464,7 +455,6 @@ export async function seedContent(
           await Promise.all(
             obsoleteObjectKeys.map(async (key) => {
               try {
-                await options.lifecycle?.beforeCleanup?.('obsolete');
                 await store.delete(key);
               } catch {
                 cleanupWarnings.obsolete++;
@@ -475,7 +465,6 @@ export async function seedContent(
           await Promise.all(
             newlyWritten.map(async (key) => {
               try {
-                await options.lifecycle?.beforeCleanup?.('rollback');
                 await store.delete(key);
               } catch {
                 cleanupWarnings.rollback++;
@@ -486,8 +475,6 @@ export async function seedContent(
           throw error;
         }
       },
-      options.lifecycle?.beforeLockAttempt,
-      options.lifecycle?.afterLockAcquired,
     );
   } catch (error) {
     throw error;
@@ -820,7 +807,7 @@ export async function seedContentCommand(env: NodeJS.ProcessEnv = process.env): 
       isModelSpecEnabled: (modelId, outputSpecId) => enabled.has(`${modelId}:${outputSpecId}`),
     });
     console.info(
-      `Seeded content catalogs: ${result.media} media (${formatSeedCounts(result.mediaCounts)}), ${result.inspirations} inspirations (${formatSeedCounts(result.inspirationCounts)}), ${result.templates} templates (${formatSeedCounts(result.templateCounts)}), ${result.tools} tools (${formatSeedCounts(result.toolCounts)}); cleanup warnings rollback=${result.cleanupWarnings.rollback}, obsolete=${result.cleanupWarnings.obsolete}`,
+      `Seeded content catalogs: manifestItems media=${result.media}, inspirations=${result.inspirations}, templates=${result.templates}, tools=${result.tools}; operations media (${formatSeedCounts(result.mediaCounts)}), inspirations (${formatSeedCounts(result.inspirationCounts)}), templates (${formatSeedCounts(result.templateCounts)}), tools (${formatSeedCounts(result.toolCounts)}); cleanup warnings rollback=${result.cleanupWarnings.rollback}, obsolete=${result.cleanupWarnings.obsolete}`,
     );
   } finally {
     await db.onModuleDestroy();

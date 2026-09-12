@@ -44,37 +44,48 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     key: string,
     timeoutMs: number,
     fn: () => Promise<T>,
-    beforeLockAttempt?: () => void | Promise<void>,
-    afterLockAcquired?: () => void | Promise<void>,
   ): Promise<T> {
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000)
       throw new Error('Database session lock timeout must be an integer between 1 and 60000ms');
     const url = new URL(this.#databaseUrl);
     url.searchParams.delete('schema');
     const session = new pg.Client({ connectionString: url.toString() });
-    let locked = false;
+    let transactionOpen = false;
     try {
       try {
         await session.connect();
       } catch {
         throw new Error('Database session lock unavailable');
       }
-      await session.query("SELECT set_config('lock_timeout', $1, false)", [`${timeoutMs}ms`]);
-      await beforeLockAttempt?.();
+      await session.query('BEGIN');
+      transactionOpen = true;
+      await session.query("SELECT set_config('lock_timeout', $1, true)", [`${timeoutMs}ms`]);
+      await session.query("SELECT set_config('application_name', $1, true)", [
+        'viviai-content-seed-lock',
+      ]);
       try {
-        await session.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [key]);
+        await session.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
       } catch (error) {
         if (isLockTimeout(error)) throw new SessionAdvisoryLockTimeoutError();
         throw new Error('Database session lock failed');
       }
-      locked = true;
-      await afterLockAcquired?.();
-      return await fn();
+      let result: T;
+      try {
+        result = await fn();
+      } catch (error) {
+        await session.query('ROLLBACK').catch(() => undefined);
+        transactionOpen = false;
+        throw error;
+      }
+      try {
+        await session.query('COMMIT');
+      } catch {
+        throw new Error('Database session lock completion failed');
+      }
+      transactionOpen = false;
+      return result;
     } finally {
-      if (locked)
-        await session
-          .query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [key])
-          .catch(() => undefined);
+      if (transactionOpen) await session.query('ROLLBACK').catch(() => undefined);
       await session.end().catch(() => undefined);
     }
   }
