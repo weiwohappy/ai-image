@@ -8,23 +8,26 @@ import { APP_CONFIG } from '../../../shared/infrastructure.module.js';
 import { ASSET_STORE } from '../../assets/assets.service.js';
 import type { ObjectStore } from '../../assets/object-store.js';
 import { activeCreditPrice } from '../../catalog/credit-pricing.js';
+import { resolveImageExecution } from '../../catalog/catalog.service.js';
 import {
   inspirationInputSchema,
   remixTemplateInputSchema,
   toolDefinitionInputSchema,
 } from '../../content/content-contracts.js';
-import { officialSnapshot } from '../../providers/official-config.js';
 import { getOfficialOutputSpec } from '../../providers/official-models.js';
-import { failure } from '../team/policy.js';
 import type { ContentKind } from './content.service.js';
-import { lockContentResources } from './command.service.js';
+import { lockContentResources } from '../../content/content-locks.js';
 
 const rasterTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 type Row = Record<string, unknown>;
 
 function validationFailure(path: string) {
-  return failure(422, 'CONTENT_NOT_PUBLISHABLE', `无法发布：${path || 'content'}`);
+  const field = path || 'content';
+  return new AppError(422, 'CONTENT_NOT_PUBLISHABLE', `无法发布：${field}`, {
+    field,
+    details: { reason: 'not_publishable' },
+  });
 }
 
 @Injectable()
@@ -91,7 +94,7 @@ export class AdminContentPublishValidator {
     const model = String(row.defaultModelId);
     const outputSpecId = String(row.defaultOutputSpecId);
     const spec = getOfficialOutputSpec(model, outputSpecId);
-    if (!spec || !officialSnapshot(this.config.officialImages, model, spec.resolution, spec.ratio))
+    if (!spec || !resolveImageExecution(this.config, model, spec.resolution, spec.ratio))
       throw validationFailure('defaultOutputSpecId');
     if (kind === 'tools') {
       const defaults = z

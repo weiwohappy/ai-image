@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { AppError } from '../../shared/http/errors.js';
-import { getOfficialOutputSpec } from '../providers/official-models.js';
+import { getOfficialOutputSpec, OFFICIAL_MODELS } from '../providers/official-models.js';
 import {
+  contentSourceTypeSchema,
   generationDefaultsSchema,
   toolFieldArraySchema,
   visualAnalysisSchema,
@@ -10,7 +11,6 @@ import {
 type MediaReference = { externalId: string } | null;
 type Interaction = { userId: string };
 
-const sourceTypeSchema = z.enum(['platform', 'licensed-user', 'brand', 'public-domain']);
 const defaultParametersSchema = z
   .object({ strength: z.enum(['similar', 'balanced', 'creative']).optional() })
   .strict();
@@ -78,7 +78,7 @@ export interface RemixTemplateProjection {
 }
 
 export function presentRemixTemplate(row: RemixTemplateProjection) {
-  const sourceType = parseStored(sourceTypeSchema, row.sourceType);
+  const sourceType = parseStored(contentSourceTypeSchema, row.sourceType);
   const analysis = parseStored(visualAnalysisSchema, row.visualAnalysis);
   parseStored(defaultParametersSchema, row.defaultParameters);
   const outputSpec = getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId);
@@ -125,14 +125,17 @@ export function presentToolDefinition(row: ToolDefinitionProjection) {
   const fields = parseStored(toolFieldArraySchema, row.fieldSchema);
   const defaults = parseStored(generationDefaultsSchema, row.defaults);
   const outputSpec = getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId);
+  const model = OFFICIAL_MODELS.find((candidate) => candidate.id === row.defaultModelId);
   if (
     !outputSpec ||
+    !model ||
     defaults.modelId !== row.defaultModelId ||
     defaults.resolution !== outputSpec.resolution ||
     defaults.ratio !== outputSpec.ratio ||
     defaults.count > row.maxOutputCount ||
     !Number.isSafeInteger(row.maxAssets) ||
-    row.maxAssets < 0
+    row.maxAssets < 0 ||
+    row.maxAssets > model.maxImages
   )
     return invalidStoredContent();
   return {

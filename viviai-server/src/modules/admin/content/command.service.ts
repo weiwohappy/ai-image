@@ -27,11 +27,6 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
-export async function lockContentResources(tx: DbTransaction, keys: string[]): Promise<void> {
-  for (const key of [...new Set(keys)].sort())
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`admin:content:${key}`}, 0))`;
-}
-
 @Injectable()
 export class AdminContentCommands {
   constructor(
@@ -55,6 +50,7 @@ export class AdminContentCommands {
   ): Promise<T> {
     if (!z.uuid().safeParse(key).success)
       throw failure(400, 'ADMIN_INVALID_INPUT', '需要有效幂等键');
+    if (action.endsWith('.publish')) await this.rateLimitPublish(context, action);
     const requestDigest = digest(JSON.stringify(canonical({ action, target, input })));
     try {
       return await this.db.transaction(async (tx) => {
@@ -129,5 +125,38 @@ export class AdminContentCommands {
       }
       throw error;
     }
+  }
+
+  private async rateLimitPublish(context: AdminContext, action: string): Promise<void> {
+    const windowMs = 60_000;
+    const ipDigest = digest(context.requestIp ?? 'unknown');
+    const buckets = [
+      { key: `admin-content-publish:${context.actor.id}:${action}`, limit: 5 },
+      { key: `admin-content-publish:ip:${ipDigest}:${action}`, limit: 25 },
+    ].sort((left, right) => left.key.localeCompare(right.key));
+    const allowed = await this.db.transaction(async (tx) => {
+      let permitted = true;
+      const now = new Date();
+      for (const bucket of buckets) {
+        await lockAdmin(tx, `rate:${bucket.key}`);
+        const current = await tx.authRateBucket.findUnique({ where: { key: bucket.key } });
+        const expired = !current || current.expiresAt <= now;
+        const count = expired ? 1 : current.count + 1;
+        await tx.authRateBucket.upsert({
+          where: { key: bucket.key },
+          create: { key: bucket.key, count, expiresAt: new Date(Date.now() + windowMs) },
+          update: {
+            count,
+            ...(expired ? { expiresAt: new Date(Date.now() + windowMs) } : {}),
+          },
+        });
+        if (count > bucket.limit) permitted = false;
+      }
+      return permitted;
+    });
+    if (!allowed)
+      throw new AppError(429, 'CONTENT_PUBLISH_RATE_LIMITED', '发布操作过于频繁', {
+        details: { reason: 'rate_limited', limit: 5, retryAfterSeconds: 60 },
+      });
   }
 }

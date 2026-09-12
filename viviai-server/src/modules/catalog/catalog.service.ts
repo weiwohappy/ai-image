@@ -10,6 +10,18 @@ import { officialSnapshot } from '../providers/official-config.js';
 import { thirdPartyImageSnapshot } from '../providers/third-party-config.js';
 import { activeCreditPrice } from './credit-pricing.js';
 
+export function resolveImageExecution(
+  config: Pick<AppConfig, 'officialImages' | 'thirdPartyImages'>,
+  modelId: string,
+  resolution: string,
+  ratio: string,
+) {
+  return (
+    officialSnapshot(config.officialImages, modelId, resolution, ratio) ??
+    thirdPartyImageSnapshot(config.thirdPartyImages, modelId, resolution, ratio)
+  );
+}
+
 @Injectable()
 export class CatalogService {
   constructor(
@@ -87,14 +99,12 @@ export class CatalogService {
   execution(input: GenerationInput) {
     this.requireAvailable(input.modelId);
     if (input.modelId === PRODUCT_ID) return;
-    const snapshot =
-      officialSnapshot(this.config.officialImages, input.modelId, input.resolution, input.ratio) ??
-      thirdPartyImageSnapshot(
-        this.config.thirdPartyImages,
-        input.modelId,
-        input.resolution,
-        input.ratio,
-      );
+    const snapshot = resolveImageExecution(
+      this.config,
+      input.modelId,
+      input.resolution,
+      input.ratio,
+    );
     if (!snapshot)
       throw new AppError(503, 'MODEL_UNAVAILABLE', 'Model specification is not enabled');
     return snapshot;

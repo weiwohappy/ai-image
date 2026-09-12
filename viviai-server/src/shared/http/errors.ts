@@ -7,6 +7,10 @@ export class AppError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly safe?: {
+      field?: string;
+      details?: { reason?: string; limit?: number; retryAfterSeconds?: number };
+    },
   ) {
     super(message);
     this.name = 'AppError';
@@ -18,6 +22,8 @@ export interface ErrorEnvelope {
   message: string;
   requestId: string;
   code: string;
+  field?: string;
+  details?: { reason?: string; limit?: number; retryAfterSeconds?: number };
 }
 
 @Catch()
@@ -32,13 +38,45 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       message: normalized.message,
       requestId: getRequestId(request),
       code: normalized.code,
+      ...(normalized.field ? { field: normalized.field } : {}),
+      ...(normalized.details ? { details: normalized.details } : {}),
     } satisfies ErrorEnvelope);
   }
 }
 
-function normalizeError(error: unknown): { status: number; code: string; message: string } {
+function normalizeError(error: unknown): {
+  status: number;
+  code: string;
+  message: string;
+  field?: string;
+  details?: { reason?: string; limit?: number; retryAfterSeconds?: number };
+} {
   if (error instanceof AppError) {
-    return { status: error.status, code: error.code, message: error.message };
+    const field =
+      error.safe?.field && /^[a-zA-Z][a-zA-Z0-9.[\]_-]{0,119}$/.test(error.safe.field)
+        ? error.safe.field
+        : undefined;
+    const raw = error.safe?.details;
+    const details = raw
+      ? {
+          ...(typeof raw.reason === 'string' && /^[a-z_]{1,80}$/.test(raw.reason)
+            ? { reason: raw.reason }
+            : {}),
+          ...(Number.isSafeInteger(raw.limit) && Number(raw.limit) >= 0
+            ? { limit: raw.limit }
+            : {}),
+          ...(Number.isSafeInteger(raw.retryAfterSeconds) && Number(raw.retryAfterSeconds) >= 0
+            ? { retryAfterSeconds: raw.retryAfterSeconds }
+            : {}),
+        }
+      : undefined;
+    return {
+      status: error.status,
+      code: error.code,
+      message: error.message,
+      ...(field ? { field } : {}),
+      ...(details && Object.keys(details).length ? { details } : {}),
+    };
   }
   if (error instanceof HttpException) {
     const status = error.getStatus();

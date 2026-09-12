@@ -14,6 +14,7 @@ import {
 import type { ObjectStore } from '../../src/modules/assets/object-store.js';
 import {
   inspirationInputSchema,
+  remixTemplateInputSchema,
   toolDefinitionInputSchema,
 } from '../../src/modules/content/content-contracts.js';
 
@@ -124,6 +125,36 @@ describe('operational content seed', () => {
       toolDefinitionInputSchema.safeParse({
         ...contentSeedManifest.tools[0]!,
         promptTemplate: 'Malformed {{product-type',
+      }).success,
+    ).toBe(false);
+    const template = structuredClone(contentSeedManifest.templates[0]!);
+    delete (template as { sourceType?: string }).sourceType;
+    expect(remixTemplateInputSchema.safeParse(template).success).toBe(false);
+    expect(
+      remixTemplateInputSchema.safeParse({
+        ...contentSeedManifest.templates[0]!,
+        sourceType: 'unreviewed-source',
+      }).success,
+    ).toBe(false);
+    expect(
+      toolDefinitionInputSchema.safeParse({
+        ...contentSeedManifest.tools[0]!,
+        defaults: { ...contentSeedManifest.tools[0]!.defaults, count: 2 },
+        maxOutputCount: 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      toolDefinitionInputSchema.safeParse({
+        ...contentSeedManifest.tools[0]!,
+        defaultModelId: 'gemini-3.1-flash-lite-image',
+        defaultOutputSpecId: 'png-1k-1x1-v1',
+        defaults: {
+          modelId: 'gemini-3.1-flash-lite-image',
+          resolution: '1K',
+          ratio: '1:1',
+          count: 1,
+        },
+        maxAssets: 2,
       }).success,
     ).toBe(false);
   });
@@ -486,6 +517,48 @@ describe('operational content seed', () => {
         isModelSpecEnabled: () => true,
       }),
     ).rejects.toThrow('exact output specification');
+
+    const multipleOutputs = publishedToolManifest();
+    multipleOutputs.tools[0]!.externalId = 'tool-multiple-outputs';
+    multipleOutputs.tools[0]!.maxOutputCount = 2;
+    multipleOutputs.tools[0]!.defaults.count = 2;
+    await expect(
+      seedContent(database.database, storage.store, {
+        manifest: multipleOutputs,
+        isModelSpecEnabled: () => true,
+      }),
+    ).resolves.toMatchObject({ toolCounts: { created: 1 } });
+  });
+
+  it('refuses to offline seeded media while any published content still references it', async () => {
+    const manifest = structuredClone(contentSeedManifest);
+    manifest.media = [manifest.media[1]!];
+    manifest.inspirations = [
+      {
+        ...manifest.inspirations[1]!,
+        coverMediaExternalId: manifest.media[0]!.externalId,
+        status: 'published',
+      },
+    ];
+    manifest.templates = [];
+    manifest.tools = [];
+    await seedContent(database.database, storage.store, { manifest });
+    const offline = structuredClone(manifest);
+    offline.media[0]!.status = 'offline';
+    offline.inspirations = [];
+    await expect(
+      seedContent(database.database, storage.store, { manifest: offline }),
+    ).rejects.toThrow('referenced by published content');
+    const media = await database.database.client.contentMedia.findUniqueOrThrow({
+      where: { externalId: manifest.media[0]!.externalId },
+    });
+    const inspiration = await database.database.client.inspiration.findUniqueOrThrow({
+      where: { externalId: manifest.inspirations[0]!.externalId },
+    });
+    expect({ media: media.status, inspiration: inspiration.status }).toEqual({
+      media: 'published',
+      inspiration: 'published',
+    });
   });
 
   it('cleans newly stored objects when its database transaction fails', async () => {

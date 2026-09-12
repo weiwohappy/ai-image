@@ -1,7 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
+import type { AppConfig } from '../../../config.js';
 import { DatabaseService } from '../../../shared/database/database.service.js';
+import { APP_CONFIG } from '../../../shared/infrastructure.module.js';
 import { AppError } from '../../../shared/http/errors.js';
 import { ASSET_STORE } from '../../assets/assets.service.js';
 import { validateImage } from '../../assets/image-validation.js';
@@ -10,7 +12,9 @@ import type { AdminContext } from '../auth.service.js';
 import { requirePermission } from '../permissions.js';
 import { failure } from '../team/policy.js';
 import { canTransitionContent, type ContentLifecycle } from './content.service.js';
-import { AdminContentCommands, lockContentResources } from './command.service.js';
+import { AdminContentCommands } from './command.service.js';
+import { lockContentResources } from '../../content/content-locks.js';
+import { adminAfter, adminFilter, adminNextCursor, decodeAdminCursor } from './pagination.js';
 
 const allowedMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const allowedExtensions = new Set(['png', 'jpg', 'jpeg', 'webp']);
@@ -28,9 +32,17 @@ const archiveSchema = z
 const listSchema = z
   .object({
     status: z.enum(['draft', 'published', 'offline', 'archived']).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(50),
+    q: z.string().trim().min(1).max(160).optional(),
+    updatedFrom: z.iso.datetime().optional(),
+    updatedTo: z.iso.datetime().optional(),
+    cursor: z.string().min(1).max(2048).optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(50),
   })
-  .strict();
+  .strict()
+  .refine(
+    (query) => !query.updatedFrom || !query.updatedTo || query.updatedFrom <= query.updatedTo,
+    { path: ['updatedFrom'] },
+  );
 
 function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
@@ -38,10 +50,19 @@ function parse<T>(schema: z.ZodType<T>, input: unknown): T {
   return result.data;
 }
 
+function mutationId(id: string): string {
+  if (!z.uuid().safeParse(id).success)
+    throw failure(400, 'ADMIN_INVALID_INPUT', 'Invalid administrator request');
+  return id;
+}
+
 @Injectable()
 export class AdminContentMediaService {
+  private readonly logger = new Logger(AdminContentMediaService.name);
+
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(ASSET_STORE) private readonly store: ObjectStore,
     @Inject(AdminContentCommands) private readonly commands: AdminContentCommands,
   ) {}
@@ -49,12 +70,47 @@ export class AdminContentMediaService {
   async list(context: AdminContext, raw: unknown) {
     requirePermission(context.actor, 'content.media.read');
     const query = parse(listSchema, raw);
-    const rows = await this.db.client.contentMedia.findMany({
-      where: query.status ? { status: query.status } : {},
-      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      take: query.limit,
+    const filter = adminFilter({
+      status: query.status,
+      q: query.q,
+      updatedFrom: query.updatedFrom,
+      updatedTo: query.updatedTo,
     });
-    return { rows: rows.map((row) => this.dto(row)) };
+    const after = decodeAdminCursor(query.cursor, 'media', filter, this.config.contentCursorSecret);
+    const rows = await this.db.client.contentMedia.findMany({
+      where: {
+        ...(query.status ? { status: query.status } : {}),
+        ...(query.q
+          ? {
+              OR: [
+                { externalId: { contains: query.q, mode: 'insensitive' } },
+                { sha256: { contains: query.q, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+        ...(query.updatedFrom || query.updatedTo
+          ? {
+              updatedAt: {
+                ...(query.updatedFrom ? { gte: new Date(query.updatedFrom) } : {}),
+                ...(query.updatedTo ? { lte: new Date(query.updatedTo) } : {}),
+              },
+            }
+          : {}),
+        ...adminAfter(after),
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: query.limit + 1,
+    });
+    return {
+      rows: rows.slice(0, query.limit).map((row) => this.dto(row)),
+      nextCursor: adminNextCursor(
+        rows,
+        query.limit,
+        'media',
+        filter,
+        this.config.contentCursorSecret,
+      ),
+    };
   }
 
   async upload(
@@ -68,6 +124,8 @@ export class AdminContentMediaService {
     requirePermission(context.actor, 'content.media.read');
     requirePermission(context.actor, 'content.media.write');
     const reason = parse(reasonSchema, rawReason);
+    if (!z.uuid().safeParse(key).success)
+      throw failure(400, 'ADMIN_INVALID_INPUT', '需要有效幂等键');
     const extension = filename.split('.').pop()?.toLowerCase();
     if (
       !/^[a-z0-9][a-z0-9._-]{0,119}$/.test(filename) ||
@@ -77,50 +135,98 @@ export class AdminContentMediaService {
     )
       throw new AppError(400, 'INVALID_IMAGE', 'Invalid media filename or MIME type');
     const image = await validateImage(bytes);
-    const id = randomUUID();
+    const id = deterministicMediaId(context.actor.id, key);
     const hash = createHash('sha256').update(image.bytes).digest('hex');
     const objectKey = `content/admin/${id}-${hash}.png`;
-    let stored = false;
-    try {
-      return await this.commands.run(
-        context,
-        key,
-        'content.media.create',
-        `sha256:${hash}`,
-        { reason, filename, mimeType, sha256: hash, byteSize: image.bytes.byteLength },
-        ['content.media.read', 'content.media.write'],
-        async (tx, current) => {
-          await this.store.put(objectKey, image.bytes, image.contentType);
-          stored = true;
-          const row = await tx.contentMedia.create({
-            data: {
-              id,
-              externalId: `content-media-${id}`,
-              objectKey,
-              sha256: hash,
-              contentType: image.contentType,
-              width: image.width,
-              height: image.height,
-              byteSize: image.bytes.byteLength,
-              createdByAdminId: current.actor.id,
-              updatedByAdminId: current.actor.id,
+    return this.db.withSessionAdvisoryLock(
+      `content:media-upload:${context.actor.id}:${key}`,
+      30_000,
+      async () => {
+        let stored = false;
+        try {
+          return await this.commands.run(
+            context,
+            key,
+            'content.media.create',
+            `sha256:${hash}`,
+            { reason, filename, mimeType, sha256: hash, byteSize: image.bytes.byteLength },
+            ['content.media.read', 'content.media.write'],
+            async (tx, current) => {
+              await this.store.put(objectKey, image.bytes, image.contentType);
+              stored = true;
+              const row = await tx.contentMedia.create({
+                data: {
+                  id,
+                  externalId: `content-media-${id}`,
+                  objectKey,
+                  sha256: hash,
+                  contentType: image.contentType,
+                  width: image.width,
+                  height: image.height,
+                  byteSize: image.bytes.byteLength,
+                  createdByAdminId: current.actor.id,
+                  updatedByAdminId: current.actor.id,
+                },
+              });
+              return {
+                result: { ...this.dto(row), filename },
+                metadata: {
+                  contentKind: 'media',
+                  changedFields: ['create'],
+                  afterStatus: 'draft',
+                  afterVersion: 1,
+                },
+              };
             },
-          });
-          return {
-            result: { ...this.dto(row), filename },
-            metadata: {
-              contentKind: 'media',
-              changedFields: ['create'],
-              afterStatus: 'draft',
-              afterVersion: 1,
-            },
-          };
-        },
-      );
-    } catch (error) {
-      if (stored) await this.store.delete(objectKey).catch(() => undefined);
-      throw error;
-    }
+          );
+        } catch (error) {
+          if (!stored) throw error;
+          let receipt: { result: unknown } | null | undefined;
+          let row: { id: string; objectKey: string } | null | undefined;
+          try {
+            [receipt, row] = await Promise.all([
+              this.db.client.adminCommandReceipt.findUnique({
+                where: {
+                  accountId_idempotencyKey: { accountId: context.actor.id, idempotencyKey: key },
+                },
+                select: { result: true },
+              }),
+              this.db.client.contentMedia.findUnique({
+                where: { id },
+                select: { id: true, objectKey: true },
+              }),
+            ]);
+          } catch {
+            await this.recordUploadAlert(id, 'upload_outcome_unknown');
+            throw new AppError(
+              503,
+              'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN',
+              '上传结果正在对账，请稍后查询',
+              { details: { reason: 'outcome_unknown' } },
+            );
+          }
+          if (receipt && row?.objectKey === objectKey) return receipt.result;
+          if (receipt || row) {
+            await this.recordUploadAlert(id, 'upload_outcome_unknown');
+            throw new AppError(
+              503,
+              'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN',
+              '上传结果正在对账，请稍后查询',
+              { details: { reason: 'outcome_unknown' } },
+            );
+          }
+          try {
+            await this.store.delete(objectKey);
+          } catch {
+            await this.recordUploadAlert(id, 'rollback_cleanup_failed');
+            throw new AppError(503, 'CONTENT_MEDIA_CLEANUP_PENDING', '上传回滚清理待处理', {
+              details: { reason: 'cleanup_pending' },
+            });
+          }
+          throw error;
+        }
+      },
+    );
   }
 
   async metadata(context: AdminContext, id: string) {
@@ -147,6 +253,7 @@ export class AdminContentMediaService {
   }
 
   async transition(context: AdminContext, key: string, id: string, raw: unknown) {
+    mutationId(id);
     const input = parse(commandSchema, raw);
     return this.commands.run(
       context,
@@ -206,6 +313,7 @@ export class AdminContentMediaService {
   }
 
   async archive(context: AdminContext, key: string, id: string, raw: unknown) {
+    mutationId(id);
     const input = parse(archiveSchema, raw);
     return this.transition(context, key, id, { ...input, status: 'archived' });
   }
@@ -260,13 +368,44 @@ export class AdminContentMediaService {
     try {
       bytes = await this.store.get(row.objectKey);
     } catch {
-      throw failure(422, 'CONTENT_NOT_PUBLISHABLE', '无法发布：media');
+      throw mediaPublishFailure();
     }
     if (
       !allowedMimeTypes.has(row.contentType) ||
       bytes.byteLength !== row.byteSize ||
       createHash('sha256').update(bytes).digest('hex') !== row.sha256
     )
-      throw failure(422, 'CONTENT_NOT_PUBLISHABLE', '无法发布：media');
+      throw mediaPublishFailure();
   }
+
+  private async recordUploadAlert(resourceId: string, kind: string): Promise<void> {
+    const sourceKey = `content-media:${kind}:${resourceId}`;
+    await this.db.client.adminAlert
+      .upsert({
+        where: { sourceKey },
+        create: { sourceKey, category: 'content', kind, resourceId },
+        update: { lastSeenAt: new Date(), resolved: false },
+      })
+      .catch(() =>
+        this.logger.error(`content media alert persistence failed kind=${kind} id=${resourceId}`),
+      );
+  }
+}
+
+function deterministicMediaId(accountId: string, idempotencyKey: string): string {
+  const bytes = createHash('sha256')
+    .update(`admin-content-media-v1:${accountId}:${idempotencyKey}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function mediaPublishFailure(): AppError {
+  return new AppError(422, 'CONTENT_NOT_PUBLISHABLE', '无法发布：media', {
+    field: 'media',
+    details: { reason: 'not_publishable' },
+  });
 }

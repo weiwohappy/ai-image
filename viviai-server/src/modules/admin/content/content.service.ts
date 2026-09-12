@@ -1,7 +1,9 @@
 import { isDeepStrictEqual } from 'node:util';
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
+import type { AppConfig } from '../../../config.js';
 import { DatabaseService, type DbTransaction } from '../../../shared/database/database.service.js';
+import { APP_CONFIG } from '../../../shared/infrastructure.module.js';
 import type { AdminContext } from '../auth.service.js';
 import { requirePermission } from '../permissions.js';
 import { failure } from '../team/policy.js';
@@ -11,12 +13,10 @@ import {
   remixTemplateInputSchema,
   toolDefinitionInputSchema,
 } from '../../content/content-contracts.js';
-import {
-  AdminContentCommands,
-  lockContentResources,
-  type ContentCommandResult,
-} from './command.service.js';
+import { AdminContentCommands, type ContentCommandResult } from './command.service.js';
+import { lockContentResources } from '../../content/content-locks.js';
 import { AdminContentPublishValidator } from './publish-validator.js';
+import { adminAfter, adminFilter, adminNextCursor, decodeAdminCursor } from './pagination.js';
 
 const transitions = {
   draft: ['published', 'archived'],
@@ -38,9 +38,17 @@ const listSchema = z
   .object({
     status: lifecycleSchema.optional(),
     q: z.string().trim().min(1).max(160).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(50),
+    tag: z.string().trim().min(1).max(160).optional(),
+    updatedFrom: z.iso.datetime().optional(),
+    updatedTo: z.iso.datetime().optional(),
+    cursor: z.string().min(1).max(2048).optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(50),
   })
-  .strict();
+  .strict()
+  .refine(
+    (query) => !query.updatedFrom || !query.updatedTo || query.updatedFrom <= query.updatedTo,
+    { path: ['updatedFrom'] },
+  );
 const transitionSchema = z
   .object({ version: versionSchema, reason: reasonSchema, status: lifecycleSchema })
   .strict();
@@ -84,6 +92,12 @@ function parsed<T>(schema: z.ZodType<T>, input: unknown): T {
   return result.data;
 }
 
+function mutationId(id: string): string {
+  if (!z.uuid().safeParse(id).success)
+    throw failure(400, 'ADMIN_INVALID_INPUT', 'Invalid administrator request');
+  return id;
+}
+
 function permissionFamily(kind: ContentKind): 'inspirations' | 'templates' | 'tools' {
   return kind === 'remix-templates' ? 'templates' : kind;
 }
@@ -92,6 +106,7 @@ function permissionFamily(kind: ContentKind): 'inspirations' | 'templates' | 'to
 export class AdminContentService {
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(AdminContentCommands) private readonly commands: AdminContentCommands,
     @Inject(AdminContentPublishValidator)
     private readonly publishValidator: AdminContentPublishValidator,
@@ -100,6 +115,16 @@ export class AdminContentService {
   async list(context: AdminContext, kind: ContentKind, raw: unknown) {
     requirePermission(context.actor, `content.${permissionFamily(kind)}.read`);
     const query = parsed(listSchema, raw);
+    if (kind === 'tools' && query.tag)
+      throw failure(400, 'ADMIN_INVALID_INPUT', 'Invalid administrator request');
+    const filter = adminFilter({
+      status: query.status,
+      q: query.q,
+      tag: query.tag,
+      updatedFrom: query.updatedFrom,
+      updatedTo: query.updatedTo,
+    });
+    const after = decodeAdminCursor(query.cursor, kind, filter, this.config.contentCursorSecret);
     const client = this.client(this.db.client, kind);
     const rows = await client.findMany({
       where: {
@@ -114,12 +139,25 @@ export class AdminContentService {
               ],
             }
           : {}),
+        ...(query.tag ? { tags: { has: query.tag } } : {}),
+        ...(query.updatedFrom || query.updatedTo
+          ? {
+              updatedAt: {
+                ...(query.updatedFrom ? { gte: new Date(query.updatedFrom) } : {}),
+                ...(query.updatedTo ? { lte: new Date(query.updatedTo) } : {}),
+              },
+            }
+          : {}),
+        ...adminAfter(after),
       },
       include: this.mediaInclude(kind),
       orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      take: query.limit,
+      take: query.limit + 1,
     });
-    return { rows: rows.map((row: RecordValue) => this.dto(kind, row)) };
+    return {
+      rows: rows.slice(0, query.limit).map((row: RecordValue) => this.dto(kind, row)),
+      nextCursor: adminNextCursor(rows, query.limit, kind, filter, this.config.contentCursorSecret),
+    };
   }
 
   async detail(context: AdminContext, kind: ContentKind, id: string) {
@@ -169,6 +207,7 @@ export class AdminContentService {
   }
 
   async update(context: AdminContext, key: string, kind: ContentKind, id: string, raw: unknown) {
+    mutationId(id);
     const body = record(raw);
     const { reason, version, ...candidate } = body;
     const commandReason = parsed(reasonSchema, reason);
@@ -183,10 +222,15 @@ export class AdminContentService {
       { reason: commandReason, version: expected, content: input },
       [`content.${family}.read`, `content.${family}.write`],
       async (tx, current) => {
-        await lockContentResources(tx, [`${kind}:${id}`]);
         const client = this.client(tx, kind);
+        const observed = await client.findUnique({ where: { id } });
+        if (!observed) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        const mediaKeys = await this.mediaResourceKeys(tx, input);
+        await lockContentResources(tx, [`${kind}:${id}`, ...mediaKeys]);
         const before = await client.findUnique({ where: { id } });
         if (!before) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        if (before.status === 'published')
+          requirePermission(current.actor, `content.${family}.publish`);
         this.expectedVersion(before.version, expected);
         if (before.externalId !== input.externalId)
           throw failure(422, 'CONTENT_IMMUTABLE_ID', '公开内容标识不可修改');
@@ -244,6 +288,7 @@ export class AdminContentService {
     id: string,
     raw: unknown,
   ) {
+    mutationId(id);
     const input = parsed(transitionSchema, raw);
     const family = permissionFamily(kind);
     return this.commands.run(
@@ -254,8 +299,11 @@ export class AdminContentService {
       input,
       [`content.${family}.read`, `content.${family}.write`, `content.${family}.publish`],
       async (tx, current) => {
-        await lockContentResources(tx, [`${kind}:${id}`]);
         const client = this.client(tx, kind);
+        const observed = await client.findUnique({ where: { id } });
+        if (!observed) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        const mediaKeys = this.rowMediaIds(kind, observed).map((mediaId) => `media:${mediaId}`);
+        await lockContentResources(tx, [`${kind}:${id}`, ...mediaKeys]);
         const before = await client.findUnique({ where: { id } });
         if (!before) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
         this.expectedVersion(before.version, input.version);
@@ -292,6 +340,7 @@ export class AdminContentService {
   }
 
   async archive(context: AdminContext, key: string, kind: ContentKind, id: string, raw: unknown) {
+    mutationId(id);
     const input = parsed(archiveSchema, raw);
     return this.transition(context, key, kind, id, { ...input, status: 'archived' });
   }
@@ -383,6 +432,8 @@ export class AdminContentService {
     const cover = row.coverMedia as { externalId: string } | null | undefined;
     delete row.coverMedia;
     delete row.coverMediaId;
+    delete row.createdByAdminId;
+    delete row.updatedByAdminId;
     row.coverMediaExternalId = cover?.externalId;
     if (kind === 'inspirations') {
       const media = row.caseMedia as { externalId: string } | null | undefined;
@@ -510,5 +561,31 @@ export class AdminContentService {
       sortOrder: input.sortOrder,
       ...provenance,
     };
+  }
+
+  private rowMediaIds(kind: ContentKind, row: RecordValue): string[] {
+    const fields =
+      kind === 'inspirations'
+        ? ['coverMediaId', 'caseMediaId']
+        : kind === 'remix-templates'
+          ? ['coverMediaId', 'referenceMediaId']
+          : ['coverMediaId', 'iconMediaId'];
+    return fields
+      .map((field) => row[field])
+      .filter((value): value is string => typeof value === 'string');
+  }
+
+  private async mediaResourceKeys(tx: DbTransaction, input: RecordValue): Promise<string[]> {
+    const externalIds = [
+      input.coverMediaExternalId,
+      input.caseMediaExternalId,
+      input.referenceMediaExternalId,
+      input.iconMediaExternalId,
+    ].filter((value): value is string => typeof value === 'string');
+    const media = await tx.contentMedia.findMany({
+      where: { externalId: { in: [...new Set(externalIds)] } },
+      select: { id: true },
+    });
+    return media.map((row) => `media:${row.id}`);
   }
 }

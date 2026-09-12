@@ -1,17 +1,24 @@
 import { z } from 'zod';
+import { OFFICIAL_MODELS } from '../providers/official-models.js';
 
 const externalId = z.string().regex(/^[a-z][a-z0-9-]{1,79}$/);
 const modelId = z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/);
 const outputSpecId = z.string().regex(/^[a-z][a-z0-9_-]{1,79}$/);
 const label = z.string().trim().min(1).max(160);
 const optionalSource = z.string().trim().min(1).max(160).optional();
+export const contentSourceTypeSchema = z.enum([
+  'platform',
+  'licensed-user',
+  'brand',
+  'public-domain',
+]);
 
 export const lifecycleSchema = z.enum(['draft', 'published', 'offline', 'archived']);
 
 const sourceSchema = z
   .object({
     creatorName: optionalSource,
-    sourceType: optionalSource,
+    sourceType: contentSourceTypeSchema.optional(),
     sourceName: optionalSource,
     sourceUrl: z.string().url().max(2048).optional(),
   })
@@ -98,7 +105,7 @@ export const remixTemplateInputSchema = z
     status: lifecycleSchema,
     sortOrder: z.number().int().min(0).max(1_000_000),
   })
-  .extend(sourceSchema.shape)
+  .extend({ ...sourceSchema.shape, sourceType: contentSourceTypeSchema })
   .strict();
 
 export const toolFieldSchema = z
@@ -185,6 +192,19 @@ export const toolDefinitionInputSchema = z
         path: ['defaults', 'modelId'],
         message: 'Defaults model must match tool model',
       });
+    if (tool.defaults.count > tool.maxOutputCount)
+      context.addIssue({
+        code: 'custom',
+        path: ['defaults', 'count'],
+        message: 'Default output count exceeds the tool output limit',
+      });
+    const definition = OFFICIAL_MODELS.find((model) => model.id === tool.defaultModelId);
+    if (!definition || tool.maxAssets > definition.maxImages)
+      context.addIssue({
+        code: 'custom',
+        path: ['maxAssets'],
+        message: 'Tool reference limit exceeds the selected model capability',
+      });
     const placeholders = [...tool.promptTemplate.matchAll(/{{([a-z][a-z0-9_-]{1,63})}}/g)].map(
       (match) => match[1]!,
     );
@@ -219,21 +239,34 @@ export const contentSeedManifestSchema = z
       if (new Set(rows.map((row) => row.externalId)).size !== rows.length)
         context.addIssue({ code: 'custom', path: [name], message: 'External IDs must be unique' });
     const mediaIds = new Set(manifest.media.map((media) => media.externalId));
+    const mediaStatus = new Map(manifest.media.map((media) => [media.externalId, media.status]));
     const checkMedia = (id: string | undefined, path: (string | number)[]) => {
       if (id && !mediaIds.has(id))
         context.addIssue({ code: 'custom', path, message: `Unknown content media ${id}` });
     };
+    const checkPublishedMedia = (id: string | undefined, path: (string | number)[]) => {
+      checkMedia(id, path);
+      if (id && mediaStatus.get(id) !== 'published')
+        context.addIssue({
+          code: 'custom',
+          path,
+          message: `Published content requires published media ${id}`,
+        });
+    };
     manifest.inspirations.forEach((row, index) => {
-      checkMedia(row.coverMediaExternalId, ['inspirations', index, 'coverMediaExternalId']);
-      checkMedia(row.caseMediaExternalId, ['inspirations', index, 'caseMediaExternalId']);
+      const check = row.status === 'published' ? checkPublishedMedia : checkMedia;
+      check(row.coverMediaExternalId, ['inspirations', index, 'coverMediaExternalId']);
+      check(row.caseMediaExternalId, ['inspirations', index, 'caseMediaExternalId']);
     });
     manifest.templates.forEach((row, index) => {
-      checkMedia(row.coverMediaExternalId, ['templates', index, 'coverMediaExternalId']);
-      checkMedia(row.referenceMediaExternalId, ['templates', index, 'referenceMediaExternalId']);
+      const check = row.status === 'published' ? checkPublishedMedia : checkMedia;
+      check(row.coverMediaExternalId, ['templates', index, 'coverMediaExternalId']);
+      check(row.referenceMediaExternalId, ['templates', index, 'referenceMediaExternalId']);
     });
     manifest.tools.forEach((row, index) => {
-      checkMedia(row.coverMediaExternalId, ['tools', index, 'coverMediaExternalId']);
-      checkMedia(row.iconMediaExternalId, ['tools', index, 'iconMediaExternalId']);
+      const check = row.status === 'published' ? checkPublishedMedia : checkMedia;
+      check(row.coverMediaExternalId, ['tools', index, 'coverMediaExternalId']);
+      check(row.iconMediaExternalId, ['tools', index, 'iconMediaExternalId']);
     });
   });
 

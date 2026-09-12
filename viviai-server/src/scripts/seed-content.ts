@@ -14,6 +14,7 @@ import { CatalogService } from '../modules/catalog/catalog.service.js';
 import { activeCreditPrice } from '../modules/catalog/credit-pricing.js';
 import { getOfficialOutputSpec, OFFICIAL_MODELS } from '../modules/providers/official-models.js';
 import { DatabaseService, type DbTransaction } from '../shared/database/database.service.js';
+import { lockContentResources } from '../modules/content/content-locks.js';
 
 export type { ContentSeedManifest } from '../modules/content/content-contracts.js';
 
@@ -196,7 +197,7 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
       ],
       promptTemplate: '为{{garment-type}}生成规范电商白底图，提取商品主体。',
       defaults: { modelId: 'gemini-3.1-flash-image', resolution: '2K', ratio: '1:1', count: 1 },
-      maxAssets: 3,
+      maxAssets: 2,
       maxOutputCount: 1,
       assetLabel: '产品图',
       defaultModelId: 'gemini-3.1-flash-image',
@@ -303,6 +304,33 @@ export async function seedContent(
           }
 
           await db.transaction(async (tx) => {
+            const [knownMedia, knownInspirations, knownTemplates, knownTools] = await Promise.all([
+              tx.contentMedia.findMany({
+                where: { externalId: { in: manifest.media.map((row) => row.externalId) } },
+                select: { id: true },
+              }),
+              tx.inspiration.findMany({
+                where: { externalId: { in: manifest.inspirations.map((row) => row.externalId) } },
+                select: { id: true },
+              }),
+              tx.remixTemplate.findMany({
+                where: { externalId: { in: manifest.templates.map((row) => row.externalId) } },
+                select: { id: true },
+              }),
+              tx.toolDefinition.findMany({
+                where: { externalId: { in: manifest.tools.map((row) => row.externalId) } },
+                select: { id: true },
+              }),
+            ]);
+            await lockContentResources(tx, [
+              ...knownMedia.map((row) => `media:${row.id}`),
+              ...knownInspirations.map((row) => `inspirations:${row.id}`),
+              ...knownTemplates.map((row) => `remix-templates:${row.id}`),
+              ...knownTools.map((row) => `tools:${row.id}`),
+              ...manifest.inspirations.map((row) => `inspirations:external:${row.externalId}`),
+              ...manifest.templates.map((row) => `remix-templates:external:${row.externalId}`),
+              ...manifest.tools.map((row) => `tools:external:${row.externalId}`),
+            ]);
             const mediaIds = new Map<string, string>();
             for (const media of preparedMedia) {
               const current = await tx.contentMedia.findUnique({
@@ -317,6 +345,14 @@ export async function seedContent(
                 byteSize: media.byteSize,
                 status: media.status,
               };
+              if (
+                current?.status === 'published' &&
+                media.status !== 'published' &&
+                (await publishedReferenceCount(tx, current.id, manifest)) > 0
+              )
+                throw new Error(
+                  `Content media ${media.externalId} is referenced by published content`,
+                );
               const changed = !current || !sameMedia(current, data);
               const saved =
                 current && !changed
@@ -540,12 +576,41 @@ function validatePublishedTool(row: ContentSeedManifest['tools'][number]) {
     spec.ratio !== row.defaults.ratio
   )
     throw new Error(`Tool ${row.externalId} requires an exact output specification`);
-  if (
-    row.maxAssets > definition.maxImages ||
-    row.maxOutputCount > 1 ||
-    row.defaults.count > row.maxOutputCount
-  )
+  if (row.maxAssets > definition.maxImages || row.defaults.count > row.maxOutputCount)
     throw new Error(`Tool ${row.externalId} exceeds output/reference limits`);
+}
+
+async function publishedReferenceCount(
+  tx: DbTransaction,
+  mediaId: string,
+  manifest: ContentSeedManifest,
+): Promise<number> {
+  const leaving = <T extends { externalId: string; status: string }>(rows: T[]) =>
+    rows.filter((row) => row.status !== 'published').map((row) => row.externalId);
+  const [inspirations, templates, tools] = await Promise.all([
+    tx.inspiration.count({
+      where: {
+        status: 'published',
+        externalId: { notIn: leaving(manifest.inspirations) },
+        OR: [{ coverMediaId: mediaId }, { caseMediaId: mediaId }],
+      },
+    }),
+    tx.remixTemplate.count({
+      where: {
+        status: 'published',
+        externalId: { notIn: leaving(manifest.templates) },
+        OR: [{ coverMediaId: mediaId }, { referenceMediaId: mediaId }],
+      },
+    }),
+    tx.toolDefinition.count({
+      where: {
+        status: 'published',
+        externalId: { notIn: leaving(manifest.tools) },
+        OR: [{ coverMediaId: mediaId }, { iconMediaId: mediaId }],
+      },
+    }),
+  ]);
+  return inspirations + templates + tools;
 }
 
 async function upsertInspiration(
