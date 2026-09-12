@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { OFFICIAL_MODELS } from '../providers/official-models.js';
 
 const externalId = z.string().regex(/^[a-z][a-z0-9-]{1,79}$/);
 const modelId = z.string().regex(/^[a-z][a-z0-9.-]{1,79}$/);
@@ -197,13 +196,6 @@ export const toolDefinitionInputSchema = z
         code: 'custom',
         path: ['defaults', 'count'],
         message: 'Default output count exceeds the tool output limit',
-      });
-    const definition = OFFICIAL_MODELS.find((model) => model.id === tool.defaultModelId);
-    if (!definition || tool.maxAssets > definition.maxImages)
-      context.addIssue({
-        code: 'custom',
-        path: ['maxAssets'],
-        message: 'Tool reference limit exceeds the selected model capability',
       });
     const placeholders = [...tool.promptTemplate.matchAll(/{{([a-z][a-z0-9_-]{1,63})}}/g)].map(
       (match) => match[1]!,

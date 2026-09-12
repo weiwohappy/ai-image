@@ -27,6 +27,16 @@ function canonical(value: unknown): unknown {
   return value;
 }
 
+export function contentCommandRequestDigest(
+  action: string,
+  target: string,
+  input: { reason: string; [key: string]: unknown },
+): string {
+  return digest(JSON.stringify(canonical({ action, target, input })));
+}
+
+class PublishRateLimitSignal extends Error {}
+
 @Injectable()
 export class AdminContentCommands {
   constructor(
@@ -50,10 +60,9 @@ export class AdminContentCommands {
   ): Promise<T> {
     if (!z.uuid().safeParse(key).success)
       throw failure(400, 'ADMIN_INVALID_INPUT', '需要有效幂等键');
-    if (action.endsWith('.publish')) await this.rateLimitPublish(context, action);
-    const requestDigest = digest(JSON.stringify(canonical({ action, target, input })));
+    const requestDigest = contentCommandRequestDigest(action, target, input);
     try {
-      return await this.db.transaction(async (tx) => {
+      const outcome = await this.db.transaction(async (tx) => {
         await lockAdmin(tx, `content-command:${context.actor.id}:${key}`);
         await lockAdmin(tx, context.actor.id);
         const current = await this.auth.reauthorize(
@@ -69,11 +78,24 @@ export class AdminContentCommands {
           where: { accountId_idempotencyKey: { accountId: current.actor.id, idempotencyKey: key } },
         });
         if (receipt) {
-          if (receipt.requestDigest !== requestDigest)
+          if (
+            receipt.action !== action ||
+            receipt.target !== target ||
+            receipt.requestDigest !== requestDigest
+          )
             throw failure(409, 'ADMIN_IDEMPOTENCY_CONFLICT', '幂等键已用于其他请求');
-          return receipt.result as unknown as T;
+          return { result: receipt.result as unknown as T, rateLimited: false };
         }
-        const { result, metadata } = await work(tx, current);
+        let completed: Awaited<ReturnType<typeof work>>;
+        try {
+          if (action.endsWith('.publish')) await this.enforcePublishRateLimit(tx, current, action);
+          completed = await work(tx, current);
+        } catch (error) {
+          if (error instanceof PublishRateLimitSignal)
+            return { result: null as T | null, rateLimited: true };
+          throw error;
+        }
+        const { result, metadata } = completed;
         await this.audit.write(
           tx,
           action,
@@ -95,10 +117,15 @@ export class AdminContentCommands {
             result: result as unknown as Prisma.InputJsonObject,
           },
         });
-        return result;
+        return { result, rateLimited: false };
       });
+      if (outcome.rateLimited)
+        throw new AppError(429, 'CONTENT_PUBLISH_RATE_LIMITED', '发布操作过于频繁', {
+          details: { reason: 'rate_limited', limit: 5, retryAfterSeconds: 60 },
+        });
+      return outcome.result!;
     } catch (error) {
-      if (error instanceof AppError && [403, 409, 422].includes(error.status)) {
+      if (error instanceof AppError && [403, 409, 422, 429].includes(error.status)) {
         await this.db.transaction(async (tx) => {
           await lockAdmin(tx, `content-denied:${context.actor.id}:${action}:${target}`);
           const recent = await tx.adminAuditEvent.findFirst({
@@ -127,36 +154,34 @@ export class AdminContentCommands {
     }
   }
 
-  private async rateLimitPublish(context: AdminContext, action: string): Promise<void> {
+  async enforcePublishRateLimit(
+    tx: DbTransaction,
+    context: AdminContext,
+    action: string,
+  ): Promise<void> {
     const windowMs = 60_000;
     const ipDigest = digest(context.requestIp ?? 'unknown');
     const buckets = [
       { key: `admin-content-publish:${context.actor.id}:${action}`, limit: 5 },
       { key: `admin-content-publish:ip:${ipDigest}:${action}`, limit: 25 },
     ].sort((left, right) => left.key.localeCompare(right.key));
-    const allowed = await this.db.transaction(async (tx) => {
-      let permitted = true;
-      const now = new Date();
-      for (const bucket of buckets) {
-        await lockAdmin(tx, `rate:${bucket.key}`);
-        const current = await tx.authRateBucket.findUnique({ where: { key: bucket.key } });
-        const expired = !current || current.expiresAt <= now;
-        const count = expired ? 1 : current.count + 1;
-        await tx.authRateBucket.upsert({
-          where: { key: bucket.key },
-          create: { key: bucket.key, count, expiresAt: new Date(Date.now() + windowMs) },
-          update: {
-            count,
-            ...(expired ? { expiresAt: new Date(Date.now() + windowMs) } : {}),
-          },
-        });
-        if (count > bucket.limit) permitted = false;
-      }
-      return permitted;
-    });
-    if (!allowed)
-      throw new AppError(429, 'CONTENT_PUBLISH_RATE_LIMITED', '发布操作过于频繁', {
-        details: { reason: 'rate_limited', limit: 5, retryAfterSeconds: 60 },
+    let permitted = true;
+    const now = new Date();
+    for (const bucket of buckets) {
+      await lockAdmin(tx, `rate:${bucket.key}`);
+      const current = await tx.authRateBucket.findUnique({ where: { key: bucket.key } });
+      const expired = !current || current.expiresAt <= now;
+      const count = expired ? 1 : current.count + 1;
+      await tx.authRateBucket.upsert({
+        where: { key: bucket.key },
+        create: { key: bucket.key, count, expiresAt: new Date(now.getTime() + windowMs) },
+        update: {
+          count,
+          ...(expired ? { expiresAt: new Date(now.getTime() + windowMs) } : {}),
+        },
       });
+      if (count > bucket.limit) permitted = false;
+    }
+    if (!permitted) throw new PublishRateLimitSignal();
   }
 }

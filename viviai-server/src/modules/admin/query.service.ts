@@ -965,7 +965,7 @@ export class AdminQueryService {
     const q = query(raw, ['q', 'from', 'to', 'status', 'source']);
     if (q.status && !['active', 'resolved'].includes(q.status)) throw bad();
     await this.refreshAlerts();
-    const categories = ['service', 'model'].filter((category) =>
+    const categories = ['service', 'model', 'content'].filter((category) =>
       actor.permissions.includes(`alerts.${category}.read`),
     );
     const rows = await this.db.client.adminAlert.findMany({
@@ -997,6 +997,7 @@ export class AdminQueryService {
         'resourceId',
         'jobId',
         'attemptId',
+        'contentMediaId',
         'firstSeenAt',
         'lastSeenAt',
         'resolved',
@@ -1008,6 +1009,7 @@ export class AdminQueryService {
         resourceId: r.resourceId,
         jobId: r.category === 'service' ? r.resourceId : null,
         attemptId: r.kind === 'unknown_attempt' ? r.resourceId : null,
+        contentMediaId: r.category === 'content' ? r.resourceId : null,
         firstSeenAt: r.firstSeenAt.toISOString(),
         lastSeenAt: r.lastSeenAt.toISOString(),
         resolved: r.resolved,
@@ -1054,7 +1056,11 @@ export class AdminQueryService {
           });
       }
       await tx.adminAlert.updateMany({
-        where: { resolved: false, lastSeenAt: { lt: now } },
+        where: {
+          category: { in: ['service', 'model'] },
+          resolved: false,
+          lastSeenAt: { lt: now },
+        },
         data: { resolved: true },
       });
     });

@@ -28,13 +28,22 @@ it('migrates content permissions additively and invalidates only affected admini
         'utf8',
       ),
     );
+    await sql.query(
+      await readFile(
+        new URL(
+          '../prisma/migrations/20260912050000_content_alert_permissions/migration.sql',
+          import.meta.url,
+        ),
+        'utf8',
+      ),
+    );
     const after = await db.database.client.adminRole.findMany({ orderBy: { key: 'asc' } });
     for (const role of after) {
       expect([...role.permissions].sort()).toEqual([...ROLE_PERMISSIONS[role.key]!].sort());
       const previous = before.find((candidate) => candidate.key === role.key)!;
       expect(role.version).toBe(
         ['super_admin', 'content_operator'].includes(role.key)
-          ? previous.version + 1
+          ? previous.version + 2
           : previous.version,
       );
     }
@@ -43,7 +52,7 @@ it('migrates content permissions additively and invalidates only affected admini
       const account = await db.database.client.adminAccount.findUniqueOrThrow({
         where: { id: admin.account.id },
       });
-      expect(account.authVersion).toBe(affected ? 2 : 1);
+      expect(account.authVersion).toBe(affected ? 3 : 1);
       expect(
         (
           await db.database.client.adminSession.findUniqueOrThrow({

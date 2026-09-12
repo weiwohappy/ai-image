@@ -96,7 +96,10 @@ it('additively migrates only super permission, invalidates affected grants, pres
     const rolesAfter = await db.database.client.adminRole.findMany({ orderBy: { key: 'asc' } });
     for (const role of rolesAfter) {
       const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
-        (permission) => !permission.startsWith('content.'),
+        (permission) =>
+          !permission.startsWith('content.') &&
+          permission !== 'alerts.content.read' &&
+          !(role.key === 'content_operator' && permission === 'alerts.read'),
       );
       expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());
       if (role.key === 'super_admin') expect(role.version).toBe(2);

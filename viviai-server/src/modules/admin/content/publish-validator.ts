@@ -14,7 +14,7 @@ import {
   remixTemplateInputSchema,
   toolDefinitionInputSchema,
 } from '../../content/content-contracts.js';
-import { getOfficialOutputSpec } from '../../providers/official-models.js';
+import { getOfficialOutputSpec, OFFICIAL_MODELS } from '../../providers/official-models.js';
 import type { ContentKind } from './content.service.js';
 import { lockContentResources } from '../../content/content-locks.js';
 
@@ -97,6 +97,9 @@ export class AdminContentPublishValidator {
     if (!spec || !resolveImageExecution(this.config, model, spec.resolution, spec.ratio))
       throw validationFailure('defaultOutputSpecId');
     if (kind === 'tools') {
+      const definition = OFFICIAL_MODELS.find((candidate) => candidate.id === model);
+      if (!definition || Number(row.maxAssets) > definition.maxImages)
+        throw validationFailure('maxAssets');
       const defaults = z
         .object({ resolution: z.string(), ratio: z.string() })
         .passthrough()

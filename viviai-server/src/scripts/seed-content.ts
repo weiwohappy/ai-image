@@ -197,7 +197,7 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
       ],
       promptTemplate: '为{{garment-type}}生成规范电商白底图，提取商品主体。',
       defaults: { modelId: 'gemini-3.1-flash-image', resolution: '2K', ratio: '1:1', count: 1 },
-      maxAssets: 2,
+      maxAssets: 3,
       maxOutputCount: 1,
       assetLabel: '产品图',
       defaultModelId: 'gemini-3.1-flash-image',

@@ -23,6 +23,9 @@ describe('admin content permissions', () => {
     expect(PERMISSION_CATALOG.find((p) => p.key === 'content.media.write')?.dependencies).toEqual([
       'content.media.read',
     ]);
+    expect(PERMISSION_CATALOG.find((p) => p.key === 'alerts.content.read')?.dependencies).toEqual([
+      'alerts.read',
+    ]);
   });
 
   it('grants super admin and content operator the complete content set only', () => {
@@ -34,6 +37,8 @@ describe('admin content permissions', () => {
       ]),
       'content.media.read',
       'content.media.write',
+      'alerts.read',
+      'alerts.content.read',
     ];
     for (const permission of contentPermissions) {
       expect(ROLE_PERMISSIONS.super_admin).toContain(permission);

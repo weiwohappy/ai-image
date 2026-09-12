@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import request from 'supertest';
 import sharp from 'sharp';
 import pg from 'pg';
@@ -10,7 +10,6 @@ import type { ObjectStore } from '../../src/modules/assets/object-store.js';
 import { DatabaseService } from '../../src/shared/database/database.service.js';
 import { adminApp, adminOrigin, fixtureAdmin } from '../helpers/admin.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
-import { createTestStorage } from '../helpers/storage.js';
 import { contentSeedManifest, seedContent } from '../../src/scripts/seed-content.js';
 
 const reason = 'Content operation approved for integration test';
@@ -518,6 +517,56 @@ describe('admin operational content commands', () => {
     expect(publicDetail.body.data).toMatchObject({ id: externalId, maxAssets: 2 });
   });
 
+  it('stores an unready draft tool but enforces current model image capacity at publish', async () => {
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const created = await call('post', operator.cookie, '/tools', {
+      externalId: `unready-draft-${randomUUID().slice(0, 8)}`,
+      name: 'Unready draft tool',
+      description: 'Keeps editorial configuration while runtime capability is not ready',
+      category: 'Editing',
+      fields: [{ id: 'subject', label: 'Subject', type: 'text', required: true }],
+      promptTemplate: 'Render {{subject}}',
+      defaults: { modelId, resolution: '1K', ratio: '1:1', count: 1 },
+      maxAssets: 3,
+      maxOutputCount: 1,
+      assetLabel: 'References',
+      defaultModelId: modelId,
+      defaultOutputSpecId: outputSpecId,
+      coverMediaExternalId: media.externalId,
+      status: 'draft',
+      sortOrder: 4,
+      reason,
+    });
+    expect(created.status).toBe(201);
+    const publish = await call(
+      'post',
+      operator.cookie,
+      `/tools/${created.body.data.id}/transition`,
+      { version: 1, reason, status: 'published' },
+    );
+    expect(publish.status).toBe(422);
+    expect(publish.body).toMatchObject({
+      code: 'CONTENT_NOT_PUBLISHABLE',
+      field: 'maxAssets',
+      details: { reason: 'not_publishable' },
+    });
+    expect(
+      await db.database.client.toolDefinition.findUniqueOrThrow({
+        where: { id: created.body.data.id },
+      }),
+    ).toMatchObject({ status: 'draft', version: 1, maxAssets: 3 });
+  });
+
   it('requires publish permission to change an already-published record', async () => {
     await db.database.client.authRateBucket.deleteMany({
       where: { key: { startsWith: 'admin-content-publish:' } },
@@ -562,6 +611,66 @@ describe('admin operational content commands', () => {
         where: { id: created.body.data.id },
       }),
     ).toMatchObject({ title: body.title, version: published.body.data.version });
+  });
+
+  it('requires publish permission when a reorder mixes published and draft records', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const roleKey = `reorder-writer-${randomUUID().slice(0, 8)}`;
+    await db.database.client.adminRole.create({
+      data: {
+        key: roleKey,
+        name: 'Content reorder writer without publish',
+        permissions: ['dashboard.read', 'content.inspirations.read', 'content.inspirations.write'],
+      },
+    });
+    const writer = await fixtureAdmin(db, [roleKey]);
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const publishedBody = inspiration(
+      `reorder-published-${randomUUID().slice(0, 8)}`,
+      media.externalId,
+      1,
+    );
+    const draftBody = inspiration(`reorder-draft-${randomUUID().slice(0, 8)}`, media.externalId, 2);
+    const publishedDraft = await call('post', operator.cookie, '/inspirations', publishedBody);
+    const draft = await call('post', operator.cookie, '/inspirations', draftBody);
+    const published = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${publishedDraft.body.data.id}/transition`,
+      { version: 1, reason, status: 'published' },
+    );
+    const denied = await call('post', writer.cookie, '/inspirations/reorder', {
+      reason,
+      items: [
+        { id: published.body.data.id, version: 2, sortOrder: 20 },
+        { id: draft.body.data.id, version: 1, sortOrder: 10 },
+      ],
+    });
+    expect(denied.status).toBe(403);
+    expect(
+      await db.database.client.inspiration.findMany({
+        where: { id: { in: [published.body.data.id, draft.body.data.id] } },
+        orderBy: { id: 'asc' },
+        select: { id: true, sortOrder: true, version: true },
+      }),
+    ).toEqual(
+      [
+        { id: published.body.data.id, sortOrder: 1, version: 2 },
+        { id: draft.body.data.id, sortOrder: 2, version: 1 },
+      ].sort((left, right) => left.id.localeCompare(right.id)),
+    );
   });
 
   it('paginates filtered admin content and media without gaps or duplicates', async () => {
@@ -692,6 +801,186 @@ describe('admin operational content commands', () => {
     });
   });
 
+  it('does not consume publish quota before the write gate and permissions succeed', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    const created = await call(
+      'post',
+      operator.cookie,
+      '/inspirations',
+      inspiration(`quota-gate-${randomUUID().slice(0, 8)}`, media.externalId),
+    );
+    const roleKey = `quota-writer-${randomUUID().slice(0, 8)}`;
+    await db.database.client.adminRole.create({
+      data: {
+        key: roleKey,
+        name: 'Quota writer without publish',
+        permissions: ['dashboard.read', 'content.inspirations.read', 'content.inspirations.write'],
+      },
+    });
+    const writer = await fixtureAdmin(db, [roleKey]);
+    const denied = await call(
+      'post',
+      writer.cookie,
+      `/inspirations/${created.body.data.id}/transition`,
+      { version: 1, reason, status: 'published' },
+    );
+    expect(denied.status).toBe(403);
+
+    const gated = await adminApp(db, {
+      nodeEnv: 'test',
+      host: '127.0.0.1',
+      officialImages: officialConfig(),
+      thirdPartyImages: thirdPartyConfig(),
+      simulationProviderEnabled: false,
+    });
+    try {
+      const disabled = await request(gated.getHttpServer())
+        .post(`/api/admin/content/inspirations/${created.body.data.id}/transition`)
+        .set('Cookie', operator.cookie)
+        .set('Origin', adminOrigin)
+        .set('Idempotency-Key', randomUUID())
+        .send({ version: 1, reason, status: 'published' });
+      expect(disabled.status).toBe(503);
+    } finally {
+      await gated.close();
+    }
+    expect(
+      await db.database.client.authRateBucket.count({
+        where: { key: { startsWith: 'admin-content-publish:' } },
+      }),
+    ).toBe(0);
+  });
+
+  it('replays an exact publish receipt after quota is exhausted without charging again', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const ids: string[] = [];
+    for (let index = 0; index < 5; index++) {
+      const created = await call(
+        'post',
+        operator.cookie,
+        '/inspirations',
+        inspiration(`quota-replay-${index}-${randomUUID().slice(0, 8)}`, media.externalId),
+      );
+      ids.push(created.body.data.id);
+    }
+    const replayKey = randomUUID();
+    const publishBody = { version: 1, reason, status: 'published' };
+    const first = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${ids[0]}/transition`,
+      publishBody,
+      replayKey,
+    );
+    expect(first.status).toBe(201);
+    for (const id of ids.slice(1))
+      expect(
+        (await call('post', operator.cookie, `/inspirations/${id}/transition`, publishBody)).status,
+      ).toBe(201);
+    const replay = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${ids[0]}/transition`,
+      publishBody,
+      replayKey,
+    );
+    expect(replay.status).toBe(201);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(
+      await db.database.client.adminAuditEvent.count({
+        where: {
+          action: 'content.inspirations.publish',
+          resourceId: ids[0]!,
+          outcome: 'allowed',
+        },
+      }),
+    ).toBe(1);
+  });
+
+  it('rate-limits published PATCH and reorder mutations independently of idempotency keys', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const body = inspiration(`quota-mutation-${randomUUID().slice(0, 8)}`, media.externalId);
+    const created = await call('post', operator.cookie, '/inspirations', body);
+    const published = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${created.body.data.id}/transition`,
+      { version: 1, reason, status: 'published' },
+    );
+    expect(published.status).toBe(201);
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+
+    let version = 2;
+    const patchStatuses: number[] = [];
+    for (let index = 0; index < 6; index++) {
+      const response = await call(
+        'patch',
+        operator.cookie,
+        `/inspirations/${created.body.data.id}`,
+        {
+          ...body,
+          title: `Published edit ${index}`,
+          status: 'published',
+          version,
+        },
+      );
+      patchStatuses.push(response.status);
+      if (response.status === 200) version = response.body.data.version;
+    }
+    expect(patchStatuses).toEqual([200, 200, 200, 200, 200, 429]);
+
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const reorderStatuses: number[] = [];
+    for (let index = 0; index < 6; index++) {
+      const response = await call('post', operator.cookie, '/inspirations/reorder', {
+        reason,
+        items: [
+          {
+            id: created.body.data.id,
+            version,
+            sortOrder: 100 + index,
+          },
+        ],
+      });
+      reorderStatuses.push(response.status);
+      if (response.status === 201) version = response.body.data.items[0].version;
+    }
+    expect(reorderStatuses).toEqual([201, 201, 201, 201, 201, 429]);
+  });
+
   it('returns safe input errors for every malformed mutation resource id', async () => {
     const body = inspiration(`bad-id-${randomUUID().slice(0, 8)}`, 'content-media-unused');
     const cases = [
@@ -738,6 +1027,73 @@ describe('admin operational content commands', () => {
     } finally {
       transactionSpy.mockRestore();
       deleteSpy.mockRestore();
+    }
+  });
+
+  it('does not accept an unrelated receipt and row as a committed upload', async () => {
+    const database = app.get(DatabaseService);
+    const store = app.get<ObjectStore>(ASSET_STORE);
+    const originalTransaction = database.transaction.bind(database);
+    const transactionSpy = vi.spyOn(database, 'transaction');
+    transactionSpy
+      .mockImplementationOnce((work) => originalTransaction(work))
+      .mockImplementationOnce((work) =>
+        originalTransaction(async (tx) => {
+          await work(tx);
+          throw new Error('simulated definite rollback');
+        }),
+      );
+    let writtenKey = '';
+    const originalPut = store.put.bind(store);
+    const putSpy = vi
+      .spyOn(store, 'put')
+      .mockImplementationOnce(async (key, bytes, contentType) => {
+        writtenKey = key;
+        await originalPut(key, bytes, contentType);
+      });
+    const receiptSpy = vi.spyOn(database.client.adminCommandReceipt, 'findUnique');
+    receiptSpy.mockResolvedValueOnce({
+      action: 'team.role.create',
+      target: 'custom_forged',
+      requestDigest: '0'.repeat(64),
+      result: { resourceId: 'forged-result' },
+    } as never);
+    const mediaSpy = vi.spyOn(database.client.contentMedia, 'findUnique');
+    mediaSpy.mockResolvedValueOnce({ id: randomUUID(), objectKey: writtenKey } as never);
+    try {
+      const response = await upload(operator.cookie, randomUUID(), 'unrelated-receipt.png');
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ code: 'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN' });
+      expect(JSON.stringify(response.body)).not.toContain('forged-result');
+    } finally {
+      mediaSpy.mockRestore();
+      receiptSpy.mockRestore();
+      putSpy.mockRestore();
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it('verifies and removes exact bytes when PutObject succeeds but its response is lost', async () => {
+    const store = app.get<ObjectStore>(ASSET_STORE);
+    const originalPut = store.put.bind(store);
+    let writtenKey = '';
+    const putSpy = vi
+      .spyOn(store, 'put')
+      .mockImplementationOnce(async (key, bytes, contentType) => {
+        writtenKey = key;
+        await originalPut(key, bytes, contentType);
+        throw new Error('simulated PutObject acknowledgement loss');
+      });
+    const deleteSpy = vi.spyOn(store, 'delete');
+    try {
+      const response = await upload(operator.cookie, randomUUID(), 'put-ambiguous.png');
+      expect(response.status).toBe(500);
+      expect(deleteSpy).toHaveBeenCalledOnce();
+      expect(deleteSpy).toHaveBeenCalledWith(writtenKey);
+      await expect(store.get(writtenKey)).rejects.toBeDefined();
+    } finally {
+      deleteSpy.mockRestore();
+      putSpy.mockRestore();
     }
   });
 
@@ -889,6 +1245,45 @@ describe('admin operational content commands', () => {
     }
   });
 
+  it('exposes active content reconciliation alerts only to content-alert readers', async () => {
+    const resourceId = randomUUID();
+    const sourceKey = `content-media:upload_outcome_unknown:${resourceId}`;
+    const alert = await db.database.client.adminAlert.create({
+      data: {
+        sourceKey,
+        category: 'content',
+        kind: 'upload_outcome_unknown',
+        resourceId,
+      },
+    });
+    try {
+      const first = await request(app.getHttpServer())
+        .get(`/api/admin/alerts?status=active&q=${alert.id}&source=upload_outcome_unknown`)
+        .set('Cookie', operator.cookie);
+      expect(first.status).toBe(200);
+      expect(first.body.data.rows).toEqual([
+        expect.objectContaining({
+          category: 'content',
+          kind: 'upload_outcome_unknown',
+          resourceId,
+          contentMediaId: resourceId,
+          resolved: false,
+        }),
+      ]);
+      const refreshed = await request(app.getHttpServer())
+        .get(`/api/admin/alerts?status=active&q=${alert.id}&source=upload_outcome_unknown`)
+        .set('Cookie', operator.cookie);
+      expect(refreshed.body.data.rows).toHaveLength(1);
+      const serviceOnly = await request(app.getHttpServer())
+        .get(`/api/admin/alerts?status=active&q=${alert.id}&source=upload_outcome_unknown`)
+        .set('Cookie', support.cookie);
+      expect(serviceOnly.status).toBe(200);
+      expect(serviceOnly.body.data.rows).toEqual([]);
+    } finally {
+      await db.database.client.adminAlert.deleteMany({ where: { sourceKey } });
+    }
+  });
+
   it('serializes concurrent reorder commands and rejects stale versions atomically', async () => {
     const media = (await upload()).body.data;
     const first = await call(
@@ -1003,7 +1398,7 @@ describe('admin operational content commands', () => {
     await db.database.client.authRateBucket.deleteMany({
       where: { key: { startsWith: 'admin-content-publish:' } },
     });
-    const seedStorage = await createTestStorage();
+    const sharedStore = app.get<ObjectStore>(ASSET_STORE);
     const media = (await upload()).body.data;
     const mediaExternalId = `seed-admin-media-${randomUUID().slice(0, 8)}`;
     await db.database.client.contentMedia.update({
@@ -1036,22 +1431,32 @@ describe('admin operational content commands', () => {
     await blocker.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
       `content:resource:media:${media.id}`,
     ]);
-    const seeded = seedContent(db.database, seedStorage.store, { manifest });
+    const seeded = seedContent(db.database, sharedStore, { manifest });
     const offlined = call('post', operator.cookie, `/media/${media.id}/transition`, {
       version: 2,
       reason,
       status: 'offline',
     }).then((response) => response);
     try {
-      // Another owned-schema seed file may briefly hold the process-wide seed lock in parallel.
       const deadline = Date.now() + 12_000;
       let waiters = 0;
       while (Date.now() < deadline) {
         const waiting = await blocker.query<{ count: number }>(
-          `SELECT count(*)::int AS count FROM pg_stat_activity
-             WHERE pid <> pg_backend_pid()
-               AND wait_event_type = 'Lock'
-               AND wait_event = 'advisory'`,
+          `SELECT count(DISTINCT waiting.pid)::int AS count
+             FROM pg_locks held
+             JOIN pg_locks waiting
+               ON waiting.locktype = 'advisory'
+              AND waiting.database = held.database
+              AND waiting.classid = held.classid
+              AND waiting.objid = held.objid
+              AND waiting.objsubid = held.objsubid
+             JOIN pg_stat_activity activity ON activity.pid = waiting.pid
+            WHERE held.pid = pg_backend_pid()
+              AND held.locktype = 'advisory'
+              AND held.granted
+              AND NOT waiting.granted
+              AND activity.wait_event_type = 'Lock'
+              AND activity.wait_event = 'advisory'`,
         );
         waiters = waiting.rows[0]?.count ?? 0;
         if (waiters >= 2) break;
@@ -1069,11 +1474,29 @@ describe('admin operational content commands', () => {
       });
       expect(finalContent.status).toBe('published');
       expect(finalMedia.status).toBe('published');
+      const publicCatalog = await request(app.getHttpServer()).get(
+        `/api/inspirations?category=${encodeURIComponent(manifest.inspirations[0]!.category)}`,
+      );
+      expect(publicCatalog.status).toBe(200);
+      expect(publicCatalog.body.data.items).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: body.externalId })]),
+      );
+      const publicMedia = await request(app.getHttpServer()).get(
+        `/api/content-media/${mediaExternalId}/content`,
+      );
+      expect(publicMedia.status).toBe(200);
+      expect(
+        createHash('sha256')
+          .update(publicMedia.body as Buffer)
+          .digest('hex'),
+      ).toBe(finalMedia.sha256);
+      expect(Buffer.from(publicMedia.body as Buffer)).toEqual(
+        Buffer.from(await sharedStore.get(finalMedia.objectKey)),
+      );
     } finally {
       await blocker.query('ROLLBACK').catch(() => undefined);
       await blocker.end();
       await Promise.allSettled([seeded, offlined]);
-      await seedStorage.cleanup();
     }
   }, 30_000);
 

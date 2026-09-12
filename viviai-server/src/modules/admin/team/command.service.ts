@@ -87,7 +87,11 @@ export class AdminTeamCommands {
           where: { accountId_idempotencyKey: { accountId: current.actor.id, idempotencyKey: key } },
         });
         if (receipt) {
-          if (receipt.requestDigest !== requestDigest)
+          if (
+            receipt.action !== action ||
+            receipt.target !== target ||
+            receipt.requestDigest !== requestDigest
+          )
             throw failure(409, 'ADMIN_IDEMPOTENCY_CONFLICT', '幂等键已用于其他请求');
           return receipt.result as unknown as TeamMutationResult;
         }

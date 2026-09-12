@@ -12,7 +12,7 @@ import type { AdminContext } from '../auth.service.js';
 import { requirePermission } from '../permissions.js';
 import { failure } from '../team/policy.js';
 import { canTransitionContent, type ContentLifecycle } from './content.service.js';
-import { AdminContentCommands } from './command.service.js';
+import { AdminContentCommands, contentCommandRequestDigest } from './command.service.js';
 import { lockContentResources } from '../../content/content-locks.js';
 import { adminAfter, adminFilter, adminNextCursor, decodeAdminCursor } from './pagination.js';
 
@@ -138,22 +138,34 @@ export class AdminContentMediaService {
     const id = deterministicMediaId(context.actor.id, key);
     const hash = createHash('sha256').update(image.bytes).digest('hex');
     const objectKey = `content/admin/${id}-${hash}.png`;
+    const action = 'content.media.create';
+    const target = `sha256:${hash}`;
+    const commandInput = {
+      reason,
+      filename,
+      mimeType,
+      sha256: hash,
+      byteSize: image.bytes.byteLength,
+    };
+    const requestDigest = contentCommandRequestDigest(action, target, commandInput);
     return this.db.withSessionAdvisoryLock(
       `content:media-upload:${context.actor.id}:${key}`,
       30_000,
       async () => {
-        let stored = false;
+        let putAttempted = false;
+        let putConfirmed = false;
         try {
           return await this.commands.run(
             context,
             key,
-            'content.media.create',
-            `sha256:${hash}`,
-            { reason, filename, mimeType, sha256: hash, byteSize: image.bytes.byteLength },
+            action,
+            target,
+            commandInput,
             ['content.media.read', 'content.media.write'],
             async (tx, current) => {
+              putAttempted = true;
               await this.store.put(objectKey, image.bytes, image.contentType);
-              stored = true;
+              putConfirmed = true;
               const row = await tx.contentMedia.create({
                 data: {
                   id,
@@ -180,20 +192,44 @@ export class AdminContentMediaService {
             },
           );
         } catch (error) {
-          if (!stored) throw error;
-          let receipt: { result: unknown } | null | undefined;
-          let row: { id: string; objectKey: string } | null | undefined;
+          if (!putAttempted) throw error;
+          let receipt:
+            | { action: string; target: string; requestDigest: string; result: unknown }
+            | null
+            | undefined;
+          let row:
+            | {
+                id: string;
+                externalId: string;
+                objectKey: string;
+                sha256: string;
+                contentType: string;
+                width: number;
+                height: number;
+                byteSize: number;
+              }
+            | null
+            | undefined;
           try {
             [receipt, row] = await Promise.all([
               this.db.client.adminCommandReceipt.findUnique({
                 where: {
                   accountId_idempotencyKey: { accountId: context.actor.id, idempotencyKey: key },
                 },
-                select: { result: true },
+                select: { action: true, target: true, requestDigest: true, result: true },
               }),
               this.db.client.contentMedia.findUnique({
                 where: { id },
-                select: { id: true, objectKey: true },
+                select: {
+                  id: true,
+                  externalId: true,
+                  objectKey: true,
+                  sha256: true,
+                  contentType: true,
+                  width: true,
+                  height: true,
+                  byteSize: true,
+                },
               }),
             ]);
           } catch {
@@ -205,15 +241,33 @@ export class AdminContentMediaService {
               { details: { reason: 'outcome_unknown' } },
             );
           }
-          if (receipt && row?.objectKey === objectKey) return receipt.result;
+          const receiptMatches =
+            receipt?.action === action &&
+            receipt.target === target &&
+            receipt.requestDigest === requestDigest;
+          const rowMatches =
+            row?.id === id &&
+            row.externalId === `content-media-${id}` &&
+            row.objectKey === objectKey &&
+            row.sha256 === hash &&
+            row.contentType === image.contentType &&
+            row.width === image.width &&
+            row.height === image.height &&
+            row.byteSize === image.bytes.byteLength;
+          if (receiptMatches && rowMatches) {
+            if (!putConfirmed && !(await this.storedUploadMatches(objectKey, image))) {
+              await this.recordUploadAlert(id, 'upload_outcome_unknown');
+              throw uploadOutcomeUnknown();
+            }
+            return receipt!.result;
+          }
           if (receipt || row) {
             await this.recordUploadAlert(id, 'upload_outcome_unknown');
-            throw new AppError(
-              503,
-              'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN',
-              '上传结果正在对账，请稍后查询',
-              { details: { reason: 'outcome_unknown' } },
-            );
+            throw uploadOutcomeUnknown();
+          }
+          if (!putConfirmed && !(await this.storedUploadMatches(objectKey, image))) {
+            await this.recordUploadAlert(id, 'upload_outcome_unknown');
+            throw uploadOutcomeUnknown();
           }
           try {
             await this.store.delete(objectKey);
@@ -390,6 +444,29 @@ export class AdminContentMediaService {
         this.logger.error(`content media alert persistence failed kind=${kind} id=${resourceId}`),
       );
   }
+
+  private async storedUploadMatches(
+    objectKey: string,
+    expected: { bytes: Uint8Array; contentType: string; width: number; height: number },
+  ): Promise<boolean> {
+    try {
+      const stored = await this.store.get(objectKey);
+      if (
+        stored.byteLength !== expected.bytes.byteLength ||
+        createHash('sha256').update(stored).digest('hex') !==
+          createHash('sha256').update(expected.bytes).digest('hex')
+      )
+        return false;
+      const decoded = await validateImage(stored);
+      return (
+        decoded.contentType === expected.contentType &&
+        decoded.width === expected.width &&
+        decoded.height === expected.height
+      );
+    } catch {
+      return false;
+    }
+  }
 }
 
 function deterministicMediaId(accountId: string, idempotencyKey: string): string {
@@ -407,5 +484,11 @@ function mediaPublishFailure(): AppError {
   return new AppError(422, 'CONTENT_NOT_PUBLISHABLE', '无法发布：media', {
     field: 'media',
     details: { reason: 'not_publishable' },
+  });
+}
+
+function uploadOutcomeUnknown(): AppError {
+  return new AppError(503, 'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN', '上传结果正在对账，请稍后查询', {
+    details: { reason: 'outcome_unknown' },
   });
 }

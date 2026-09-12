@@ -143,6 +143,13 @@ describe('operational content seed', () => {
         maxOutputCount: 1,
       }).success,
     ).toBe(false);
+  });
+
+  it('keeps frozen draft reference limits in storage without applying runtime model capacity', () => {
+    const whiteBackground = contentSeedManifest.tools.find(
+      (tool) => tool.externalId === 'white-background',
+    );
+    expect(whiteBackground?.maxAssets).toBe(3);
     expect(
       toolDefinitionInputSchema.safeParse({
         ...contentSeedManifest.tools[0]!,
@@ -155,8 +162,9 @@ describe('operational content seed', () => {
           count: 1,
         },
         maxAssets: 2,
+        status: 'draft',
       }).success,
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('rejects an unbounded session-lock timeout before acquiring the seed lock', async () => {

@@ -1,0 +1,59 @@
+BEGIN;
+
+CREATE TEMP TABLE content_alert_changed_roles ON COMMIT DROP AS
+  SELECT "key"
+  FROM "AdminRole"
+  WHERE "builtIn" = true
+    AND "key" IN ('super_admin', 'content_operator')
+    AND NOT (
+      ARRAY['alerts.read', 'alerts.content.read']::text[] <@ "permissions"
+    );
+
+UPDATE "AdminRole"
+SET "permissions" = ARRAY(
+      SELECT DISTINCT permission
+      FROM unnest("permissions" || ARRAY['alerts.read', 'alerts.content.read']::text[]) AS permission
+      ORDER BY permission
+    ),
+    "version" = "version" + 1,
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "key" IN (SELECT "key" FROM content_alert_changed_roles);
+
+CREATE TEMP TABLE content_alert_affected_accounts ON COMMIT DROP AS
+  SELECT DISTINCT "accountId"
+  FROM "AdminAccountRole"
+  WHERE "roleKey" IN (SELECT "key" FROM content_alert_changed_roles);
+
+UPDATE "AdminAccount"
+SET "authVersion" = "authVersion" + 1,
+    "version" = "version" + 1,
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" IN (SELECT "accountId" FROM content_alert_affected_accounts);
+
+UPDATE "AdminSession"
+SET "expiresAt" = to_timestamp(0)
+WHERE "accountId" IN (SELECT "accountId" FROM content_alert_affected_accounts);
+
+DELETE FROM "AdminChallenge"
+WHERE "accountId" IN (SELECT "accountId" FROM content_alert_affected_accounts);
+
+DELETE FROM "AdminSensitiveGrant"
+WHERE "accountId" IN (SELECT "accountId" FROM content_alert_affected_accounts);
+
+UPDATE "AdminPasswordReset"
+SET "revokedAt" = CURRENT_TIMESTAMP
+WHERE "accountId" IN (SELECT "accountId" FROM content_alert_affected_accounts)
+  AND "consumedAt" IS NULL
+  AND "revokedAt" IS NULL;
+
+UPDATE "AdminInvitation"
+SET "version" = "version" + 1,
+    "updatedAt" = CURRENT_TIMESTAMP
+WHERE "consumedAt" IS NULL
+  AND "id" IN (
+    SELECT "invitationId"
+    FROM "AdminInvitationRole"
+    WHERE "roleKey" IN (SELECT "key" FROM content_alert_changed_roles)
+  );
+
+COMMIT;

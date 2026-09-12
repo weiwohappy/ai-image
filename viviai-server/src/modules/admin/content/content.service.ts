@@ -257,6 +257,8 @@ export class AdminContentService {
             },
           };
         }
+        if (before.status === 'published')
+          await this.commands.enforcePublishRateLimit(tx, current, `content.${family}.update`);
         if (before.version >= 2_147_483_647)
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         const proposed = { ...before, ...data };
@@ -311,6 +313,12 @@ export class AdminContentService {
           throw failure(422, 'CONTENT_INVALID_TRANSITION', '无效内容状态转换');
         if (before.version >= 2_147_483_647)
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
+        if (before.status === 'published' && input.status !== 'published')
+          await this.commands.enforcePublishRateLimit(
+            tx,
+            current,
+            `content.${family}.${input.status === 'offline' ? 'offline' : 'archive'}`,
+          );
         if (input.status === 'published') await this.publishValidator.validate(tx, kind, before);
         const row = await client.update({
           where: { id },
@@ -366,6 +374,8 @@ export class AdminContentService {
         });
         if (rows.length !== input.items.length)
           throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        if (rows.some((row: RecordValue) => row.status === 'published'))
+          requirePermission(current.actor, `content.${family}.publish`);
         const before = new Map<string, RecordValue>(
           rows.map((row: RecordValue) => [String(row.id), row]),
         );
@@ -375,6 +385,13 @@ export class AdminContentService {
           if (Number(row.version) >= 2_147_483_647)
             throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         }
+        if (
+          input.items.some((item) => {
+            const row = before.get(item.id)!;
+            return row.status === 'published' && row.sortOrder !== item.sortOrder;
+          })
+        )
+          await this.commands.enforcePublishRateLimit(tx, current, `content.${family}.reorder`);
         const results = [];
         for (const item of input.items) {
           const row = before.get(item.id)!;
