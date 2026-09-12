@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { api } from '@/src/services/api';
-import type { GenerationInput, Workflow } from '@/src/types/domain';
+import type { GenerationInput, RemixInput, Workflow } from '@/src/types/domain';
 import { loadDb, mutateDb, resetDb, settleTask } from './db';
+import { saveReferenceUpload } from './referenceUploads';
 import { server } from './server';
 
 const baseInput: GenerationInput = {
@@ -81,6 +82,28 @@ describe('Mock generation state machine', () => {
     const migrated = (await api.listGenerationTasks()).find((item) => item.id === created.id);
     expect(migrated).toMatchObject({ status: 'failed', errorCode: 'INTERNAL_ERROR' });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
+  });
+});
+
+describe('User supplied remix reference', () => {
+  const input: RemixInput = { modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1', count: 1, adaptation: '保留暖色光影，替换为我的咖啡礼盒', strength: 'balanced' };
+
+  it('rejects missing and unknown references without freezing credits', async () => {
+    await expect(api.createRemixTask(input)).rejects.toMatchObject({ code: 'ASSET_INVALID' });
+    await expect(api.createRemixTask({ ...input, referenceAssetId: 'missing-image' })).rejects.toMatchObject({ code: 'ASSET_INVALID' });
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
+    expect(loadDb().tasks).toHaveLength(0);
+  });
+
+  it('passes the uploaded reference first and the optional subject second without a template', async () => {
+    const reference = saveReferenceUpload(new File(['reference'], 'reference.png', { type: 'image/png' }), 800, 600);
+    const subject = saveReferenceUpload(new File(['subject'], 'subject.png', { type: 'image/png' }), 600, 600);
+    const task = await api.createRemixTask({ ...input, referenceAssetId: reference.id, subjectAssetId: subject.id });
+    expect(task.input).toMatchObject({ referenceAssetId: reference.id, referenceAssetIds: [reference.id, subject.id], source: 'remix', prompt: input.adaptation });
+    expect(task.templateId).toBeUndefined();
+    expect(task.remixStrength).toBe('balanced');
+    settleTask(task.id, 'success');
+    expect(loadDb().assets.find((asset) => asset.id === `asset-${task.id}-1`)).toMatchObject({ source: 'remix' });
   });
 });
 

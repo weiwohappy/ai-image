@@ -7,7 +7,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { api, ApiError } from '@/src/services/api';
+import { api, ApiError, isRealApi } from '@/src/services/api';
 import { queryKeys } from '@/src/services/queryKeys';
 import { consumeAuthRedirect, rememberAuthRedirect } from './authDraft';
 
@@ -42,13 +42,13 @@ export function AuthPage({ mode }: { mode: Mode }) {
 
   const auth = useMutation({
     mutationFn: async () => {
-      if (password.length < 8) throw new Error('密码至少需要 8 位。');
+      if (mode !== 'login' && password.length < 12) throw new Error('密码至少需要 12 位。');
       if (mode === 'login') return api.login({ account, password });
       if (!account.includes('@')) throw new Error('请输入有效邮箱。');
       if (!/^\d{6}$/.test(code)) throw new Error('请输入 6 位验证码。');
       if (password !== confirmPassword) throw new Error('两次输入的密码不一致。');
       if (mode === 'register') {
-        if (!username.trim()) throw new Error('请输入用户名。');
+        if (!/^[a-z0-9_]{3,32}$/.test(username.trim().toLowerCase())) throw new Error('用户名需为 3–32 位字母、数字或下划线。');
         return api.register({ username, email: account, password, code });
       }
       await api.resetPassword({ email: account, code, password });
@@ -67,9 +67,9 @@ export function AuthPage({ mode }: { mode: Mode }) {
   });
 
   const sendCode = useMutation({
-    mutationFn: () => api.sendCode(account),
+    mutationFn: () => api.sendCode(account, mode === 'forgot' ? 'reset-password' : 'register'),
     onSuccess: () => {
-      setFormError('验证码已发送；演示环境请输入任意 6 位数字。');
+      setFormError(isRealApi() ? '验证码已发送，请查收邮箱。' : '验证码已发送；演示环境请输入任意 6 位数字。');
       setCountdown(60);
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '验证码发送失败。'),

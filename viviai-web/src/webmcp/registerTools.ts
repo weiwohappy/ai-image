@@ -1,4 +1,5 @@
-import { api } from '@/src/services/api';
+import { api, isRealApi } from '@/src/services/api';
+import { createGeneration } from '@/src/services/generationFlow';
 import type { GenerationInput, ImageRatio, OutputCount, Resolution } from '@/src/types/domain';
 
 interface WebMcpTool {
@@ -46,7 +47,7 @@ export function registerViviaiTools(): () => void {
     async execute(raw) {
       const input = record(raw);
       const payload: GenerationInput = { prompt: stringValue(input.prompt, 'prompt'), modelId: typeof input.modelId === 'string' ? input.modelId : 'nano-banana-2', resolution: (input.resolution ?? '1K') as Resolution, ratio: (input.ratio ?? '1:1') as ImageRatio, count: (input.count ?? 1) as OutputCount, source: 'generation' };
-      const task = await api.createGenerationTask(payload);
+      const { task } = await createGeneration(payload);
       window.dispatchEvent(new CustomEvent('viviai:data-changed'));
       return { taskId: task.id, status: task.status, estimatedCredits: task.estimatedCredits };
     },
@@ -54,28 +55,35 @@ export function registerViviaiTools(): () => void {
   register({
     name: 'start_remix',
     title: '打开爆款复刻工作台',
-    description: '验证指定爆款模板并打开其复刻工作台；不会直接创建或计费。',
-    inputSchema: { type: 'object', properties: { templateId: { type: 'string', minLength: 1 } }, required: ['templateId'], additionalProperties: false },
+    description: '打开用户上传参考图的爆款复刻工作台；可选带入平台示例，不会直接创建或计费。',
+    inputSchema: { type: 'object', properties: { templateId: { type: 'string', minLength: 1 } }, additionalProperties: false },
     annotations: { readOnlyHint: false, untrustedContentHint: false },
     async execute(raw) {
-      const templateId = stringValue(record(raw).templateId, 'templateId');
+      const input = record(raw);
+      if (input.templateId === undefined) {
+        window.location.hash = '#/remix';
+        return { route: '/remix' };
+      }
+      const templateId = stringValue(input.templateId, 'templateId');
       const template = await api.getTemplate(templateId);
       window.location.hash = `#/remix/${encodeURIComponent(template.id)}`;
       return { templateId: template.id, route: `/remix/${template.id}` };
     },
   });
-  register({
-    name: 'reset_demo_data',
-    title: '重置演示数据',
-    description: '将 VIVIAI 前端 Mock 数据恢复为初始演示状态。',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-    annotations: { readOnlyHint: false, untrustedContentHint: false },
-    async execute(raw) {
-      record(raw);
-      await api.resetDemoData();
-      window.dispatchEvent(new CustomEvent('viviai:data-reset'));
-      return { reset: true };
-    },
-  });
+  if (!isRealApi()) {
+    register({
+      name: 'reset_demo_data',
+      title: '重置演示数据',
+      description: '将 VIVIAI 前端 Mock 数据恢复为初始演示状态。',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: false, untrustedContentHint: false },
+      async execute(raw) {
+        record(raw);
+        await api.resetDemoData();
+        window.dispatchEvent(new CustomEvent('viviai:data-reset'));
+        return { reset: true };
+      },
+    });
+  }
   return () => lifecycle.abort();
 }

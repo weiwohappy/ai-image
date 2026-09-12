@@ -1,4 +1,4 @@
-export type Resolution = '1K' | '2K' | '4K';
+export type Resolution = '0.5K' | '1K' | '2K' | '4K';
 export type Quality = 'low' | 'medium' | 'high';
 export type ImageRatio =
   | '21:9'
@@ -43,6 +43,21 @@ export interface ModelConfig {
   ratios: ImageRatio[];
   qualities?: Quality[];
   status: 'available' | 'unavailable';
+  simulated?: boolean;
+  formats?: Array<'png'>;
+  maxReferenceImages?: number;
+  unitCredits?: number;
+  specs?: ModelOutputSpec[];
+}
+
+export interface ModelOutputSpec {
+  id: string;
+  resolution: Resolution;
+  ratio: ImageRatio;
+  width: number;
+  height: number;
+  imageSize?: string;
+  unitCredits?: number;
 }
 
 export interface EstimateCreditsInput {
@@ -57,7 +72,20 @@ export interface GenerationInput extends EstimateCreditsInput {
   ratio: ImageRatio;
   referenceAssetId?: string;
   referenceAssetIds?: string[];
+  subjectAssetId?: string;
   source?: 'generation' | 'remix' | 'tool' | 'workflow';
+  strength?: RemixStrength;
+}
+
+export interface GenerationQuote {
+  id: string;
+  input: unknown;
+  inputHash: string;
+  unitCredits: number;
+  totalCredits: number;
+  priceVersion: number | null;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export interface GenerationTask {
@@ -70,6 +98,15 @@ export interface GenerationTask {
   createdAt: string;
   updatedAt: string;
   resultAssetIds: string[];
+  stage?: string;
+  cancelRequested?: boolean;
+  items?: Array<{
+    id: string;
+    ordinal: number;
+    status: TaskStatus;
+    resultAssetId?: string | null;
+    errorCode?: string | null;
+  }>;
   templateId?: string;
   templateVersion?: number;
   remixStrength?: RemixStrength;
@@ -146,9 +183,17 @@ export interface ViralTemplate {
   analysis: VisualAnalysis;
 }
 
+export interface UploadedReference {
+  id: string;
+  name: string;
+  width: number;
+  height: number;
+}
+
 export interface RemixInput extends EstimateCreditsInput {
-  templateId: string;
-  templateVersion: number;
+  referenceAssetId?: string;
+  templateId?: string;
+  templateVersion?: number;
   adaptation: string;
   strength: RemixStrength;
   ratio: ImageRatio;

@@ -7,7 +7,7 @@ import type { ImageAsset } from '@/src/types/domain';
 
 const suggestions = ['商业摄影', '电影光', '保留文案留白'];
 
-export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetId, referencePreviewUrl, referenceName, onReferenceChange, onReferenceUpload }: {
+export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetId, referencePreviewUrl, referenceName, onReferenceChange, onReferenceUpload, allowReference = true }: {
   prompt: string;
   onPromptChange: (value: string) => void;
   assets: ImageAsset[];
@@ -16,6 +16,7 @@ export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetI
   referenceName?: string;
   onReferenceChange: (value?: string) => void;
   onReferenceUpload: (file: File) => void;
+  allowReference?: boolean;
 }) {
   const reference = assets.find((asset) => asset.id === referenceAssetId);
   const referenceUrl = reference?.thumbnailUrl ?? referencePreviewUrl;
@@ -30,7 +31,7 @@ export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetI
           <span className="ml-auto text-xs text-muted-foreground">{prompt.length}/1200</span>
         </div>
       </div>
-      <div className="mt-4">
+      {allowReference ? <div className="mt-4">
         <label htmlFor="reference-asset" className="text-sm font-medium">参考图（可选）</label>
         {referenceUrl ? (
           <div className="mt-2 flex items-center gap-3 rounded-xl border border-border bg-background p-2">
@@ -48,7 +49,7 @@ export function PromptComposer({ prompt, onPromptChange, assets, referenceAssetI
           </div>
         )}
         <p className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground"><ImagePlus className="size-3.5" />支持 PNG、JPG、WebP；当前原型在浏览器本地保存预览。</p>
-      </div>
+      </div> : <div className="mt-4 rounded-xl border border-violet-300/20 bg-violet-400/8 p-3 text-xs leading-5 text-muted-foreground"><span className="font-medium text-violet-200">需要参考图？</span> 请前往“上传爆款图复刻”工作台。真实图片接口将参考图作为复刻任务输入。</div>}
     </div>
   );
 }

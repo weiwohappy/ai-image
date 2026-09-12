@@ -51,7 +51,7 @@ export default defineConfig(async () => {
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
       proxy: {
-        '/api/billing': {
+        '/api': {
           target: 'http://127.0.0.1:3001',
           changeOrigin: false,
         },

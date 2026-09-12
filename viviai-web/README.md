@@ -1,6 +1,6 @@
-# VIVIAI 前端 Mock
+# VIVIAI 前端
 
-VIVIAI 是一个面向商业图片生产的深色创作工作台。本项目先完成前端产品闭环，所有接口由 MSW 在浏览器中模拟，可演示登录、图片生成、爆款复刻、资产、AI 工具、批量工作流、套餐购买、积分、通知与邀请。
+VIVIAI 是一个面向商业图片生产的深色创作工作台。前端默认使用 MSW Mock，配置真实模式后可连接 `viviai-server` 的账号、模型、报价、任务、上传、资产和积分接口。
 
 ## 本地运行
 
@@ -11,7 +11,7 @@ npm run dev
 
 打开终端输出的 Local 地址。页面使用 Hash Router，例如 `/#/create`。
 
-演示账号：
+Mock 演示账号：
 
 - 邮箱：`demo@viviai.local`
 - 密码：`demo1234`
@@ -25,6 +25,27 @@ npm run test:e2e
 npm run build
 npx tsc --noEmit
 ```
+
+## 真实后端模式
+
+复制 `.env.example` 为 `.env.local`，本地开发推荐留空 API 地址，让 Vite 将 `/api` 代理到 `http://127.0.0.1:3001`：
+
+```env
+VITE_API_MODE=real
+VITE_API_BASE_URL=
+```
+
+如果前端和后端不通过同一开发代理，设置完整的 `VITE_API_BASE_URL`，例如 `http://localhost:3001`，并把前端实际 Origin 加入后端 `CORS_ORIGINS`。真实模式使用 `credentials: include` 携带 `viviai_session` Cookie，前端不保存或转发模型供应商密钥。
+
+真实创作请求严格按以下顺序执行：
+
+1. `POST /api/generation-quotes` 获取五分钟有效的服务端报价；
+2. `POST /api/generation-tasks` 或 `POST /api/remix-tasks`，body 为 `{ quoteId, input }`，并携带 `Idempotency-Key`；
+3. 轮询任务列表和活动任务详情，终态后刷新用户余额与资产。
+
+模型面板的分辨率、比例和精确像素来自 `GET /api/models` 的 `specs`，不会拼接前端固定的非法组合。参考图上传只发送 multipart `file`，私有资产通过 `/api/assets/:id/content` 读取。
+
+当前后端尚未提供灵感、平台爆款模板库、AI 工具、工作流、通知、邀请和个人资料编辑接口；真实模式会显示“暂未接入真实接口”，不会向这些 Mock-only 路由发请求。支付页仍使用既有 `/api/billing` 接口。
 
 ## Mock 行为
 

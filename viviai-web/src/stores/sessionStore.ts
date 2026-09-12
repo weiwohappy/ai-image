@@ -3,7 +3,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-import type { ImageRatio, OutputCount, Quality, RemixStrength, Resolution } from '@/src/types/domain';
+import type { ImageRatio, OutputCount, Quality, RemixStrength, Resolution, UploadedReference } from '@/src/types/domain';
 
 export interface GenerationDraft {
   prompt: string;
@@ -18,6 +18,11 @@ export interface GenerationDraft {
 }
 
 export interface RemixDraft {
+  reference?: UploadedReference & { previewUrl: string };
+  subject?: UploadedReference & { previewUrl: string };
+  referenceNeedsUpload?: boolean;
+  subjectNeedsUpload?: boolean;
+  lastTaskId?: string;
   adaptation: string;
   strength: RemixStrength;
   subjectAssetId?: string;
@@ -69,6 +74,14 @@ export const useSessionStore = create<SessionState>()(
         return {
           ...state,
           generationDraft: localUpload ? { ...state.generationDraft, referenceAssetId: undefined, referencePreviewUrl: undefined, referenceName: undefined } : state.generationDraft,
+          remixDrafts: Object.fromEntries(Object.entries(state.remixDrafts).map(([key, draft]) => [key, {
+            ...draft,
+            reference: undefined,
+            subject: undefined,
+            referenceNeedsUpload: Boolean(draft.reference) || draft.referenceNeedsUpload,
+            subjectNeedsUpload: Boolean(draft.subject) || draft.subjectNeedsUpload,
+          }])),
+          pendingRemixTemplateId: undefined,
         };
       },
     },

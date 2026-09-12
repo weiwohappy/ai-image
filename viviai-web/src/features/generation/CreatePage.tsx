@@ -7,7 +7,8 @@ import { NavLink, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { estimateCredits } from '@/src/lib/pricing';
-import { api, ApiError } from '@/src/services/api';
+import { api, ApiError, isRealApi } from '@/src/services/api';
+import { createGeneration } from '@/src/services/generationFlow';
 import { queryKeys } from '@/src/services/queryKeys';
 import { useSessionStore } from '@/src/stores/sessionStore';
 import type { GenerationInput, GenerationTask } from '@/src/types/domain';
@@ -22,6 +23,7 @@ export function CreatePage() {
   const queryClient = useQueryClient();
   const [error, setError] = useState('');
   const [showPaywall, setShowPaywall] = useState(false);
+  const [quoteCredits, setQuoteCredits] = useState<number>();
   const draft = useSessionStore((state) => state.generationDraft);
   const updateDraft = useSessionStore((state) => state.updateGenerationDraft);
   const pendingGeneration = useSessionStore((state) => state.pendingGeneration);
@@ -29,13 +31,21 @@ export function CreatePage() {
   const me = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
   const models = useQuery({ queryKey: queryKeys.models, queryFn: api.listModels });
   const { tasks, assets, cancel, retry } = useGenerationTasks();
-  const estimated = estimateCredits({ modelId: draft.modelId, resolution: draft.resolution, quality: draft.quality, count: draft.count });
+  const selectedModel = models.data?.find((item) => item.id === draft.modelId) ?? (isRealApi() ? models.data?.find((item) => !item.simulated) : models.data?.[0]);
+  const selectedSpec = selectedModel?.specs?.find((spec) => spec.resolution === draft.resolution && spec.ratio === draft.ratio);
+  const localEstimate = (() => {
+    if (selectedSpec?.unitCredits !== undefined) return selectedSpec.unitCredits * draft.count;
+    if (selectedModel?.unitCredits !== undefined) return selectedModel.unitCredits * draft.count;
+    try { return estimateCredits({ modelId: draft.modelId, resolution: draft.resolution, quality: draft.quality, count: draft.count }); } catch { return 0; }
+  })();
+  const estimated = quoteCredits ?? localEstimate;
 
-  const createTask = useMutation<GenerationTask, ApiError, GenerationInput>({
-    mutationFn: (input) => api.createGenerationTask(input),
-    onSuccess: (task) => {
+  const createTask = useMutation<{ task: GenerationTask; quote: { totalCredits: number } }, ApiError, GenerationInput>({
+    mutationFn: (input) => createGeneration(input),
+    onSuccess: ({ task, quote }) => {
       setPendingGeneration(false);
       setError('');
+      setQuoteCredits(quote.totalCredits);
       queryClient.setQueryData<GenerationTask[]>(queryKeys.tasks, (current = []) => [task, ...current.filter((item) => item.id !== task.id)]);
       queryClient.invalidateQueries({ queryKey: queryKeys.me });
     },
@@ -51,8 +61,15 @@ export function CreatePage() {
     if (pendingGeneration && me.data && draft.prompt.trim() && !createTask.isPending) createTask.mutate({ ...draft, source: 'generation' });
   }, [pendingGeneration, me.data]);
 
+  useEffect(() => {
+    if (!models.data?.length || models.data.some((model) => model.id === draft.modelId)) return;
+    const first = (isRealApi() ? models.data.find((model) => !model.simulated) : undefined) ?? models.data[0];
+    updateDraft({ modelId: first.id, resolution: first.resolutions[0], ratio: first.ratios[0], quality: first.qualities?.[0] });
+  }, [models.data, draft.modelId, updateDraft]);
+
   function submit() {
     if (!draft.prompt.trim()) return;
+    setQuoteCredits(undefined);
     if (!me.data) {
       setPendingGeneration(true);
       navigate('/login?redirect=%2Fcreate');
@@ -78,7 +95,7 @@ export function CreatePage() {
     <main className="mx-auto w-full max-w-[1540px] p-4 md:p-6 xl:p-8">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
         <div><h1 className="text-3xl font-semibold tracking-[-.045em] text-foreground md:text-4xl">图片生成</h1><p className="mt-2 text-base text-muted-foreground">描述画面，或从一张参考图开始。</p></div>
-        <NavLink to="/remix" className="flex items-center gap-2 rounded-full border border-violet-400/25 bg-violet-400/10 px-4 py-2 text-sm text-violet-200 hover:border-violet-300/50"><WandSparkles className="size-4" />浏览爆款模板</NavLink>
+        <NavLink to="/remix" className="flex items-center gap-2 rounded-full border border-violet-400/25 bg-violet-400/10 px-4 py-2 text-sm text-violet-200 hover:border-violet-300/50"><WandSparkles className="size-4" />上传爆款图复刻</NavLink>
       </div>
 
       <div className="grid min-h-[calc(100vh-10rem)] gap-4 xl:grid-cols-[minmax(0,1.7fr)_minmax(340px,.7fr)]">
@@ -93,9 +110,10 @@ export function CreatePage() {
 
         <aside className="flex min-h-[620px] flex-col rounded-[28px] border border-border bg-card p-5 md:p-6">
           <div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">生成设置</h2><p className="mt-1 text-xs text-muted-foreground">参数变化会实时计算积分</p></div><Button type="button" variant="ghost" size="icon" aria-label="打开高级设置" className="rounded-full"><SlidersHorizontal /></Button></div>
-          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} referencePreviewUrl={draft.referencePreviewUrl} referenceName={draft.referenceName} onReferenceChange={(referenceAssetId) => { if (draft.referencePreviewUrl?.startsWith('blob:')) URL.revokeObjectURL(draft.referencePreviewUrl); updateDraft({ referenceAssetId, referencePreviewUrl: undefined, referenceName: undefined }); }} onReferenceUpload={uploadReference} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
+          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} referencePreviewUrl={draft.referencePreviewUrl} referenceName={draft.referenceName} onReferenceChange={(referenceAssetId) => { if (draft.referencePreviewUrl?.startsWith('blob:')) URL.revokeObjectURL(draft.referencePreviewUrl); updateDraft({ referenceAssetId, referencePreviewUrl: undefined, referenceName: undefined }); }} onReferenceUpload={uploadReference} allowReference={!isRealApi()} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
           {error && <div role="alert" className="mt-4 rounded-xl border border-destructive/30 bg-destructive/8 p-3 text-sm text-destructive">{error}{showPaywall && <NavLink to="/pricing" className="ml-2 font-semibold underline">查看套餐</NavLink>}</div>}
-          <Button type="button" size="lg" className="mt-5 h-12 w-full rounded-2xl text-sm font-bold" disabled={!draft.prompt.trim() || createTask.isPending || models.isPending} onClick={submit}>{createTask.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始生成 <ArrowUp /></>}</Button>
+          {isRealApi() && !models.isPending && !models.data?.length && <p role="alert" className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/8 p-3 text-sm text-amber-200">当前没有已启用并完成定价的图片模型，请先在运营平台配置模型和分辨率积分。</p>}
+          <Button type="button" size="lg" className="mt-5 h-12 w-full rounded-2xl text-sm font-bold" disabled={!draft.prompt.trim() || createTask.isPending || models.isPending || (isRealApi() && !models.data?.length)} onClick={submit}>{createTask.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始生成 <ArrowUp /></>}</Button>
           <p className="mt-3 text-center text-xs text-muted-foreground">提交后进入任务队列，失败自动退回积分</p>
         </aside>
       </div>

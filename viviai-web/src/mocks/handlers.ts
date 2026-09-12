@@ -13,6 +13,7 @@ import type {
   Workflow,
 } from '@/src/types/domain';
 import { getCredentialHash, loadDb, mutateDb, resetDb, setCredentialHash, settleTask } from './db';
+import { hasReferenceUpload, saveReferenceUpload } from './referenceUploads';
 
 const api = '*/api';
 
@@ -323,12 +324,36 @@ export const handlers = [
     return ok(items);
   }),
 
+  http.post(`${api}/remix-references`, async ({ request }) => {
+    const data = await request.formData();
+    const file = data.get('file');
+    const width = Number(data.get('width'));
+    const height = Number(data.get('height'));
+    if (!file || typeof file === 'string' || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return fail(400, 'ASSET_INVALID', '请上传 JPG、PNG 或 WebP 图片。');
+    if (!file.size || file.size > 5 * 1024 * 1024) return fail(400, 'ASSET_INVALID', '图片大小须在 0 到 5MB 之间。');
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return fail(400, 'ASSET_INVALID', '图片无法读取，请重新上传。');
+    const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+    const signatureValid = file.type === 'image/png' ? [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)
+      : file.type === 'image/jpeg' ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+      : String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
+    if (!signatureValid) return fail(400, 'ASSET_INVALID', '图片格式或内容无效，请重新上传。');
+    return ok(saveReferenceUpload(file, width, height), '参考图已上传');
+  }),
+
   http.post(`${api}/remix-tasks`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     const scenario = request.headers.get('x-mock-scenario') ?? 'happy';
     const input = (await request.json()) as RemixInput;
-    const template = loadDb().templates.find((item) => item.id === input.templateId && item.status === 'active');
-    if (!template) return fail(409, 'TEMPLATE_UNAVAILABLE', '模板不可用，请选择其他模板。');
-    if (!input.adaptation.trim()) return fail(400, 'INVALID_INPUT', '请描述你要修改的内容。');
+    const db = loadDb();
+    const template = input.templateId ? db.templates.find((item) => item.id === input.templateId && item.status === 'active') : undefined;
+    if (input.templateId && (!template || template.version !== input.templateVersion)) return fail(409, 'TEMPLATE_UNAVAILABLE', '示例已更新或不可用，请重新选择参考图。');
+    const validReference = (id: string) => hasReferenceUpload(id) || db.assets.some((asset) => asset.id === id);
+    if (input.referenceAssetId ? !validReference(input.referenceAssetId) : !template) return fail(400, 'ASSET_INVALID', '请上传有效的爆款参考图。');
+    if (input.subjectAssetId && !validReference(input.subjectAssetId)) return fail(400, 'ASSET_INVALID', '主体素材已失效，请重新选择。');
+    if (!input.adaptation?.trim()) return fail(400, 'INVALID_INPUT', '请描述希望保留和修改的内容。');
+    if (!['similar', 'balanced', 'creative'].includes(input.strength)) return fail(400, 'INVALID_INPUT', '请选择有效的复刻强度。');
+    const referenceAssetId = input.referenceAssetId ?? `template:${template!.id}`;
     try {
       const generationInput: GenerationInput = {
         prompt: input.adaptation,
@@ -337,7 +362,8 @@ export const handlers = [
         quality: input.quality,
         ratio: input.ratio,
         count: input.count,
-        referenceAssetId: input.subjectAssetId,
+        referenceAssetId,
+        referenceAssetIds: [referenceAssetId, ...(input.subjectAssetId ? [input.subjectAssetId] : [])],
         source: 'remix',
       };
       return ok(createTask(generationInput, scenario, { templateId: input.templateId, templateVersion: input.templateVersion, remixStrength: input.strength }), '复刻任务已创建');

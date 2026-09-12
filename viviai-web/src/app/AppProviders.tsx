@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { HashRouter } from 'react-router-dom';
 import { useEffect, useState, type ReactNode } from 'react';
+import { isRealApi } from '@/src/services/api';
 import { registerViviaiTools } from '@/src/webmcp/registerTools';
 
 export function AppProviders({ children }: { children: ReactNode }) {
@@ -15,10 +16,10 @@ export function AppProviders({ children }: { children: ReactNode }) {
         },
       }),
   );
-  const [mockReady, setMockReady] = useState(process.env.NODE_ENV === 'test');
+  const [mockReady, setMockReady] = useState(() => process.env.NODE_ENV === 'test' || isRealApi());
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'test') return;
+    if (process.env.NODE_ENV === 'test' || isRealApi()) return;
     let active = true;
     import('@/src/mocks/browser').then(({ worker }) =>
       worker.start({ onUnhandledRequest: 'bypass' }).then(() => {
@@ -33,13 +34,19 @@ export function AppProviders({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!mockReady) return;
     const refresh = () => queryClient.invalidateQueries();
+    const expireSession = () => {
+      queryClient.clear();
+      if (!window.location.hash.startsWith('#/login')) window.location.hash = '#/login';
+    };
     window.addEventListener('viviai:data-changed', refresh);
     window.addEventListener('viviai:data-reset', refresh);
+    window.addEventListener('viviai:auth-expired', expireSession);
     const disposeTools = registerViviaiTools();
     return () => {
       disposeTools();
       window.removeEventListener('viviai:data-changed', refresh);
       window.removeEventListener('viviai:data-reset', refresh);
+      window.removeEventListener('viviai:auth-expired', expireSession);
     };
   }, [mockReady, queryClient]);
 

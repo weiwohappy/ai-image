@@ -1,5 +1,6 @@
 import type { GenerationTask, ImageAsset, NotificationItem, PointLedgerEntry } from '@/src/types/domain';
 import { createSeedDb, getFixtureVisual, type MockDatabase } from './fixtures';
+import { resetReferenceUploads } from './referenceUploads';
 
 const STORAGE_KEY = 'viviai-mock-db-v1';
 const DEMO_CREDENTIAL_HASH = '0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d';
@@ -55,6 +56,7 @@ export function mutateDb(mutator: (draft: MockDatabase) => void): MockDatabase {
 }
 
 export function resetDb(): MockDatabase {
+  resetReferenceUploads();
   memoryDb = createSeedDb();
   memoryCredentialHash = DEMO_CREDENTIAL_HASH;
   if (storageAvailable()) {
