@@ -23,7 +23,7 @@ describe('immutable simulation quotes', () => {
     const user = await db.database.client.user.create({
       data: { email: 'quote@example.test', username: 'quote', passwordHash: 'unused' },
     });
-    cookie = `viviai_session=${await app.get(IdentityService).createSession(user.id)}`;
+    cookie = `viviai_session=${await app.get(IdentityService).createSession(user.id, user.authVersion)}`;
   });
   afterAll(async () => {
     await app?.close();

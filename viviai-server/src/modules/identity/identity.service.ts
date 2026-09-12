@@ -3,6 +3,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { DatabaseService } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
+import { lockUserAuth } from '../../shared/database/locks.js';
 import { EmailChallengeService, type ChallengePurpose } from './challenge.service.js';
 
 const derive = promisify(scrypt);
@@ -14,6 +15,7 @@ export interface PublicAccount {
   username: string;
   avatarAssetId: string | null;
   inviteCode: string;
+  authVersion: number;
 }
 export const SESSION_COOKIE = 'viviai_session';
 export const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
@@ -90,7 +92,14 @@ export class IdentityService {
       return await this.challenges.consume(input.email, 'register', input.code, (tx) =>
         tx.user.create({
           data: { email: input.email, username: input.username, passwordHash },
-          select: { id: true, email: true, username: true, avatarAssetId: true, inviteCode: true },
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            avatarAssetId: true,
+            inviteCode: true,
+            authVersion: true,
+          },
         }),
       );
     } catch (error) {
@@ -116,6 +125,7 @@ export class IdentityService {
       username: user.username,
       avatarAssetId: user.avatarAssetId,
       inviteCode: user.inviteCode,
+      authVersion: user.authVersion,
     };
   }
   async resetPassword(email: string, code: string, password: string): Promise<{ success: true }> {
@@ -124,19 +134,30 @@ export class IdentityService {
       const user = await tx.user.findUnique({ where: { email } });
       if (!user)
         throw new AppError(400, 'INVALID_CODE', 'Verification code is invalid or expired');
-      await tx.user.update({ where: { id: user.id }, data: { passwordHash } });
+      await lockUserAuth(tx, user.id);
+      await tx.user.update({
+        where: { id: user.id },
+        data: { passwordHash, authVersion: { increment: 1 } },
+      });
       await tx.session.deleteMany({ where: { userId: user.id } });
     });
     return { success: true };
   }
-  async createSession(userId: string): Promise<string> {
+  async createSession(userId: string, expectedAuthVersion: number): Promise<string> {
     const token = randomBytes(32).toString('base64url');
-    await this.db.client.session.create({
-      data: {
-        userId,
-        tokenHash: digest(token),
-        expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS),
-      },
+    await this.db.transaction(async (tx) => {
+      await lockUserAuth(tx, userId);
+      const user = await tx.user.findUnique({ where: { id: userId }, select: { authVersion: true } });
+      if (!user || user.authVersion !== expectedAuthVersion)
+        throw new AppError(401, 'INVALID_CREDENTIALS', 'Account or password is incorrect');
+      await tx.session.create({
+        data: {
+          userId,
+          tokenHash: digest(token),
+          authVersion: user.authVersion,
+          expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS),
+        },
+      });
     });
     return token;
   }
@@ -145,10 +166,23 @@ export class IdentityService {
     const session = await this.db.client.session.findUnique({
       where: { tokenHash: digest(token) },
       include: {
-        user: { select: { id: true, email: true, username: true, avatarAssetId: true, inviteCode: true } },
+        user: {
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            avatarAssetId: true,
+            inviteCode: true,
+            authVersion: true,
+          },
+        },
       },
     });
-    return session && session.expiresAt.getTime() > Date.now() ? session.user : null;
+    return session &&
+      session.expiresAt.getTime() > Date.now() &&
+      session.authVersion === session.user.authVersion
+      ? session.user
+      : null;
   }
   async logout(token: string): Promise<void> {
     await this.db.client.session.deleteMany({ where: { tokenHash: digest(token) } });

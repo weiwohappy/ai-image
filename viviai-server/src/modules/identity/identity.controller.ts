@@ -30,7 +30,7 @@ export class IdentityController {
     @Inject(WalletService) private readonly wallet: WalletService,
   ) {}
   private async authenticated(user: PublicAccount, response: Response) {
-    response.cookie(SESSION_COOKIE, await this.identity.createSession(user.id), {
+    response.cookie(SESSION_COOKIE, await this.identity.createSession(user.id, user.authVersion), {
       httpOnly: true,
       sameSite: 'lax',
       secure: this.config.nodeEnv === 'production',

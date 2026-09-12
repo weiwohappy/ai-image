@@ -6,6 +6,7 @@ import request from 'supertest';
 import { createApp } from '../../src/main.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
 import { responseCookie } from '../helpers/http.js';
+import { IdentityService } from '../../src/modules/identity/identity.service.js';
 
 const origin = 'http://127.0.0.1:3000';
 const password = 'correct horse battery staple';
@@ -82,7 +83,7 @@ describe('authenticated account commands', () => {
     const secondLogin = await post('/auth/login', { account: 'new_name', password }).expect(201);
     const secondCookie = responseCookie(secondLogin);
     const nextEmail = 'changed@example.test';
-    const passwordCode = await code('account@example.test', 'change-password');
+    const passwordCode = await code(nextEmail, 'change-password');
 
     await post('/account/change-email', { email: nextEmail, code: passwordCode }, cookie).expect(400);
 
@@ -92,30 +93,68 @@ describe('authenticated account commands', () => {
     );
     expect(changed.body.data).toMatchObject({ email: nextEmail, username: 'new_name' });
     expect(changed.body.data).not.toHaveProperty('passwordHash');
+    await post('/account/change-email', { email: nextEmail, code: emailCode }, cookie).expect(400);
     await request(app.getHttpServer()).get('/api/me').set('Cookie', cookie).expect(200);
     await request(app.getHttpServer()).get('/api/me').set('Cookie', secondCookie).expect(401);
   });
 
   it('isolates change-password challenges, validates password length, and preserves the session', async () => {
-    const thirdLogin = await post('/auth/login', {
-      account: 'changed@example.test',
+    const passwordAccountCode = await code('password@example.test', 'register');
+    const passwordAccount = await post('/auth/register', {
+      email: 'password@example.test',
+      username: 'password_user',
       password,
+      code: passwordAccountCode,
     }).expect(201);
+    const passwordCookie = responseCookie(passwordAccount);
+    const thirdLogin = await post('/auth/login', { account: 'password_user', password }).expect(201);
     const thirdCookie = responseCookie(thirdLogin);
-    const emailCode = await code('wrong-purpose@example.test', 'change-email');
+    const nextPassword = 'a new correct horse battery';
+    const emailCode = await code('password@example.test', 'change-email');
 
-    await post('/account/change-password', { password: 'too short', code: emailCode }, cookie).expect(400);
+    await post('/account/change-password', { password: nextPassword, code: emailCode }, passwordCookie).expect(400);
 
-    const passwordCode = await code('changed@example.test', 'change-password');
-    await post('/account/change-password', { password: 'a new correct horse battery', code: passwordCode }, cookie).expect(
+    const passwordCode = await code('password@example.test', 'change-password');
+    await post('/account/change-password', { password: nextPassword, code: passwordCode }, passwordCookie).expect(201);
+    await post('/account/change-password', { password: 'yet another correct horse battery', code: passwordCode }, passwordCookie).expect(400);
+    await request(app.getHttpServer()).get('/api/me').set('Cookie', passwordCookie).expect(200);
+    await request(app.getHttpServer()).get('/api/me').set('Cookie', thirdCookie).expect(401);
+    await post('/auth/login', { account: 'password_user', password }).expect(401);
+    await post('/auth/login', {
+      account: 'password_user',
+      password: nextPassword,
+    }).expect(201);
+  });
+
+  it('invalidates delayed concurrent login sessions after email and password changes', async () => {
+    const raceCode = await code('race@example.test', 'register');
+    const raceRegistration = await post('/auth/register', {
+      email: 'race@example.test',
+      username: 'race_user',
+      password,
+      code: raceCode,
+    }).expect(201);
+    const raceCookie = responseCookie(raceRegistration);
+    const identity = app.get(IdentityService);
+
+    const emailLogin = await identity.login('race_user', password);
+    const changedEmail = 'race-changed@example.test';
+    const emailCode = await code(changedEmail, 'change-email');
+    await post('/account/change-email', { email: changedEmail, code: emailCode }, raceCookie).expect(201);
+    await expect(identity.createSession(emailLogin.id, emailLogin.authVersion)).rejects.toMatchObject({
+      code: 'INVALID_CREDENTIALS',
+    });
+    await request(app.getHttpServer()).get('/api/me').set('Cookie', raceCookie).expect(200);
+
+    const passwordLogin = await identity.login('race_user', password);
+    const newPassword = 'race new correct horse battery';
+    const passwordCode = await code(changedEmail, 'change-password');
+    await post('/account/change-password', { password: newPassword, code: passwordCode }, raceCookie).expect(
       201,
     );
-    await request(app.getHttpServer()).get('/api/me').set('Cookie', cookie).expect(200);
-    await request(app.getHttpServer()).get('/api/me').set('Cookie', thirdCookie).expect(401);
-    await post('/auth/login', { account: 'new_name', password }).expect(401);
-    await post('/auth/login', {
-      account: 'new_name',
-      password: 'a new correct horse battery',
-    }).expect(201);
+    await expect(identity.createSession(passwordLogin.id, passwordLogin.authVersion)).rejects.toMatchObject({
+      code: 'INVALID_CREDENTIALS',
+    });
+    await request(app.getHttpServer()).get('/api/me').set('Cookie', raceCookie).expect(200);
   });
 });

@@ -5,6 +5,9 @@ import type { DbTransaction } from './database.service.js';
 export async function lockWallet(tx: DbTransaction, userId: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`wallet:${userId}`}, 0))`;
 }
+export async function lockUserAuth(tx: DbTransaction, userId: string): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`auth:${userId}`}, 0))`;
+}
 export function safeInteger(value: bigint): number {
   if (value > BigInt(Number.MAX_SAFE_INTEGER) || value < BigInt(Number.MIN_SAFE_INTEGER))
     throw new Error('Unsafe integer serialization');

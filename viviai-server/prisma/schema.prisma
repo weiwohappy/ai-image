@@ -19,6 +19,7 @@ model User {
   email            String            @unique
   username         String            @unique
   passwordHash     String            @map("password_hash")
+  authVersion      Int               @default(1) @map("auth_version")
   avatarAssetId    String?           @unique @map("avatar_asset_id") @db.Uuid
   inviteCode       String            @unique @default(uuid()) @map("invite_code")
   invitedByUserId  String?           @map("invited_by_user_id") @db.Uuid
@@ -45,6 +46,7 @@ model Session {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @map("user_id") @db.Uuid
   tokenHash String   @unique @map("token_hash")
+  authVersion Int    @default(1) @map("auth_version")
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 

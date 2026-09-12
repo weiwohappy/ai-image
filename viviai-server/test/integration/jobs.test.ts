@@ -42,7 +42,7 @@ describe('quoted idempotent job acceptance', () => {
       data: { id, email: `${id}@example.test`, username: id, passwordHash: 'unused' },
     });
     await db.database.transaction((tx) => wallet.grant(tx, id, 'test-promo', credits, null));
-    return { id, cookie: `viviai_session=${await app.get(IdentityService).createSession(id)}` };
+    return { id, cookie: `viviai_session=${await app.get(IdentityService).createSession(id, 1)}` };
   }
   const post = (path: string, cookie: string, body: object, key = randomUUID()) =>
     request(app.getHttpServer())

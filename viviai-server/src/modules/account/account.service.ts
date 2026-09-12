@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { DatabaseService } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
-import { safeInteger } from '../../shared/database/locks.js';
+import { lockUserAuth, safeInteger } from '../../shared/database/locks.js';
 import {
   accountDto,
   hashPassword,
@@ -29,6 +29,7 @@ const userSelect = {
   username: true,
   avatarAssetId: true,
   inviteCode: true,
+  authVersion: true,
 } as const;
 
 @Injectable()
@@ -70,12 +71,19 @@ export class AccountService {
   ): Promise<AccountDto> {
     try {
       const user = await this.challenges.consume(input.email, 'change-email', input.code, async (tx) => {
+        await lockUserAuth(tx, userId);
         const updated = await tx.user.update({
           where: { id: userId },
-          data: { email: input.email },
+          data: { email: input.email, authVersion: { increment: 1 } },
           select: userSelect,
         });
         await tx.session.deleteMany({ where: { userId, tokenHash: { not: currentTokenHash } } });
+        const preserved = await tx.session.updateMany({
+          where: { userId, tokenHash: currentTokenHash },
+          data: { authVersion: updated.authVersion },
+        });
+        if (preserved.count !== 1)
+          throw new AppError(401, 'AUTH_REQUIRED', 'Please sign in');
         return updated;
       });
       return this.publicAccount(user);
@@ -97,14 +105,21 @@ export class AccountService {
       'change-password',
       input.code,
       async (tx) => {
+        await lockUserAuth(tx, user.id);
         const result = await tx.user.update({
           where: { id: user.id },
-          data: { passwordHash },
+          data: { passwordHash, authVersion: { increment: 1 } },
           select: userSelect,
         });
         await tx.session.deleteMany({
           where: { userId: user.id, tokenHash: { not: currentTokenHash } },
         });
+        const preserved = await tx.session.updateMany({
+          where: { userId: user.id, tokenHash: currentTokenHash },
+          data: { authVersion: result.authVersion },
+        });
+        if (preserved.count !== 1)
+          throw new AppError(401, 'AUTH_REQUIRED', 'Please sign in');
         return result;
       },
     );
