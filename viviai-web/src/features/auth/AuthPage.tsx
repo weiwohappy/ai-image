@@ -29,6 +29,8 @@ export function AuthPage({ mode }: { mode: Mode }) {
   const [countdown, setCountdown] = useState(0);
   const [formError, setFormError] = useState('');
   const redirect = new URLSearchParams(location.search).get('redirect') ?? '/create';
+  const invite = new URLSearchParams(location.search).get('invite')?.trim().toUpperCase();
+  const inviteCode = invite && /^[A-Z0-9-]{4,64}$/.test(invite) ? invite : undefined;
 
   useEffect(() => {
     if (mode === 'login') rememberAuthRedirect(redirect);
@@ -49,7 +51,7 @@ export function AuthPage({ mode }: { mode: Mode }) {
       if (password !== confirmPassword) throw new Error('两次输入的密码不一致。');
       if (mode === 'register') {
         if (!/^[a-z0-9_]{3,32}$/.test(username.trim().toLowerCase())) throw new Error('用户名需为 3–32 位字母、数字或下划线。');
-        return api.register({ username, email: account, password, code });
+        return api.register({ username, email: account, password, code, ...(inviteCode ? { inviteCode } : {}) });
       }
       await api.resetPassword({ email: account, code, password });
       return null;

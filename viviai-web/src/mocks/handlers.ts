@@ -594,6 +594,20 @@ export const handlers = [
     const item = db.notifications.find((candidate) => candidate.id === params.id);
     return item ? ok(item) : fail(404, 'INVALID_INPUT', '通知不存在。');
   }),
+  http.post(`${api}/notifications/read-all`, () => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    let updated = 0;
+    mutateDb((draft) => {
+      for (const item of draft.notifications) {
+        if (!item.read) {
+          item.read = true;
+          updated += 1;
+        }
+      }
+    });
+    return ok({ updated });
+  }),
   http.get(`${api}/invites`, () => {
     const unauthorized = authError();
     return unauthorized ?? ok(loadDb().invites);
@@ -601,15 +615,22 @@ export const handlers = [
   http.patch(`${api}/account/profile`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
-    const input = (await request.json()) as { username: string; avatarUrl?: string };
+    const input = (await request.json()) as { username: string };
     if (!input.username.trim()) return fail(400, 'INVALID_INPUT', '用户名不能为空。');
     const db = mutateDb((draft) => {
       draft.user.username = input.username.trim();
-      if (input.avatarUrl !== undefined) draft.user.avatarUrl = input.avatarUrl;
     });
     return ok(db.user, '资料已更新');
   }),
-  http.post(`${api}/account/email`, async ({ request }) => {
+  http.post(`${api}/account/avatar`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const file = (await request.formData()).get('file');
+    if (!(file instanceof File) || !file.type.startsWith('image/')) return fail(400, 'ASSET_INVALID', '头像必须是图片。');
+    const db = mutateDb((draft) => { draft.user.avatarUrl = '/api/assets/mock-avatar/content'; });
+    return ok(db.user, '头像已更新');
+  }),
+  http.post(`${api}/account/change-email`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { email: string; code: string };
@@ -617,14 +638,14 @@ export const handlers = [
     const db = mutateDb((draft) => { draft.user.email = input.email.trim(); });
     return ok(db.user, '邮箱已更新');
   }),
-  http.post(`${api}/account/password`, async ({ request }) => {
+  http.post(`${api}/account/change-password`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { code: string; password: string };
     if (input.code !== '123456' || input.password.length < 8) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 8 位。');
     const passwordHash = await credentialHash(input.password);
     setCredentialHash(passwordHash);
-    return ok({ success: true as const }, '密码已更新');
+    return ok(loadDb().user, '密码已更新');
   }),
   http.post(`${api}/account/redeem`, async ({ request }) => {
     const unauthorized = authError();

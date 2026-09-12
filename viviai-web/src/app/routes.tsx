@@ -41,7 +41,7 @@ export function AppRoutes() {
         <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
         <Route path="/pricing" element={<PricingPage />} />
         <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />
-        <Route path="/invite" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="邀请奖励暂未接入真实接口" /> : <InvitePage />}</ProtectedRoute>} />
+        <Route path="/invite" element={<ProtectedRoute><InvitePage /></ProtectedRoute>} />
       </Route>
       <Route path="/" element={<Navigate to="/create" replace />} />
       <Route path="*" element={<Navigate to="/create" replace />} />

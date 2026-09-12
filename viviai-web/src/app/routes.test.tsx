@@ -7,7 +7,10 @@ import { server } from '@/src/mocks/server';
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 beforeEach(() => resetDb());
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 afterAll(() => server.close());
 
 describe('application routes', () => {
@@ -47,5 +50,14 @@ describe('application routes', () => {
 
     const remixLink = await screen.findByRole('link', { name: '爆款复刻' });
     expect(remixLink.querySelector('button')).toBeNull();
+  });
+
+  it('keeps the invite page and notification control available in real API mode', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    window.location.hash = '#/invite';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: /邀请朋友一起创作/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: '查看通知' })).toBeVisible();
   });
 });

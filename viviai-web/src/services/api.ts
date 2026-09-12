@@ -118,8 +118,8 @@ export const api = {
   },
   login: (input: { account: string; password: string }) => request<User>('/auth/login', { method: 'POST', body: JSON.stringify(input) }),
   logout: () => request<null>('/auth/logout', { method: 'POST' }),
-  register: (input: { username: string; email: string; password: string; code: string }) => request<User>('/auth/register', { method: 'POST', body: JSON.stringify(input) }),
-  sendCode: (email: string, purpose: 'register' | 'reset-password' = 'register') => request<{ expiresIn: number }>('/auth/send-code', { method: 'POST', body: JSON.stringify({ email, purpose }) }),
+  register: (input: { username: string; email: string; password: string; code: string; inviteCode?: string }) => request<User>('/auth/register', { method: 'POST', body: JSON.stringify(input) }),
+  sendCode: (email: string, purpose: 'register' | 'reset-password' | 'change-email' | 'change-password' = 'register') => request<{ expiresIn: number }>('/auth/send-code', { method: 'POST', body: JSON.stringify({ email, purpose }) }),
   resetPassword: (input: { email: string; code: string; password: string }) => request<{ success: true }>('/auth/reset-password', { method: 'POST', body: JSON.stringify(input) }),
   listModels: async () => (await request<unknown[]>('/models')).map(normalizeModelDto),
   createGenerationQuote: (input: unknown) => request<GenerationQuote>('/generation-quotes', { method: 'POST', body: JSON.stringify(input) }),
@@ -164,10 +164,16 @@ export const api = {
   listPointLedger: async () => normalizeLedgerDtos(await request<unknown[]>('/point-ledger')),
   listNotifications: () => request<NotificationItem[]>('/notifications'),
   markNotificationRead: (id: string) => request<NotificationItem>(`/notifications/${id}/read`, { method: 'POST' }),
+  markAllNotificationsRead: () => request<{ updated: number }>('/notifications/read-all', { method: 'POST' }),
   listInvites: () => request<InviteRelation[]>('/invites'),
-  updateProfile: (input: { username: string; avatarUrl?: string }) => request<User>('/account/profile', { method: 'PATCH', body: JSON.stringify(input) }),
-  changeEmail: (input: { email: string; code: string }) => request<User>('/account/email', { method: 'POST', body: JSON.stringify(input) }),
-  changePassword: (input: { code: string; password: string }) => request<{ success: true }>('/account/password', { method: 'POST', body: JSON.stringify(input) }),
-  redeemCode: (code: string) => request<User>('/account/redeem', { method: 'POST', body: JSON.stringify({ code }) }),
+  updateProfile: (input: { username: string }) => request<User>('/account/profile', { method: 'PATCH', body: JSON.stringify(input) }),
+  uploadAvatar: (file: File) => {
+    const body = new FormData();
+    body.set('file', file);
+    return request<User>('/account/avatar', { method: 'POST', body });
+  },
+  changeEmail: (input: { email: string; code: string }) => request<User>('/account/change-email', { method: 'POST', body: JSON.stringify(input) }),
+  changePassword: (input: { code: string; password: string }) => request<User>('/account/change-password', { method: 'POST', body: JSON.stringify(input) }),
+  redeemCode: (code: string, idempotencyKey: string) => request<User>('/account/redeem', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ code }) }),
   resetDemoData: () => request<{ success: true }>('/mock/reset', { method: 'POST' }),
 };

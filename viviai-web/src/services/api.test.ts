@@ -109,4 +109,38 @@ describe('frontend API transport', () => {
     expect(uploadInit.body).toBeInstanceOf(FormData);
     expect(Array.from((uploadInit.body as FormData).keys())).toEqual(['file']);
   });
+
+  it('uses account-engagement paths, purpose-bound codes, multipart avatars, and redemption idempotency', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
+      jsonResponse({
+        data: { id: 'user-1', credits: 240 },
+        message: 'ok',
+        requestId: 'req-engagement',
+      }),
+    );
+    const avatar = new File(['avatar'], 'avatar.png', { type: 'image/png' });
+
+    await api.sendCode('new@example.com', 'change-email');
+    await api.sendCode('current@example.com', 'change-password');
+    await api.uploadAvatar(avatar);
+    await api.markAllNotificationsRead();
+    await api.redeemCode('VIVIAI-2026', 'redeem-attempt-1234');
+
+    const [emailCodeUrl, emailCodeInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(emailCodeUrl).toMatch(/\/api\/auth\/send-code$/);
+    expect(jsonBody(emailCodeInit)).toEqual({ email: 'new@example.com', purpose: 'change-email' });
+    const [, passwordCodeInit] = fetchMock.mock.calls[1] as [string, RequestInit];
+    expect(jsonBody(passwordCodeInit)).toEqual({ email: 'current@example.com', purpose: 'change-password' });
+    const [avatarUrl, avatarInit] = fetchMock.mock.calls[2] as [string, RequestInit];
+    expect(avatarUrl).toMatch(/\/api\/account\/avatar$/);
+    expect(avatarInit.body).toBeInstanceOf(FormData);
+    expect(Array.from((avatarInit.body as FormData).keys())).toEqual(['file']);
+    expect((avatarInit.headers as Headers).has('Content-Type')).toBe(false);
+    expect(fetchMock.mock.calls[3]?.[0]).toMatch(/\/api\/notifications\/read-all$/);
+    const [redeemUrl, redeemInit] = fetchMock.mock.calls[4] as [string, RequestInit];
+    expect(redeemUrl).toMatch(/\/api\/account\/redeem$/);
+    expect((redeemInit.headers as Headers).get('Idempotency-Key')).toBe('redeem-attempt-1234');
+    expect(jsonBody(redeemInit)).toEqual({ code: 'VIVIAI-2026' });
+  });
 });

@@ -162,8 +162,8 @@ describe('Mock workflow and account boundaries', () => {
   });
 
   it('redeems a code only once', async () => {
-    await expect(api.redeemCode('viviai2026')).resolves.toMatchObject({ credits: 1220 });
-    await expect(api.redeemCode('VIVIAI2026')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.redeemCode('viviai2026', 'mock-redeem-attempt-1')).resolves.toMatchObject({ credits: 1220 });
+    await expect(api.redeemCode('VIVIAI2026', 'mock-redeem-attempt-2')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
     expect(loadDb().ledger.filter((entry) => entry.type === 'redeem')).toHaveLength(1);
   });
 
