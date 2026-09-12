@@ -4,9 +4,11 @@ import { z } from 'zod';
 import type { Asset } from '../../generated/prisma/client.js';
 import { DatabaseService } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
+import type { PublicAccount } from '../identity/identity.service.js';
 import type { ObjectStore } from './object-store.js';
 import { validateImage } from './image-validation.js';
 export const ASSET_STORE = Symbol('ASSET_STORE');
+export const AVATAR_MAX_IMAGE_BYTES = 1024 * 1024;
 export type AssetRecord = Asset;
 export interface AssetDto {
   id: string;
@@ -77,6 +79,52 @@ export class AssetService {
         },
       });
       return assetDto(asset);
+    } catch (error) {
+      await this.store.delete(objectKey).catch(() => undefined);
+      throw error;
+    }
+  }
+  async uploadAvatar(userId: string, bytes: Uint8Array, name: string): Promise<PublicAccount> {
+    const cleanName = validName(name);
+    let image: Awaited<ReturnType<typeof validateImage>>;
+    try {
+      image = await validateImage(bytes, AVATAR_MAX_IMAGE_BYTES);
+    } catch (error) {
+      if (error instanceof AppError && error.status === 413) throw error;
+      throw new AppError(400, 'ASSET_INVALID', 'Use a valid avatar image up to 1 MiB');
+    }
+    const id = randomUUID();
+    const objectKey = `assets/${userId}/${id}.png`;
+    await this.store.put(objectKey, image.bytes, image.contentType);
+    try {
+      return await this.db.transaction(async (tx) => {
+        await tx.asset.create({
+          data: {
+            id,
+            userId,
+            objectKey,
+            name: cleanName,
+            source: 'upload',
+            width: image.width,
+            height: image.height,
+            byteSize: image.bytes.byteLength,
+            contentType: image.contentType,
+            sha256: createHash('sha256').update(image.bytes).digest('hex'),
+          },
+        });
+        return tx.user.update({
+          where: { id: userId },
+          data: { avatarAssetId: id },
+          select: {
+            id: true,
+            email: true,
+            username: true,
+            avatarAssetId: true,
+            inviteCode: true,
+            authVersion: true,
+          },
+        });
+      });
     } catch (error) {
       await this.store.delete(objectKey).catch(() => undefined);
       throw error;

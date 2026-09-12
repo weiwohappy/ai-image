@@ -9,6 +9,7 @@ import {
 } from '../identity/identity.service.js';
 import { EmailChallengeService } from '../identity/challenge.service.js';
 import { WalletService } from '../wallet/wallet.service.js';
+import { AssetService } from '../assets/assets.service.js';
 
 export interface AccountDto {
   id: string;
@@ -38,6 +39,7 @@ export class AccountService {
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(EmailChallengeService) private readonly challenges: EmailChallengeService,
     @Inject(WalletService) private readonly wallet: WalletService,
+    @Inject(AssetService) private readonly assets: AssetService,
   ) {}
 
   async publicAccount(user: PublicAccount): Promise<AccountDto> {
@@ -62,6 +64,10 @@ export class AccountService {
         throw new AppError(409, 'USERNAME_TAKEN', 'Username is already registered');
       throw error;
     }
+  }
+
+  async uploadAvatar(userId: string, bytes: Uint8Array, name: string): Promise<AccountDto> {
+    return this.publicAccount(await this.assets.uploadAvatar(userId, bytes, name));
   }
 
   async changeEmail(
