@@ -8,7 +8,7 @@ import AdminApp from '../AdminApp';
 import { ContentEditor } from './ContentEditor';
 import { ContentListPage } from './ContentListPage';
 import { MediaLibraryPage } from './MediaLibraryPage';
-import type { InspirationRecord } from './contracts';
+import type { InspirationRecord, ToolRecord } from './contracts';
 
 const contentActor: AdminActor = {
   id: 'content-admin',
@@ -52,6 +52,48 @@ const inspiration: InspirationRecord = {
   publishedAt: null,
   createdAt: '2026-09-12T00:00:00.000Z',
   updatedAt: '2026-09-12T00:00:00.000Z',
+};
+
+const media = {
+  resourceId: 'a36646f8-c011-4186-81eb-b1cf764bf193',
+  id: 'a36646f8-c011-4186-81eb-b1cf764bf193',
+  externalId: 'content-media-a36646f8-c011-4186-81eb-b1cf764bf193',
+  contentType: 'image/png',
+  width: 16,
+  height: 16,
+  byteSize: 12,
+  sha256: 'a'.repeat(64),
+  status: 'draft' as const,
+  version: 1,
+  publishedAt: null,
+  createdAt: '2026-09-12T00:00:00.000Z',
+  updatedAt: '2026-09-12T00:00:00.000Z',
+  previewUrl: '/api/admin/content/media/a36646f8-c011-4186-81eb-b1cf764bf193/content',
+};
+
+const tool: ToolRecord = {
+  resourceId: 'db5b67c1-dddb-460b-b3ac-a31cf9cff32c',
+  id: 'db5b67c1-dddb-460b-b3ac-a31cf9cff32c',
+  externalId: 'white-background',
+  name: '白底图',
+  description: '商品白底图',
+  category: '电商',
+  fields: [],
+  promptTemplate: '将商品置于白色背景',
+  defaults: { modelId: 'gpt-image-2', resolution: '1K', ratio: '1:1', count: 1 },
+  maxAssets: 3,
+  maxOutputCount: 1,
+  assetLabel: '商品图',
+  defaultModelId: 'gpt-image-2',
+  defaultOutputSpecId: 'square_1k',
+  coverMediaExternalId: 'portrait-cover',
+  isNew: false,
+  status: 'draft',
+  sortOrder: 10,
+  version: 1,
+  publishedAt: null,
+  createdAt: inspiration.createdAt,
+  updatedAt: inspiration.updatedAt,
 };
 
 it('adds permission-filtered content and marketing navigation with icons owned by each item', () => {
@@ -152,6 +194,41 @@ it('warns before discarding a dirty content draft', async () => {
   expect(screen.getByDisplayValue('尚未保存')).toBeInTheDocument();
 });
 
+it('shares dirty protection with hash navigation and beforeunload', async () => {
+  window.history.replaceState(null, '', '#/content/inspirations');
+  const actor = {
+    ...contentActor,
+    permissions: [...contentActor.permissions, 'redemptions.read'],
+  };
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      if (url.endsWith('/status'))
+        return json({
+          enabled: true,
+          environment: 'development',
+          stage: 'B1',
+          teamWritesEnabled: true,
+        });
+      if (url.endsWith('/me')) return json(actor);
+      if (url.includes('/content/inspirations?')) return json({ rows: [], nextCursor: null });
+      if (url.includes('/redemption-campaigns?')) return json({ rows: [], nextCursor: null });
+      throw new Error(`unexpected route ${url}`);
+    }),
+  );
+  render(<AdminApp />);
+  fireEvent.click(await screen.findByRole('button', { name: '新建灵感' }));
+  fireEvent.change(screen.getByLabelText('标题'), { target: { value: '未保存的全局草稿' } });
+  const unload = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(unload);
+  expect(unload.defaultPrevented).toBe(true);
+  fireEvent.click(screen.getByRole('link', { name: '兑换活动', hidden: true }));
+  expect(await screen.findByRole('heading', { name: '离开并放弃修改？' })).toBeInTheDocument();
+  expect(window.location.hash).toBe('#/content/inspirations');
+  fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+  expect(screen.getByDisplayValue('未保存的全局草稿')).toBeInTheDocument();
+});
+
 it('rejects sensitive material in audit reasons before issuing a request', async () => {
   const fetcher = vi.fn();
   vi.stubGlobal('fetch', fetcher);
@@ -193,7 +270,7 @@ it('hides published edit and reorder commands without publish authority', async 
   expect(screen.queryByRole('button', { name: '上移studio-portrait' })).not.toBeInTheDocument();
 });
 
-it('binds publish field errors and reloads a conflict version without losing the draft', async () => {
+it('requires an explicit field merge before resubmitting a content conflict with the latest version', async () => {
   const latest = { ...inspiration, version: 2, title: '另一位同事保存的标题' };
   const fetcher = vi
     .fn()
@@ -211,7 +288,8 @@ it('binds publish field errors and reloads a conflict version without losing the
       ),
     )
     .mockResolvedValueOnce(json(null, 409))
-    .mockResolvedValueOnce(json(latest));
+    .mockResolvedValueOnce(json(latest))
+    .mockResolvedValueOnce(json({ ...latest, title: '保留我的草稿标题', version: 3 }));
   vi.stubGlobal('fetch', fetcher);
   const view = render(
     <ContentEditor
@@ -225,6 +303,10 @@ it('binds publish field errors and reloads a conflict version without losing the
     />,
   );
   fireEvent.click(screen.getByRole('button', { name: '发布内容' }));
+  expect(screen.getByRole('dialog')).toHaveAccessibleName('确认发布内容');
+  expect(screen.getByRole('dialog')).toHaveAccessibleDescription(
+    '此操作会改变内容生命周期，请填写原因。',
+  );
   fireEvent.change(screen.getByLabelText('发布原因'), {
     target: { value: '内容和媒体已经完成审核' },
   });
@@ -239,31 +321,23 @@ it('binds publish field errors and reloads a conflict version without losing the
   fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
   expect(await screen.findByRole('button', { name: '加载最新版本' })).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: '加载最新版本' }));
-  expect(await screen.findByText('已加载最新版本 v2')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: '解决字段冲突' })).toBeInTheDocument();
+  expect(screen.getByText('服务端：另一位同事保存的标题')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '保留我的 标题' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '保存修改' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '保留我的 标题' }));
+  expect(await screen.findByText('冲突已合并，将基于 v2 保存')).toBeInTheDocument();
   expect(screen.getByLabelText('标题')).toHaveValue('保留我的草稿标题');
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
   view.unmount();
-  expect(JSON.parse(String((fetcher.mock.calls[1]![1] as RequestInit).body))).toMatchObject({
-    version: 1,
+  expect(JSON.parse(String((fetcher.mock.calls[3]![1] as RequestInit).body))).toMatchObject({
+    version: 2,
+    title: '保留我的草稿标题',
   });
 });
 
 it('uploads content media as FormData and requires confirmation for lifecycle changes', async () => {
-  const media = {
-    resourceId: 'a36646f8-c011-4186-81eb-b1cf764bf193',
-    id: 'a36646f8-c011-4186-81eb-b1cf764bf193',
-    externalId: 'content-media-a36646f8-c011-4186-81eb-b1cf764bf193',
-    contentType: 'image/png',
-    width: 16,
-    height: 16,
-    byteSize: 12,
-    sha256: 'a'.repeat(64),
-    status: 'draft',
-    version: 1,
-    publishedAt: null,
-    createdAt: '2026-09-12T00:00:00.000Z',
-    updatedAt: '2026-09-12T00:00:00.000Z',
-    previewUrl: '/api/admin/content/media/a36646f8-c011-4186-81eb-b1cf764bf193/content',
-  } as const;
   const fetcher = vi
     .fn()
     .mockResolvedValueOnce(json({ rows: [], nextCursor: null }))
@@ -282,4 +356,121 @@ it('uploads content media as FormData and requires confirmation for lifecycle ch
   const upload = fetcher.mock.calls[1]![1] as RequestInit;
   expect(upload.body).toBeInstanceOf(FormData);
   expect(upload.headers).not.toHaveProperty('Content-Type');
+});
+
+it.each([
+  ['draft', '发布', 'published', '/transition'],
+  ['published', '下线', 'offline', '/transition'],
+  ['offline', '归档', 'archived', '/archive'],
+] as const)(
+  'allows media %s lifecycle %s with the real write permission',
+  async (status, label, target, suffix) => {
+    const row = { ...media, status, version: 4 };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(json({ rows: [row], nextCursor: null }))
+      .mockResolvedValueOnce(json({ ...row, status: target, version: 5 }, 201))
+      .mockResolvedValueOnce(json({ rows: [], nextCursor: null }));
+    vi.stubGlobal('fetch', fetcher);
+    render(<MediaLibraryPage actor={contentActor} client={new AdminClient()} writeEnabled />);
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    const reason = screen.getByLabelText('状态变更原因');
+    fireEvent.change(reason, { target: { value: `完成媒体${label}审核流程` } });
+    fireEvent.click(screen.getByRole('button', { name: '确认变更' }));
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+    expect(fetcher.mock.calls[1]![0]).toBe(`/api/admin/content/media/${row.id}${suffix}`);
+    expect(JSON.parse(String((fetcher.mock.calls[1]![1] as RequestInit).body))).toMatchObject({
+      version: 4,
+      ...(target === 'archived' ? {} : { status: target }),
+    });
+  },
+);
+
+it('binds lifecycle reason validation to the active confirmation field and focuses it', async () => {
+  vi.stubGlobal('fetch', vi.fn());
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: '发布内容' }));
+  const reason = screen.getByLabelText('发布原因');
+  fireEvent.change(reason, { target: { value: 'api_key=secret' } });
+  fireEvent.click(screen.getByRole('button', { name: '确认发布' }));
+  expect(reason).toHaveAttribute('aria-invalid', 'true');
+  expect(reason).toHaveFocus();
+  expect(screen.getByText('原因中不得包含 API 密钥、提示词或图片内容')).toBeInTheDocument();
+});
+
+it('rejects a tool JSON array before dereferencing or sending it', async () => {
+  const fetcher = vi.fn();
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <ContentEditor
+      kind="tools"
+      record={tool}
+      actor={{
+        ...contentActor,
+        permissions: [...contentActor.permissions, 'content.tools.write'],
+      }}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('字段与生成限制 JSON'), {
+    target: { value: '[]' },
+  });
+  fireEvent.change(screen.getByLabelText('操作原因'), {
+    target: { value: '修改工具字段定义' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  expect(screen.getByText('JSON 顶层必须是对象')).toBeInTheDocument();
+  expect(screen.getByLabelText('字段与生成限制 JSON')).toHaveAttribute('aria-invalid', 'true');
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it('sends strict updated-time filters for content and media and clears pagination state', async () => {
+  const fetcher = vi
+    .fn()
+    .mockImplementation(() => Promise.resolve(json({ rows: [], nextCursor: null })));
+  vi.stubGlobal('fetch', fetcher);
+  const content = render(
+    <ContentListPage
+      kind="inspirations"
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+    />,
+  );
+  await screen.findByText('没有符合条件的内容');
+  fireEvent.change(screen.getByLabelText('更新开始时间'), {
+    target: { value: '2026-10-01T09:00' },
+  });
+  fireEvent.change(screen.getByLabelText('更新结束时间'), {
+    target: { value: '2026-10-02T09:00' },
+  });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://admin.test');
+    expect(url.searchParams.get('updatedFrom')).toBe(new Date('2026-10-01T09:00').toISOString());
+    expect(url.searchParams.get('updatedTo')).toBe(new Date('2026-10-02T09:00').toISOString());
+  });
+  content.unmount();
+  fetcher.mockClear();
+  render(<MediaLibraryPage actor={contentActor} client={new AdminClient()} writeEnabled />);
+  await screen.findByText('尚无内容媒体');
+  fireEvent.change(screen.getByLabelText('更新开始时间'), {
+    target: { value: '2026-10-03T09:00' },
+  });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://admin.test');
+    expect(url.searchParams.get('updatedFrom')).toBe(new Date('2026-10-03T09:00').toISOString());
+  });
 });

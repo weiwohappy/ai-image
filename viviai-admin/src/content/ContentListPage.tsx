@@ -8,6 +8,8 @@ import { useAdminQuery } from '../useQuery';
 import { ContentEditor } from './ContentEditor';
 import type { ContentKind, ContentPage, ContentRecord, ToolRecord } from './contracts';
 import { ToolDefinitionEditor } from './ToolDefinitionEditor';
+import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
+import { useCommandAttempt } from '../operations/useCommandAttempt';
 
 const copy = {
   inspirations: { title: '灵感库', create: '新建灵感', singular: '灵感' },
@@ -30,13 +32,24 @@ export function ContentListPage({
   const [queryText, setQueryText] = useState('');
   const [status, setStatus] = useState('');
   const [tag, setTag] = useState('');
+  const [updatedFrom, setUpdatedFrom] = useState('');
+  const [updatedTo, setUpdatedTo] = useState('');
   const [cursor, setCursor] = useState('');
   const [editor, setEditor] = useState<ContentRecord | 'new'>();
   const [commandError, setCommandError] = useState('');
+  const reorderAttempt = useCommandAttempt();
+  useBeforeUnloadGuard(reorderAttempt.pending);
+  useDirtyRegistration({ dirty: false, pending: reorderAttempt.pending, discard: () => undefined });
   const params = new URLSearchParams({ limit: '30' });
+  const timeFilterInvalid = Boolean(
+    updatedFrom && updatedTo && Date.parse(updatedFrom) >= Date.parse(updatedTo),
+  );
   if (queryText.trim()) params.set('q', queryText.trim());
   if (status) params.set('status', status);
   if (tag.trim() && kind !== 'tools') params.set('tag', tag.trim());
+  if (updatedFrom && !timeFilterInvalid)
+    params.set('updatedFrom', new Date(updatedFrom).toISOString());
+  if (updatedTo && !timeFilterInvalid) params.set('updatedTo', new Date(updatedTo).toISOString());
   if (cursor) params.set('cursor', cursor);
   const path = `/content/${kind}?${params}`;
   const result = useAdminQuery<ContentPage>(client, path, revision);
@@ -53,16 +66,14 @@ export function ContentListPage({
   async function move(row: ContentRecord, offset: number) {
     setCommandError('');
     try {
-      await client.command(
-        'POST',
-        `/content/${kind}/reorder`,
-        {
-          reason: '调整运营列表的展示顺序',
-          items: [
-            { id: row.id, version: row.version, sortOrder: Math.max(0, row.sortOrder + offset) },
-          ],
-        },
-        crypto.randomUUID(),
+      const body = {
+        reason: '调整运营列表的展示顺序',
+        items: [
+          { id: row.id, version: row.version, sortOrder: Math.max(0, row.sortOrder + offset) },
+        ],
+      };
+      await reorderAttempt.run(body, (key) =>
+        client.command('POST', `/content/${kind}/reorder`, body, key),
       );
       refresh();
     } catch (failure) {
@@ -113,7 +124,36 @@ export function ContentListPage({
               />
             </label>
           )}
+          <label>
+            更新开始时间
+            <Input
+              type="datetime-local"
+              value={updatedFrom}
+              aria-invalid={timeFilterInvalid}
+              onChange={(e) => {
+                setUpdatedFrom(e.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
+          <label>
+            更新结束时间
+            <Input
+              type="datetime-local"
+              value={updatedTo}
+              aria-invalid={timeFilterInvalid}
+              onChange={(e) => {
+                setUpdatedTo(e.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
         </div>
+        {timeFilterInvalid && (
+          <p className="field-error" role="alert">
+            更新开始时间必须早于结束时间
+          </p>
+        )}
         <div className="team-form-actions">
           <Button variant="outline" onClick={refresh}>
             <RefreshCw size={15} />
@@ -185,6 +225,7 @@ export function ContentListPage({
                           <Button
                             size="sm"
                             variant="ghost"
+                            disabled={reorderAttempt.pending}
                             aria-label={`上移${row.externalId}`}
                             onClick={() => void move(row, -10)}
                           >
@@ -193,6 +234,7 @@ export function ContentListPage({
                           <Button
                             size="sm"
                             variant="ghost"
+                            disabled={reorderAttempt.pending}
                             aria-label={`下移${row.externalId}`}
                             onClick={() => void move(row, 10)}
                           >

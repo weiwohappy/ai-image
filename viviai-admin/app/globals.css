@@ -165,13 +165,13 @@
   background: white;
   box-shadow: 0 22px 70px #18223026;
 }
-.operation-confirm::before {
-  content: '';
+.operation-dialog-backdrop {
   position: fixed;
-  z-index: -1;
-  inset: -100vh -100vw;
+  z-index: 79;
+  inset: 0;
   background: #1822304d;
 }
+.operation-confirm h2,
 .operation-confirm h3 {
   margin: 0;
   font-size: 18px;

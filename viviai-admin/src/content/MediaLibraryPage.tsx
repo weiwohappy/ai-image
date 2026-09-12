@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { ImageUp, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -6,6 +6,9 @@ import { Textarea } from '@/components/ui/textarea';
 import type { AdminActor } from '../contracts';
 import { AdminClient, errorText } from '../http';
 import { useAdminQuery } from '../useQuery';
+import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
+import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
+import { useCommandAttempt } from '../operations/useCommandAttempt';
 import type { ContentMediaPage, ContentMediaRecord, Lifecycle } from './contracts';
 
 function safePreview(row: ContentMediaRecord): string | undefined {
@@ -26,17 +29,41 @@ export function MediaLibraryPage({
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState('');
   const [queryText, setQueryText] = useState('');
+  const [updatedFrom, setUpdatedFrom] = useState('');
+  const [updatedTo, setUpdatedTo] = useState('');
   const [cursor, setCursor] = useState('');
   const [file, setFile] = useState<File>();
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [changing, setChanging] = useState<{ row: ContentMediaRecord; status: Lifecycle }>();
   const [changeReason, setChangeReason] = useState('');
+  const [changeError, setChangeError] = useState('');
+  const changeReasonRef = useRef<HTMLTextAreaElement>(null);
   const canWrite = writeEnabled && actor.permissions.includes('content.media.write');
-  const canPublish = canWrite && actor.permissions.includes('content.media.publish');
+  const uploadAttempt = useCommandAttempt();
+  const transitionAttempt = useCommandAttempt();
+  const pending = uploadAttempt.pending || transitionAttempt.pending;
+  const dirty = Boolean(file || reason || changing || changeReason);
+  useBeforeUnloadGuard(dirty || pending);
+  useDirtyRegistration({
+    dirty,
+    pending,
+    discard: () => {
+      setFile(undefined);
+      setReason('');
+      setChanging(undefined);
+      setChangeReason('');
+    },
+  });
   const params = new URLSearchParams({ limit: '30' });
+  const timeFilterInvalid = Boolean(
+    updatedFrom && updatedTo && Date.parse(updatedFrom) >= Date.parse(updatedTo),
+  );
   if (status) params.set('status', status);
   if (queryText.trim()) params.set('q', queryText.trim());
+  if (updatedFrom && !timeFilterInvalid)
+    params.set('updatedFrom', new Date(updatedFrom).toISOString());
+  if (updatedTo && !timeFilterInvalid) params.set('updatedTo', new Date(updatedTo).toISOString());
   if (cursor) params.set('cursor', cursor);
   const result = useAdminQuery<ContentMediaPage>(client, `/content/media?${params}`, revision);
   const refresh = () => {
@@ -46,6 +73,7 @@ export function MediaLibraryPage({
 
   async function upload(event: FormEvent) {
     event.preventDefault();
+    if (pending) return;
     setError('');
     if (!file) return setError('请选择要上传的图片');
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type))
@@ -58,7 +86,10 @@ export function MediaLibraryPage({
     body.set('file', file);
     body.set('reason', reason.trim());
     try {
-      await client.upload('/content/media', body, crypto.randomUUID());
+      await uploadAttempt.run(
+        { name: file.name, size: file.size, type: file.type, reason: reason.trim() },
+        (key) => client.upload('/content/media', body, key),
+      );
       setFile(undefined);
       setReason('');
       refresh();
@@ -68,11 +99,20 @@ export function MediaLibraryPage({
   }
 
   async function transition() {
-    if (!changing || changeReason.trim().length < 5) return setError('状态变更原因至少 5 个字符');
+    if (!changing) return;
+    if (changeReason.trim().length < 5) {
+      setChangeError('状态变更原因至少 5 个字符');
+      changeReasonRef.current?.focus();
+      return;
+    }
     if (
       /api[ _-]?key|\bsk-[a-z0-9]|data:image|base64|prompt|\u63d0\u793a\u8bcd/i.test(changeReason)
-    )
-      return setError('原因中不得包含密钥、提示词或图片内容');
+    ) {
+      setChangeError('原因中不得包含密钥、提示词或图片内容');
+      changeReasonRef.current?.focus();
+      return;
+    }
+    setChangeError('');
     try {
       const path =
         changing.status === 'archived'
@@ -82,12 +122,13 @@ export function MediaLibraryPage({
         changing.status === 'archived'
           ? { version: changing.row.version, reason: changeReason.trim() }
           : { version: changing.row.version, reason: changeReason.trim(), status: changing.status };
-      await client.command('POST', path, body, crypto.randomUUID());
+      await transitionAttempt.run(body, (key) => client.command('POST', path, body, key));
       setChanging(undefined);
       setChangeReason('');
       refresh();
     } catch (failure) {
-      setError(errorText(failure));
+      setChangeError(errorText(failure));
+      changeReasonRef.current?.focus();
     }
   }
 
@@ -115,7 +156,7 @@ export function MediaLibraryPage({
               placeholder="说明版权来源与用途，不要粘贴图片内容"
             />
           </label>
-          <Button type="submit">
+          <Button type="submit" disabled={pending}>
             <ImageUp size={15} />
             上传媒体
           </Button>
@@ -150,7 +191,36 @@ export function MediaLibraryPage({
               <option value="archived">已归档</option>
             </select>
           </label>
+          <label>
+            更新开始时间
+            <Input
+              type="datetime-local"
+              value={updatedFrom}
+              aria-invalid={timeFilterInvalid}
+              onChange={(e) => {
+                setUpdatedFrom(e.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
+          <label>
+            更新结束时间
+            <Input
+              type="datetime-local"
+              value={updatedTo}
+              aria-invalid={timeFilterInvalid}
+              onChange={(e) => {
+                setUpdatedTo(e.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
         </div>
+        {timeFilterInvalid && (
+          <p className="field-error" role="alert">
+            更新开始时间必须早于结束时间
+          </p>
+        )}
         <Button variant="outline" onClick={refresh}>
           <RefreshCw size={15} />
           刷新
@@ -187,25 +257,28 @@ export function MediaLibraryPage({
               </div>
               {canWrite && row.status !== 'archived' && (
                 <div className="operation-row-actions">
-                  {canPublish && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        setChanging({
-                          row,
-                          status: row.status === 'published' ? 'offline' : 'published',
-                        })
-                      }
-                    >
-                      {row.status === 'published' ? '下线' : '发布'}
-                    </Button>
-                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => {
+                      setChangeError('');
+                      setChanging({
+                        row,
+                        status: row.status === 'published' ? 'offline' : 'published',
+                      });
+                    }}
+                  >
+                    {row.status === 'published' ? '下线' : '发布'}
+                  </Button>
                   {(row.status === 'draft' || row.status === 'offline') && (
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={() => setChanging({ row, status: 'archived' })}
+                      onClick={() => {
+                        setChangeError('');
+                        setChanging({ row, status: 'archived' });
+                      }}
                     >
                       归档
                     </Button>
@@ -225,29 +298,37 @@ export function MediaLibraryPage({
         </div>
       )}
       {changing && (
-        <div className="operation-confirm" role="dialog" aria-modal="true">
-          <h3>
-            确认
-            {changing.status === 'published'
-              ? '发布'
-              : changing.status === 'offline'
-                ? '下线'
-                : '归档'}
-            媒体
-          </h3>
+        <OperationDialog
+          title={`确认${changing.status === 'published' ? '发布' : changing.status === 'offline' ? '下线' : '归档'}媒体`}
+          description="媒体状态会影响公开内容是否可用，请填写可审计原因。"
+          pending={pending}
+          initialFocus={changeReasonRef}
+          onClose={() => setChanging(undefined)}
+        >
           <label htmlFor="media-transition-reason">状态变更原因</label>
           <Textarea
+            ref={changeReasonRef}
             id="media-transition-reason"
             value={changeReason}
-            onChange={(e) => setChangeReason(e.target.value)}
+            aria-invalid={Boolean(changeError)}
+            aria-describedby={changeError ? 'media-transition-reason-error' : undefined}
+            onChange={(e) => {
+              setChangeReason(e.target.value);
+              setChangeError('');
+            }}
           />
-          <div className="team-form-actions">
-            <Button variant="outline" onClick={() => setChanging(undefined)}>
-              取消
-            </Button>
-            <Button onClick={() => void transition()}>确认变更</Button>
-          </div>
-        </div>
+          {changeError && (
+            <p className="field-error" id="media-transition-reason-error" role="alert">
+              {changeError}
+            </p>
+          )}
+          <OperationDialogActions
+            pending={pending}
+            onCancel={() => setChanging(undefined)}
+            confirmLabel="确认变更"
+            onConfirm={() => void transition()}
+          />
+        </OperationDialog>
       )}
     </section>
   );

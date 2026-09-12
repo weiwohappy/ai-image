@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -12,6 +12,9 @@ import {
 import type { AdminActor } from '../contracts';
 import { AdminClient, AdminError, errorText } from '../http';
 import { FieldErrorsProvider, FormField, type FieldErrors } from '../team/FormField';
+import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
+import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
+import { useCommandAttempt } from '../operations/useCommandAttempt';
 import type { ContentKind, ContentRecord, Lifecycle } from './contracts';
 
 type Props = {
@@ -154,7 +157,15 @@ export function ContentEditor(props: Props) {
   const [transition, setTransition] = useState<Lifecycle>();
   const [transitionReason, setTransitionReason] = useState('');
   const [conflict, setConflict] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [latestConflict, setLatestConflict] = useState<{
+    record: ContentRecord;
+    values: ReturnType<typeof initialValues>;
+    unresolved: string[];
+  }>();
+  const transitionReasonRef = useRef<HTMLTextAreaElement>(null);
+  const [transitionReasonError, setTransitionReasonError] = useState('');
+  const commandAttempt = useCommandAttempt();
+  const saving = commandAttempt.pending;
   const family = props.kind === 'remix-templates' ? 'templates' : props.kind;
   const hasWrite =
     props.writeEnabled && props.actor.permissions.includes(`content.${family}.write`);
@@ -162,6 +173,8 @@ export function ContentEditor(props: Props) {
   const canWrite = hasWrite && (props.record?.status !== 'published' || hasPublish);
   const canPublish = hasWrite && hasPublish;
   const dirty = JSON.stringify(values) !== original || reason.length > 0;
+  useBeforeUnloadGuard(dirty || saving);
+  useDirtyRegistration({ dirty, pending: saving, discard: props.onClose });
 
   const update = (name: keyof typeof values, value: string | number) =>
     setValues((current) => ({ ...current, [name]: value }));
@@ -201,6 +214,10 @@ export function ContentEditor(props: Props) {
       extra = JSON.parse(values.structured) as Record<string, unknown>;
     } catch {
       setErrors({ structured: '请输入有效 JSON' });
+      return null;
+    }
+    if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
+      setErrors({ structured: 'JSON 顶层必须是对象' });
       return null;
     }
     if (props.kind === 'remix-templates')
@@ -264,22 +281,19 @@ export function ContentEditor(props: Props) {
     if (!canWrite || saving || !validate(reason)) return;
     const content = payload();
     if (!content) return;
-    setSaving(true);
     setMessage('');
     setConflict(false);
     try {
       const path = props.record
         ? `/content/${props.kind}/${props.record.id}`
         : `/content/${props.kind}`;
-      await props.client.command(
-        props.record ? 'PATCH' : 'POST',
-        path,
-        {
-          ...content,
-          ...(props.record ? { version } : {}),
-          reason: reason.trim(),
-        },
-        crypto.randomUUID(),
+      const body = {
+        ...content,
+        ...(props.record ? { version } : {}),
+        reason: reason.trim(),
+      };
+      await commandAttempt.run(body, (key) =>
+        props.client.command(props.record ? 'PATCH' : 'POST', path, body, key),
       );
       props.onChanged();
       props.onClose();
@@ -292,7 +306,7 @@ export function ContentEditor(props: Props) {
         setMessage('请检查下方标记的发布字段');
       } else setMessage(errorText(failure));
     } finally {
-      setSaving(false);
+      // The shared command-attempt hook releases the pending guard.
     }
   }
 
@@ -302,17 +316,37 @@ export function ContentEditor(props: Props) {
       const latest = await props.client.get<ContentRecord>(
         `/content/${props.kind}/${props.record.id}`,
       );
-      setVersion(latest.version);
+      const latestValues = initialValues(props.kind, latest);
+      const unresolved = Object.keys(values).filter(
+        (field) =>
+          JSON.stringify(values[field as keyof typeof values]) !==
+          JSON.stringify(latestValues[field as keyof typeof latestValues]),
+      );
+      setLatestConflict({ record: latest, values: latestValues, unresolved });
       setConflict(false);
-      setMessage(`已加载最新版本 v${latest.version}`);
+      if (!unresolved.length) {
+        setVersion(latest.version);
+        setLatestConflict(undefined);
+        setMessage(`冲突已合并，将基于 v${latest.version} 保存`);
+      } else setMessage('请选择每个冲突字段采用本地或服务端值');
     } catch (failure) {
       setMessage(errorText(failure));
     }
   }
 
   async function confirmTransition() {
-    if (!props.record || !transition || !validate(transitionReason)) return;
-    setSaving(true);
+    if (!props.record || !transition) return;
+    const trimmed = transitionReason.trim();
+    let nextError = '';
+    if (trimmed.length < 5 || trimmed.length > 500) nextError = '操作原因需为 5–500 个字符';
+    if (/api[ _-]?key|\bsk-[a-z0-9]|data:image|base64|prompt|\u63d0\u793a\u8bcd/i.test(trimmed))
+      nextError = '原因中不得包含 API 密钥、提示词或图片内容';
+    if (nextError) {
+      setTransitionReasonError(nextError);
+      transitionReasonRef.current?.focus();
+      return;
+    }
+    setTransitionReasonError('');
     setMessage('');
     try {
       const path =
@@ -323,7 +357,7 @@ export function ContentEditor(props: Props) {
         transition === 'archived'
           ? { version, reason: transitionReason.trim() }
           : { version, reason: transitionReason.trim(), status: transition };
-      await props.client.command('POST', path, body, crypto.randomUUID());
+      await commandAttempt.run(body, (key) => props.client.command('POST', path, body, key));
       props.onChanged();
       props.onClose();
     } catch (failure) {
@@ -336,14 +370,35 @@ export function ContentEditor(props: Props) {
       );
       setTransition(undefined);
     } finally {
-      setSaving(false);
+      // The shared command-attempt hook releases the pending guard.
+    }
+  }
+
+  function resolveConflict(field: string, choice: 'local' | 'server') {
+    if (!latestConflict) return;
+    if (choice === 'server')
+      setValues((current) => ({
+        ...current,
+        [field]: latestConflict.values[field as keyof typeof latestConflict.values],
+      }));
+    const unresolved = latestConflict.unresolved.filter((item) => item !== field);
+    if (unresolved.length) setLatestConflict({ ...latestConflict, unresolved });
+    else {
+      setVersion(latestConflict.record.version);
+      setLatestConflict(undefined);
+      commandAttempt.reset();
+      setMessage(`冲突已合并，将基于 v${latestConflict.record.version} 保存`);
     }
   }
 
   const close = () => (dirty ? setConfirmClose(true) : props.onClose());
   const status = props.record?.status ?? 'draft';
   return (
-    <Sheet open onOpenChange={(open) => !open && close()}>
+    <Sheet
+      open
+      disablePointerDismissal={saving}
+      onOpenChange={(open) => !open && !saving && close()}
+    >
       <SheetContent className="team-sheet operation-sheet" showCloseButton={false}>
         <SheetHeader>
           <SheetTitle>
@@ -500,17 +555,24 @@ export function ContentEditor(props: Props) {
               </fieldset>
             </FieldErrorsProvider>
             {message && (
-              <p className={message.startsWith('已加载') ? 'notices' : 'error-banner'} role="alert">
+              <p
+                className={
+                  message.startsWith('已加载') || message.startsWith('冲突已合并')
+                    ? 'notices'
+                    : 'error-banner'
+                }
+                role="alert"
+              >
                 {message}
               </p>
             )}
-            {conflict && (
+            {conflict && !latestConflict && (
               <Button type="button" variant="outline" onClick={() => void reload()}>
                 加载最新版本
               </Button>
             )}
             <div className="team-form-actions">
-              <Button type="button" variant="outline" onClick={close}>
+              <Button type="button" variant="outline" disabled={saving} onClick={close}>
                 取消编辑
               </Button>
               {props.record && canPublish && status !== 'archived' && (
@@ -527,14 +589,18 @@ export function ContentEditor(props: Props) {
                   归档内容
                 </Button>
               )}
-              <Button type="submit" disabled={!canWrite || saving}>
+              <Button type="submit" disabled={!canWrite || saving || Boolean(latestConflict)}>
                 {props.record ? '保存修改' : '保存草稿'}
               </Button>
             </div>
           </form>
           {confirmClose && (
-            <div className="notices team-close-confirm" role="alert">
-              <strong>放弃未保存修改？</strong>
+            <OperationDialog
+              title="放弃未保存修改？"
+              description="当前内容草稿尚未保存，确认后无法恢复。"
+              onClose={() => setConfirmClose(false)}
+            >
+              <strong role="alert">放弃未保存修改？</strong>
               <div className="team-form-actions">
                 <Button variant="outline" onClick={() => setConfirmClose(false)}>
                   继续编辑
@@ -543,16 +609,19 @@ export function ContentEditor(props: Props) {
                   放弃并关闭
                 </Button>
               </div>
-            </div>
+            </OperationDialog>
           )}
           {transition && (
-            <div className="operation-confirm" role="dialog" aria-modal="true">
-              <h3>
-                确认
-                {transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}
-                内容
-              </h3>
-              <p>此操作会改变内容生命周期，请填写原因。</p>
+            <OperationDialog
+              title={`确认${transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}内容`}
+              description="此操作会改变内容生命周期，请填写原因。"
+              pending={saving}
+              initialFocus={transitionReasonRef}
+              onClose={() => {
+                setTransition(undefined);
+                setTransitionReasonError('');
+              }}
+            >
               <label htmlFor="content-transition-reason">
                 {transition === 'published'
                   ? '发布原因'
@@ -561,20 +630,78 @@ export function ContentEditor(props: Props) {
                     : '归档原因'}
               </label>
               <Textarea
+                ref={transitionReasonRef}
                 id="content-transition-reason"
                 value={transitionReason}
-                onChange={(e) => setTransitionReason(e.target.value)}
+                aria-invalid={Boolean(transitionReasonError)}
+                aria-describedby={
+                  transitionReasonError ? 'content-transition-reason-error' : undefined
+                }
+                onChange={(e) => {
+                  setTransitionReason(e.target.value);
+                  setTransitionReasonError('');
+                }}
               />
-              <div className="team-form-actions">
-                <Button variant="outline" onClick={() => setTransition(undefined)}>
-                  取消
-                </Button>
-                <Button onClick={() => void confirmTransition()}>
-                  确认
-                  {transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}
+              {transitionReasonError && (
+                <p id="content-transition-reason-error" className="field-error" role="alert">
+                  {transitionReasonError}
+                </p>
+              )}
+              <OperationDialogActions
+                pending={saving}
+                onCancel={() => setTransition(undefined)}
+                confirmLabel={`确认${transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}`}
+                onConfirm={() => void confirmTransition()}
+              />
+            </OperationDialog>
+          )}
+          {latestConflict && (
+            <OperationDialog
+              title="解决字段冲突"
+              description={`服务端已有 v${latestConflict.record.version}。逐项确认后才能再次保存。`}
+              onClose={() => undefined}
+            >
+              <div className="stack conflict-fields">
+                {latestConflict.unresolved.map((field) => {
+                  const label =
+                    field === 'title'
+                      ? '标题'
+                      : field === 'structured'
+                        ? '结构化配置'
+                        : field === 'description'
+                          ? '描述'
+                          : field;
+                  return (
+                    <div className="notices" key={field}>
+                      <strong>{label}</strong>
+                      <p>
+                        服务端：
+                        {String(latestConflict.values[field as keyof typeof latestConflict.values])}
+                      </p>
+                      <div className="team-form-actions">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => resolveConflict(field, 'local')}
+                        >
+                          保留我的 {label}
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => resolveConflict(field, 'server')}
+                        >
+                          采用服务端 {label}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+                <Button type="button" disabled>
+                  保存修改
                 </Button>
               </div>
-            </div>
+            </OperationDialog>
           )}
         </div>
       </SheetContent>

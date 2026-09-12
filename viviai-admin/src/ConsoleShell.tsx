@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Activity, Shield, LogOut, RefreshCw, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -31,6 +31,8 @@ import { PricingPage } from './pricing/PricingPage';
 import { ContentListPage } from './content/ContentListPage';
 import { MediaLibraryPage } from './content/MediaLibraryPage';
 import { CampaignPage } from './marketing/CampaignPage';
+import { OperationDialog } from './operations/OperationDialog';
+import { useBeforeUnloadGuard, useDirtyGuard } from './operations/dirty-guard';
 export function ConsoleShell({
   actor,
   client,
@@ -52,12 +54,35 @@ export function ConsoleShell({
 }) {
   const initial = availableNavigation(actor)[0]?.path ?? '/dashboard';
   const [path, setPath] = useState(initial);
+  const acceptedPath = useRef(initial);
+  const [pendingPath, setPendingPath] = useState<string>();
+  const guard = useDirtyGuard();
+  useBeforeUnloadGuard(guard.dirty || guard.pending);
   useEffect(() => {
-    const update = () => setPath(safeRoute(window.location.hash.slice(1)) ?? initial);
+    const update = () => {
+      const next = safeRoute(window.location.hash.slice(1)) ?? initial;
+      if ((guard.dirty || guard.pending) && next !== acceptedPath.current) {
+        window.history.replaceState(null, '', `#${acceptedPath.current}`);
+        if (!guard.pending) setPendingPath(next);
+        return;
+      }
+      acceptedPath.current = next;
+      setPath(next);
+    };
     update();
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
-  }, [initial]);
+  }, [guard.dirty, guard.pending, initial]);
+  function navigate(next: string) {
+    if (guard.pending) return;
+    if (guard.dirty) {
+      setPendingPath(next);
+      return;
+    }
+    acceptedPath.current = next;
+    window.location.hash = next;
+    setPath(next);
+  }
   const pathname = path.split('?')[0];
   const root = `/${pathname.split('/')[1]}`;
   const currentItem = navigation.find(
@@ -76,7 +101,7 @@ export function ConsoleShell({
         <SidebarHeader className="console-brand">
           <Brand />
         </SidebarHeader>
-        <TeamNavigation actor={actor} path={path} />
+        <TeamNavigation actor={actor} path={path} onNavigate={navigate} />
         <SidebarFooter className="console-profile">
           <span className="profile-avatar">{actor.displayName.slice(0, 1)}</span>
           <div className="profile-details">
@@ -232,10 +257,43 @@ export function ConsoleShell({
           </footer>
         </div>
       </SidebarInset>
+      {pendingPath && (
+        <OperationDialog
+          title="离开并放弃修改？"
+          description="当前页面有未保存修改。确认后将丢弃草稿并前往所选页面。"
+          onClose={() => setPendingPath(undefined)}
+        >
+          <div className="team-form-actions">
+            <Button variant="outline" onClick={() => setPendingPath(undefined)}>
+              继续编辑
+            </Button>
+            <Button
+              onClick={() => {
+                const next = pendingPath;
+                guard.discard();
+                setPendingPath(undefined);
+                acceptedPath.current = next;
+                window.location.hash = next;
+                setPath(next);
+              }}
+            >
+              放弃并离开
+            </Button>
+          </div>
+        </OperationDialog>
+      )}
     </SidebarProvider>
   );
 }
-function TeamNavigation({ actor, path }: { actor: AdminActor; path: string }) {
+function TeamNavigation({
+  actor,
+  path,
+  onNavigate,
+}: {
+  actor: AdminActor;
+  path: string;
+  onNavigate: (path: string) => void;
+}) {
   const items = availableNavigation(actor);
   const { setOpenMobile } = useSidebar();
   return (
@@ -259,7 +317,11 @@ function TeamNavigation({ actor, path }: { actor: AdminActor; path: string }) {
                             isActive={
                               path.split('?')[0] === item.path || path.startsWith(`${item.path}/`)
                             }
-                            onClick={() => setOpenMobile(false)}
+                            onClick={(event) => {
+                              event.preventDefault();
+                              setOpenMobile(false);
+                              onNavigate(item.path);
+                            }}
                           >
                             <Icon />
                             <span>{item.label}</span>

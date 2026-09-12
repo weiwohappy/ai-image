@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import type { AdminActor } from '../contracts';
@@ -31,6 +31,16 @@ const campaign = {
   updatedAt: '2026-09-12T00:00:00.000Z',
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
+
 it('updates campaigns with the current version and surfaces capacity rejection', async () => {
   const fetcher = vi
     .fn()
@@ -61,12 +71,15 @@ it('updates campaigns with the current version and surfaces capacity rejection',
   expect(body).toMatchObject({ version: 7, totalLimit: 20, reason: '按最新活动预算调整总量' });
 });
 
-it('reloads a conflicting campaign version without discarding the operator draft', async () => {
+it('requires explicit campaign field choices before resubmitting with the latest version', async () => {
   const fetcher = vi
     .fn()
     .mockResolvedValueOnce(json({ rows: [campaign], nextCursor: null }))
     .mockResolvedValueOnce(json(null, 409))
-    .mockResolvedValueOnce(json({ ...campaign, version: 8, name: '服务端最新活动名' }));
+    .mockResolvedValueOnce(json({ ...campaign, version: 8, name: '服务端最新活动名' }))
+    .mockResolvedValueOnce(
+      json({ ...campaign, version: 9, name: '服务端最新活动名', totalLimit: 450 }),
+    );
   vi.stubGlobal('fetch', fetcher);
   render(
     <CampaignPage view="campaigns" actor={marketer} client={new AdminClient()} writeEnabled />,
@@ -78,8 +91,33 @@ it('reloads a conflicting campaign version without discarding the operator draft
   });
   fireEvent.click(screen.getByRole('button', { name: '保存活动' }));
   fireEvent.click(await screen.findByRole('button', { name: '加载最新版本' }));
-  expect(await screen.findByText('已加载最新版本 v8')).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: '解决活动冲突' })).toBeInTheDocument();
+  expect(screen.getByText('服务端：服务端最新活动名')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '采用服务端 活动名称' }));
+  fireEvent.click(screen.getByRole('button', { name: '保留我的 总兑换上限' }));
+  expect(await screen.findByText('冲突已合并，将基于 v8 保存')).toBeInTheDocument();
   expect(screen.getByLabelText('总兑换上限')).toHaveValue(450);
+  expect(screen.getByLabelText('活动名称')).toHaveValue('服务端最新活动名');
+  fireEvent.click(screen.getByRole('button', { name: '保存活动' }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(4));
+  expect(JSON.parse(String((fetcher.mock.calls[3]![1] as RequestInit).body))).toMatchObject({
+    version: 8,
+    name: '服务端最新活动名',
+    totalLimit: 450,
+  });
+});
+
+it('keeps a dirty campaign editor open until discard is explicitly confirmed', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [campaign], nextCursor: null })));
+  render(
+    <CampaignPage view="campaigns" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: '编辑十月邀请礼' }));
+  fireEvent.change(screen.getByLabelText('活动名称'), { target: { value: '尚未保存的活动名' } });
+  fireEvent.click(screen.getByRole('button', { name: '取消' }));
+  expect(await screen.findByRole('heading', { name: '放弃未保存修改？' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '继续编辑' }));
+  expect(screen.getByDisplayValue('尚未保存的活动名')).toBeInTheDocument();
 });
 
 it('requires explicit confirmation and versions campaign lifecycle commands', async () => {
@@ -168,6 +206,51 @@ it('destroys one-time plaintext codes when the result closes and never restores 
   expect(screen.getByLabelText('活动 ID')).toHaveValue('');
 });
 
+it('keeps one code-generation attempt locked to its payload and idempotency key until resolved', async () => {
+  const pending = deferred<Response>();
+  const fetcher = vi
+    .fn()
+    .mockImplementationOnce(() => pending.promise)
+    .mockResolvedValueOnce(
+      json(
+        {
+          resourceId: campaign.id,
+          campaignId: campaign.id,
+          campaignVersion: 8,
+          generated: 1,
+          codeIds: ['a10c2d5f-20ad-4b5a-aa19-c750726d8676'],
+          codesUnavailable: true,
+        },
+        201,
+      ),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  const onClose = vi.fn();
+  render(<CodeBatchDialog client={new AdminClient()} onClose={onClose} onChanged={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('活动 ID'), { target: { value: campaign.id } });
+  fireEvent.change(screen.getByLabelText('活动版本'), { target: { value: '7' } });
+  fireEvent.change(screen.getByLabelText('生成数量'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('单码可用次数'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('生成原因'), {
+    target: { value: '为合作活动生成一次性批次' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: '确认生成' }));
+  const cancel = screen.getByRole('button', { name: '取消' });
+  expect(cancel).toBeDisabled();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(onClose).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '正在生成…' }));
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  await act(async () => pending.reject(new TypeError('network outcome unknown')));
+  fireEvent.click(await screen.findByRole('button', { name: '检查结果/重试同请求' }));
+  expect(await screen.findByText('批次已创建，但明文无法恢复')).toBeInTheDocument();
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  const firstHeaders = fetcher.mock.calls[0]![1]!.headers as Record<string, string>;
+  const secondHeaders = fetcher.mock.calls[1]![1]!.headers as Record<string, string>;
+  expect(secondHeaders['Idempotency-Key']).toBe(firstHeaders['Idempotency-Key']);
+  expect(fetcher.mock.calls[1]![1]!.body).toBe(fetcher.mock.calls[0]![1]!.body);
+});
+
 it('hides every marketing mutation when the actor lacks write permission', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [campaign], nextCursor: null })));
   render(
@@ -214,5 +297,48 @@ it('disables a code only after confirmation and sends its current version', asyn
   expect(JSON.parse(String((fetcher.mock.calls[1]![1] as RequestInit).body))).toEqual({
     version: 4,
     reason: '线下批次已经结束使用',
+  });
+});
+
+it('applies backend code, claim, and referral filters with strict identifiers and time ranges', async () => {
+  const fetcher = vi.fn().mockResolvedValue(json({ rows: [], nextCursor: null }));
+  vi.stubGlobal('fetch', fetcher);
+  const codes = render(
+    <CampaignPage view="codes" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  await screen.findByText('生成兑换码');
+  fireEvent.change(screen.getByLabelText('活动 ID 筛选'), { target: { value: campaign.id } });
+  fireEvent.change(screen.getByLabelText('兑换码状态'), { target: { value: 'disabled' } });
+  fireEvent.change(screen.getByLabelText('创建开始时间'), {
+    target: { value: '2026-10-01T09:00' },
+  });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://admin.test');
+    expect(url.searchParams.get('campaignId')).toBe(campaign.id);
+    expect(url.searchParams.get('status')).toBe('disabled');
+    expect(url.searchParams.get('from')).toBe(new Date('2026-10-01T09:00').toISOString());
+  });
+  fireEvent.click(screen.getByRole('button', { name: '兑换记录' }));
+  fireEvent.change(await screen.findByLabelText('用户 ID 筛选'), {
+    target: { value: '22222222-2222-4222-8222-222222222222' },
+  });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://admin.test');
+    expect(url.pathname).toContain('/redemption-claims');
+    expect(url.searchParams.get('userId')).toBe('22222222-2222-4222-8222-222222222222');
+  });
+  codes.unmount();
+  render(
+    <CampaignPage view="referrals" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  fireEvent.change(await screen.findByLabelText('邀请人或被邀请人 ID'), {
+    target: { value: '33333333-3333-4333-8333-333333333333' },
+  });
+  fireEvent.change(screen.getByLabelText('返利状态'), { target: { value: 'rewarded' } });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://admin.test');
+    expect(url.pathname).toContain('/referrals');
+    expect(url.searchParams.get('userId')).toBe('33333333-3333-4333-8333-333333333333');
+    expect(url.searchParams.get('status')).toBe('rewarded');
   });
 });

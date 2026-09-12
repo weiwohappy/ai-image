@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { Plus, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,6 +7,9 @@ import type { AdminActor } from '../contracts';
 import { AdminClient, AdminError, errorText } from '../http';
 import { useAdminQuery } from '../useQuery';
 import { CodeBatchDialog } from './CodeBatchDialog';
+import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
+import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
+import { useCommandAttempt } from '../operations/useCommandAttempt';
 import type { Campaign, MarketingPage, RedemptionCode, Referral } from './contracts';
 
 type View = 'campaigns' | 'codes' | 'referrals';
@@ -22,6 +25,7 @@ const emptyCampaign: CampaignDraft = {
   credits: 1,
   totalLimit: null,
 };
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const localDate = (value: string) => {
   if (!value) return '';
   const instant = new Date(value);
@@ -29,6 +33,14 @@ const localDate = (value: string) => {
     .toISOString()
     .slice(0, 16);
 };
+const campaignDraft = (row: Campaign): CampaignDraft => ({
+  name: row.name,
+  startsAt: localDate(row.startsAt),
+  endsAt: localDate(row.endsAt),
+  perUserLimit: row.perUserLimit,
+  credits: row.credits,
+  totalLimit: row.totalLimit,
+});
 
 export function CampaignPage({
   view,
@@ -45,15 +57,44 @@ export function CampaignPage({
   const [cursor, setCursor] = useState('');
   const [status, setStatus] = useState('');
   const [queryText, setQueryText] = useState('');
+  const [filterCampaignId, setFilterCampaignId] = useState('');
+  const [filterUserId, setFilterUserId] = useState('');
+  const [filterFrom, setFilterFrom] = useState('');
+  const [filterTo, setFilterTo] = useState('');
   const [editing, setEditing] = useState<Campaign | 'new'>();
   const [draft, setDraft] = useState<CampaignDraft>(emptyCampaign);
+  const [originalDraft, setOriginalDraft] = useState<CampaignDraft>(emptyCampaign);
   const [reason, setReason] = useState('');
+  const [reasonInvalid, setReasonInvalid] = useState(false);
+  const reasonRef = useRef<HTMLTextAreaElement>(null);
   const [error, setError] = useState('');
   const [lifecycle, setLifecycle] = useState<{ row: Campaign; action: 'disable' | 'archive' }>();
   const [campaignConflict, setCampaignConflict] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [latestConflict, setLatestConflict] = useState<{
+    row: Campaign;
+    draft: CampaignDraft;
+    unresolved: Array<keyof CampaignDraft>;
+  }>();
   const [codeDialog, setCodeDialog] = useState(false);
   const [codeLifecycle, setCodeLifecycle] = useState<RedemptionCode>();
   const [claims, setClaims] = useState(false);
+  const commandAttempt = useCommandAttempt();
+  const pending = commandAttempt.pending;
+  const dirty = Boolean(
+    editing && (JSON.stringify(draft) !== JSON.stringify(originalDraft) || reason.length),
+  );
+  useBeforeUnloadGuard(dirty || pending);
+  useDirtyRegistration({
+    dirty,
+    pending,
+    discard: () => {
+      setEditing(undefined);
+      setLifecycle(undefined);
+      setCodeLifecycle(undefined);
+      setReason('');
+    },
+  });
   const canWrite = writeEnabled && actor.permissions.includes('redemptions.write');
   const endpoint =
     view === 'campaigns'
@@ -64,8 +105,22 @@ export function CampaignPage({
           : '/redemption-codes'
         : '/referrals';
   const params = new URLSearchParams({ limit: '30' });
-  if (status) params.set('status', status);
+  const campaignFilterInvalid = Boolean(filterCampaignId && !uuidPattern.test(filterCampaignId));
+  const userFilterInvalid = Boolean(filterUserId && !uuidPattern.test(filterUserId));
+  const timeFilterInvalid = Boolean(
+    filterFrom && filterTo && Date.parse(filterFrom) >= Date.parse(filterTo),
+  );
+  if (status && (view === 'campaigns' || (view === 'codes' && !claims) || view === 'referrals'))
+    params.set('status', status);
   if (queryText.trim() && view !== 'referrals' && !claims) params.set('q', queryText.trim());
+  if (filterCampaignId && !campaignFilterInvalid && view === 'codes')
+    params.set('campaignId', filterCampaignId);
+  if (filterUserId && !userFilterInvalid && (claims || view === 'referrals'))
+    params.set('userId', filterUserId);
+  if (filterFrom && !timeFilterInvalid && view !== 'campaigns')
+    params.set('from', new Date(filterFrom).toISOString());
+  if (filterTo && !timeFilterInvalid && view !== 'campaigns')
+    params.set('to', new Date(filterTo).toISOString());
   if (cursor) params.set('cursor', cursor);
   const result = useAdminQuery<MarketingPage<Record<string, unknown>>>(
     client,
@@ -78,39 +133,37 @@ export function CampaignPage({
   };
 
   function open(row?: Campaign) {
+    const nextDraft = row ? campaignDraft(row) : emptyCampaign;
     setEditing(row ?? 'new');
-    setDraft(
-      row
-        ? {
-            name: row.name,
-            startsAt: localDate(row.startsAt),
-            endsAt: localDate(row.endsAt),
-            perUserLimit: row.perUserLimit,
-            credits: row.credits,
-            totalLimit: row.totalLimit,
-          }
-        : emptyCampaign,
-    );
+    setDraft(nextDraft);
+    setOriginalDraft(nextDraft);
     setReason('');
+    setReasonInvalid(false);
     setError('');
     setCampaignConflict(false);
+    setLatestConflict(undefined);
   }
 
   function safeReason(value: string): boolean {
     if (value.trim().length < 5 || value.trim().length > 500) {
       setError('操作原因需为 5–500 个字符');
+      setReasonInvalid(true);
+      reasonRef.current?.focus();
       return false;
     }
     if (/api[ _-]?key|\bsk-[a-z0-9]|data:image|base64|prompt|\u63d0\u793a\u8bcd/i.test(value)) {
       setError('原因中不得包含密钥、提示词或图片内容');
+      setReasonInvalid(true);
+      reasonRef.current?.focus();
       return false;
     }
+    setReasonInvalid(false);
     return true;
   }
 
   async function save(event: FormEvent) {
     event.preventDefault();
-    if (!editing || !safeReason(reason)) return;
+    if (pending || !editing || !safeReason(reason)) return;
     if (
       !draft.name.trim() ||
       !draft.startsAt ||
@@ -126,11 +179,13 @@ export function CampaignPage({
       reason: reason.trim(),
     };
     try {
-      await client.command(
-        editing === 'new' ? 'POST' : 'PATCH',
-        editing === 'new' ? '/redemption-campaigns' : `/redemption-campaigns/${editing.id}`,
-        body,
-        crypto.randomUUID(),
+      await commandAttempt.run(body, (key) =>
+        client.command(
+          editing === 'new' ? 'POST' : 'PATCH',
+          editing === 'new' ? '/redemption-campaigns' : `/redemption-campaigns/${editing.id}`,
+          body,
+          key,
+        ),
       );
       setEditing(undefined);
       refresh();
@@ -151,22 +206,33 @@ export function CampaignPage({
     if (!editing || editing === 'new') return;
     try {
       const latest = await client.get<Campaign>(`/redemption-campaigns/${editing.id}`);
-      setEditing(latest);
+      const nextDraft = campaignDraft(latest);
+      const unresolved = (Object.keys(draft) as Array<keyof CampaignDraft>).filter(
+        (field) => JSON.stringify(draft[field]) !== JSON.stringify(nextDraft[field]),
+      );
+      setLatestConflict({ row: latest, draft: nextDraft, unresolved });
       setCampaignConflict(false);
-      setError(`已加载最新版本 v${latest.version}`);
+      if (!unresolved.length) {
+        setEditing(latest);
+        setLatestConflict(undefined);
+        setError(`冲突已合并，将基于 v${latest.version} 保存`);
+      } else setError('请选择每个冲突字段采用本地或服务端值');
     } catch (failure) {
       setError(errorText(failure));
     }
   }
 
   async function changeLifecycle() {
-    if (!lifecycle || !safeReason(reason)) return;
+    if (pending || !lifecycle || !safeReason(reason)) return;
     try {
-      await client.command(
-        'POST',
-        `/redemption-campaigns/${lifecycle.row.id}/${lifecycle.action}`,
-        { version: lifecycle.row.version, reason: reason.trim() },
-        crypto.randomUUID(),
+      const body = { version: lifecycle.row.version, reason: reason.trim() };
+      await commandAttempt.run(body, (key) =>
+        client.command(
+          'POST',
+          `/redemption-campaigns/${lifecycle.row.id}/${lifecycle.action}`,
+          body,
+          key,
+        ),
       );
       setLifecycle(undefined);
       setReason('');
@@ -177,13 +243,11 @@ export function CampaignPage({
   }
 
   async function disableCode() {
-    if (!codeLifecycle || !safeReason(reason)) return;
+    if (pending || !codeLifecycle || !safeReason(reason)) return;
     try {
-      await client.command(
-        'POST',
-        `/redemption-codes/${codeLifecycle.id}/disable`,
-        { version: codeLifecycle.version, reason: reason.trim() },
-        crypto.randomUUID(),
+      const body = { version: codeLifecycle.version, reason: reason.trim() };
+      await commandAttempt.run(body, (key) =>
+        client.command('POST', `/redemption-codes/${codeLifecycle.id}/disable`, body, key),
       );
       setCodeLifecycle(undefined);
       setReason('');
@@ -191,6 +255,36 @@ export function CampaignPage({
     } catch (failure) {
       setError(errorText(failure));
     }
+  }
+
+  const conflictLabels: Record<keyof CampaignDraft, string> = useMemo(
+    () => ({
+      name: '活动名称',
+      startsAt: '开始时间',
+      endsAt: '结束时间',
+      perUserLimit: '每用户上限',
+      credits: '兑换积分',
+      totalLimit: '总兑换上限',
+    }),
+    [],
+  );
+  function resolveCampaignConflict(field: keyof CampaignDraft, choice: 'local' | 'server') {
+    if (!latestConflict) return;
+    if (choice === 'server')
+      setDraft((current) => ({ ...current, [field]: latestConflict.draft[field] }));
+    const unresolved = latestConflict.unresolved.filter((item) => item !== field);
+    if (unresolved.length) setLatestConflict({ ...latestConflict, unresolved });
+    else {
+      setEditing(latestConflict.row);
+      setLatestConflict(undefined);
+      commandAttempt.reset();
+      setError(`冲突已合并，将基于 v${latestConflict.row.version} 保存`);
+    }
+  }
+  function requestCloseEditor() {
+    if (pending) return;
+    if (dirty) setConfirmDiscard(true);
+    else setEditing(undefined);
   }
 
   if (view === 'campaigns') {
@@ -302,6 +396,7 @@ export function CampaignPage({
                                 onClick={() => {
                                   setLifecycle({ row, action: 'disable' });
                                   setReason('');
+                                  setReasonInvalid(false);
                                   setError('');
                                 }}
                               >
@@ -316,6 +411,7 @@ export function CampaignPage({
                                 onClick={() => {
                                   setLifecycle({ row, action: 'archive' });
                                   setReason('');
+                                  setReasonInvalid(false);
                                   setError('');
                                 }}
                               >
@@ -347,111 +443,200 @@ export function CampaignPage({
           </div>
         )}
         {editing && (
-          <div className="operation-confirm operation-form" role="dialog" aria-modal="true">
-            <h3>{editing === 'new' ? '新建兑换活动' : `编辑${editing.name}`}</h3>
+          <OperationDialog
+            title={editing === 'new' ? '新建兑换活动' : `编辑${editing.name}`}
+            description="保存活动配置前请核对时间、容量和积分，并填写可审计原因。"
+            pending={pending}
+            className="operation-form"
+            onClose={requestCloseEditor}
+          >
             <form className="stack" onSubmit={(event) => void save(event)}>
-              <label className="field">
-                活动名称
-                <Input
-                  value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
-                />
-              </label>
-              <div className="operation-grid">
+              <fieldset disabled={pending} className="stack">
                 <label className="field">
-                  开始时间
+                  活动名称
                   <Input
-                    type="datetime-local"
-                    value={draft.startsAt}
-                    onChange={(e) => setDraft({ ...draft, startsAt: e.target.value })}
+                    value={draft.name}
+                    onChange={(e) => setDraft({ ...draft, name: e.target.value })}
                   />
                 </label>
+                <div className="operation-grid">
+                  <label className="field">
+                    开始时间
+                    <Input
+                      type="datetime-local"
+                      value={draft.startsAt}
+                      onChange={(e) => setDraft({ ...draft, startsAt: e.target.value })}
+                    />
+                  </label>
+                  <label className="field">
+                    结束时间
+                    <Input
+                      type="datetime-local"
+                      value={draft.endsAt}
+                      onChange={(e) => setDraft({ ...draft, endsAt: e.target.value })}
+                    />
+                  </label>
+                  <label className="field">
+                    每用户上限
+                    <Input
+                      type="number"
+                      min={1}
+                      value={draft.perUserLimit}
+                      onChange={(e) => setDraft({ ...draft, perUserLimit: Number(e.target.value) })}
+                    />
+                  </label>
+                  <label className="field">
+                    兑换积分
+                    <Input
+                      type="number"
+                      min={1}
+                      value={draft.credits}
+                      onChange={(e) => setDraft({ ...draft, credits: Number(e.target.value) })}
+                    />
+                  </label>
+                  <label className="field">
+                    总兑换上限
+                    <Input
+                      type="number"
+                      min={1}
+                      value={draft.totalLimit ?? ''}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          totalLimit: e.target.value ? Number(e.target.value) : null,
+                        })
+                      }
+                    />
+                  </label>
+                </div>
                 <label className="field">
-                  结束时间
-                  <Input
-                    type="datetime-local"
-                    value={draft.endsAt}
-                    onChange={(e) => setDraft({ ...draft, endsAt: e.target.value })}
+                  操作原因
+                  <Textarea
+                    ref={reasonRef}
+                    value={reason}
+                    aria-invalid={reasonInvalid}
+                    onChange={(e) => {
+                      setReason(e.target.value);
+                      setReasonInvalid(false);
+                    }}
                   />
                 </label>
-                <label className="field">
-                  每用户上限
-                  <Input
-                    type="number"
-                    min={1}
-                    value={draft.perUserLimit}
-                    onChange={(e) => setDraft({ ...draft, perUserLimit: Number(e.target.value) })}
-                  />
-                </label>
-                <label className="field">
-                  兑换积分
-                  <Input
-                    type="number"
-                    min={1}
-                    value={draft.credits}
-                    onChange={(e) => setDraft({ ...draft, credits: Number(e.target.value) })}
-                  />
-                </label>
-                <label className="field">
-                  总兑换上限
-                  <Input
-                    type="number"
-                    min={1}
-                    value={draft.totalLimit ?? ''}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        totalLimit: e.target.value ? Number(e.target.value) : null,
-                      })
-                    }
-                  />
-                </label>
-              </div>
-              <label className="field">
-                操作原因
-                <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
-              </label>
+              </fieldset>
               {error && (
-                <p className="error-banner" role="alert">
+                <p
+                  className={error.startsWith('冲突已合并') ? 'notices' : 'error-banner'}
+                  role="alert"
+                >
                   {error}
                 </p>
               )}
-              {campaignConflict && (
+              {campaignConflict && !latestConflict && (
                 <Button type="button" variant="outline" onClick={() => void reloadCampaign()}>
                   加载最新版本
                 </Button>
               )}
               <div className="team-form-actions">
-                <Button type="button" variant="outline" onClick={() => setEditing(undefined)}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={pending}
+                  onClick={requestCloseEditor}
+                >
                   取消
                 </Button>
-                <Button type="submit">保存活动</Button>
+                <Button type="submit" disabled={pending || Boolean(latestConflict)}>
+                  保存活动
+                </Button>
               </div>
             </form>
-          </div>
+          </OperationDialog>
         )}
         {lifecycle && (
-          <div className="operation-confirm" role="dialog" aria-modal="true">
-            <h3>确认{lifecycle.action === 'disable' ? '停用' : '归档'}活动</h3>
-            <p>将以 v{lifecycle.row.version} 执行状态变更。</p>
+          <OperationDialog
+            title={`确认${lifecycle.action === 'disable' ? '停用' : '归档'}活动`}
+            description={`将以 v${lifecycle.row.version} 执行状态变更。`}
+            pending={pending}
+            initialFocus={reasonRef}
+            onClose={() => setLifecycle(undefined)}
+          >
             <label className="field">
               {lifecycle.action === 'disable' ? '停用原因' : '归档原因'}
-              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+              <Textarea
+                ref={reasonRef}
+                value={reason}
+                aria-invalid={reasonInvalid}
+                onChange={(e) => {
+                  setReason(e.target.value);
+                  setReasonInvalid(false);
+                }}
+              />
             </label>
             {error && (
               <p className="error-banner" role="alert">
                 {error}
               </p>
             )}
+            <OperationDialogActions
+              pending={pending}
+              onCancel={() => setLifecycle(undefined)}
+              confirmLabel={`确认${lifecycle.action === 'disable' ? '停用' : '归档'}`}
+              onConfirm={() => void changeLifecycle()}
+            />
+          </OperationDialog>
+        )}
+        {latestConflict && (
+          <OperationDialog
+            title="解决活动冲突"
+            description={`服务端已有 v${latestConflict.row.version}。逐项确认后才能再次保存。`}
+            onClose={() => undefined}
+          >
+            <div className="stack conflict-fields">
+              {latestConflict.unresolved.map((field) => (
+                <div className="notices" key={field}>
+                  <strong>{conflictLabels[field]}</strong>
+                  <p>服务端：{String(latestConflict.draft[field] ?? '不限')}</p>
+                  <div className="team-form-actions">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => resolveCampaignConflict(field, 'local')}
+                    >
+                      保留我的 {conflictLabels[field]}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => resolveCampaignConflict(field, 'server')}
+                    >
+                      采用服务端 {conflictLabels[field]}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </OperationDialog>
+        )}
+        {confirmDiscard && (
+          <OperationDialog
+            title="放弃未保存修改？"
+            description="当前活动草稿尚未保存，确认后无法恢复。"
+            onClose={() => setConfirmDiscard(false)}
+          >
             <div className="team-form-actions">
-              <Button variant="outline" onClick={() => setLifecycle(undefined)}>
-                取消
+              <Button variant="outline" onClick={() => setConfirmDiscard(false)}>
+                继续编辑
               </Button>
-              <Button onClick={() => void changeLifecycle()}>
-                确认{lifecycle.action === 'disable' ? '停用' : '归档'}
+              <Button
+                onClick={() => {
+                  setConfirmDiscard(false);
+                  setEditing(undefined);
+                  setReason('');
+                }}
+              >
+                放弃并关闭
               </Button>
             </div>
-          </div>
+          </OperationDialog>
         )}
       </section>
     );
@@ -489,6 +674,78 @@ export function CampaignPage({
             </Button>
           )}
         </div>
+        <div className="operation-filters panel panel-padding">
+          <label>
+            活动 ID 筛选
+            <Input
+              value={filterCampaignId}
+              pattern="[0-9a-fA-F-]{36}"
+              aria-invalid={campaignFilterInvalid}
+              onChange={(event) => {
+                setFilterCampaignId(event.target.value.trim());
+                setCursor('');
+              }}
+            />
+          </label>
+          {claims ? (
+            <label>
+              用户 ID 筛选
+              <Input
+                value={filterUserId}
+                pattern="[0-9a-fA-F-]{36}"
+                aria-invalid={userFilterInvalid}
+                onChange={(event) => {
+                  setFilterUserId(event.target.value.trim());
+                  setCursor('');
+                }}
+              />
+            </label>
+          ) : (
+            <label>
+              兑换码状态
+              <select
+                value={status}
+                onChange={(event) => {
+                  setStatus(event.target.value);
+                  setCursor('');
+                }}
+              >
+                <option value="">全部</option>
+                <option value="active">可兑换</option>
+                <option value="disabled">已停用</option>
+              </select>
+            </label>
+          )}
+          <label>
+            创建开始时间
+            <Input
+              type="datetime-local"
+              value={filterFrom}
+              aria-invalid={timeFilterInvalid}
+              onChange={(event) => {
+                setFilterFrom(event.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
+          <label>
+            创建结束时间
+            <Input
+              type="datetime-local"
+              value={filterTo}
+              aria-invalid={timeFilterInvalid}
+              onChange={(event) => {
+                setFilterTo(event.target.value);
+                setCursor('');
+              }}
+            />
+          </label>
+        </div>
+        {(campaignFilterInvalid || userFilterInvalid || timeFilterInvalid) && (
+          <p className="field-error" role="alert">
+            {timeFilterInvalid ? '开始时间必须早于结束时间' : '筛选 ID 必须是有效 UUID'}
+          </p>
+        )}
         {result.loading ? (
           <div className="panel loading-state" role="status">
             正在读取兑换数据…
@@ -547,6 +804,7 @@ export function CampaignPage({
                                 onClick={() => {
                                   setCodeLifecycle(row as unknown as RedemptionCode);
                                   setReason('');
+                                  setReasonInvalid(false);
                                   setError('');
                                 }}
                               >
@@ -578,25 +836,37 @@ export function CampaignPage({
           />
         )}
         {codeLifecycle && (
-          <div className="operation-confirm" role="dialog" aria-modal="true">
-            <h3>确认停用兑换码</h3>
-            <p>{codeLifecycle.displayMask} 停用后将无法继续兑换。</p>
+          <OperationDialog
+            title="确认停用兑换码"
+            description={`${codeLifecycle.displayMask} 停用后将无法继续兑换。`}
+            pending={pending}
+            initialFocus={reasonRef}
+            onClose={() => setCodeLifecycle(undefined)}
+          >
             <label className="field">
               停用原因
-              <Textarea value={reason} onChange={(e) => setReason(e.target.value)} />
+              <Textarea
+                ref={reasonRef}
+                value={reason}
+                aria-invalid={reasonInvalid}
+                onChange={(e) => {
+                  setReason(e.target.value);
+                  setReasonInvalid(false);
+                }}
+              />
             </label>
             {error && (
               <p className="error-banner" role="alert">
                 {error}
               </p>
             )}
-            <div className="team-form-actions">
-              <Button variant="outline" onClick={() => setCodeLifecycle(undefined)}>
-                取消
-              </Button>
-              <Button onClick={() => void disableCode()}>确认停用</Button>
-            </div>
-          </div>
+            <OperationDialogActions
+              pending={pending}
+              onCancel={() => setCodeLifecycle(undefined)}
+              confirmLabel="确认停用"
+              onConfirm={() => void disableCode()}
+            />
+          </OperationDialog>
         )}
       </section>
     );
@@ -605,6 +875,63 @@ export function CampaignPage({
   const referrals = (result.data?.rows ?? []) as unknown as Referral[];
   return (
     <section className="operation-page" aria-label="邀请返利">
+      <div className="operation-filters panel panel-padding">
+        <label>
+          邀请人或被邀请人 ID
+          <Input
+            value={filterUserId}
+            pattern="[0-9a-fA-F-]{36}"
+            aria-invalid={userFilterInvalid}
+            onChange={(event) => {
+              setFilterUserId(event.target.value.trim());
+              setCursor('');
+            }}
+          />
+        </label>
+        <label>
+          返利状态
+          <select
+            value={status}
+            onChange={(event) => {
+              setStatus(event.target.value);
+              setCursor('');
+            }}
+          >
+            <option value="">全部</option>
+            <option value="pending">待满足</option>
+            <option value="rewarded">已奖励</option>
+          </select>
+        </label>
+        <label>
+          创建开始时间
+          <Input
+            type="datetime-local"
+            value={filterFrom}
+            aria-invalid={timeFilterInvalid}
+            onChange={(event) => {
+              setFilterFrom(event.target.value);
+              setCursor('');
+            }}
+          />
+        </label>
+        <label>
+          创建结束时间
+          <Input
+            type="datetime-local"
+            value={filterTo}
+            aria-invalid={timeFilterInvalid}
+            onChange={(event) => {
+              setFilterTo(event.target.value);
+              setCursor('');
+            }}
+          />
+        </label>
+      </div>
+      {(userFilterInvalid || timeFilterInvalid) && (
+        <p className="field-error" role="alert">
+          {timeFilterInvalid ? '开始时间必须早于结束时间' : '筛选 ID 必须是有效 UUID'}
+        </p>
+      )}
       {result.loading ? (
         <div className="panel loading-state" role="status">
           正在读取邀请记录…

@@ -37,6 +37,7 @@ export interface GeneratedBatch {
   campaignVersion: number;
   generated: number;
   codes?: Array<RedemptionCode & { code: string }>;
+  codesUnavailable?: boolean;
 }
 
 export interface Referral {

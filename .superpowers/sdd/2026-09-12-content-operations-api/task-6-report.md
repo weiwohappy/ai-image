@@ -11,7 +11,17 @@ Status: complete
 - Added a separate content-media library. It accepts only the approved raster types in the client, uploads to the content-media endpoint, exposes only an exact same-origin authenticated preview URL, and keeps private user `Asset` resources out of the UI.
 - Added redemption campaign create/edit/disable/archive flows, capacity-error presentation, version-conflict reload without losing the draft, redemption-code/claim browsing, versioned code disable, referral browsing with only masked API identities, and stable cursor continuation.
 - Added one-time redemption-code plaintext presentation. Plaintext exists only in the mounted success result; closing first clears the component state and unmounts the dialog. Reopening starts a fresh form and cannot restore the prior batch.
-- All mutation controls require both the exact actor permission and the environment write gate. Every command uses a fresh UUID idempotency key and sends the current record/campaign version and a bounded reason where required.
+- All mutation controls require both the exact actor permission and the environment write gate. Each logical command attempt keeps one UUID idempotency key for its canonical payload (including uncertain retries), rotates it only for a changed payload or determinate failure, and sends the current record/campaign version and a bounded reason where required.
+
+## Fix round 1
+
+- Replaced the nonexistent media publish permission check with the approved `content.media.write` contract for publish, offline, and archive operations.
+- Reworked content and campaign 409 recovery into an explicit field-by-field merge. The editor retains the local draft and latest server snapshot, shows both values, blocks resubmission until every conflict is resolved, and only then advances to the latest version.
+- Added a shared mutation-attempt guard. Double submissions are blocked, pending editors and confirmations cannot be dismissed, uncertain requests retain the exact idempotency key and payload, and determinate validation/payload changes safely establish a new attempt.
+- Hardened redemption-code generation as a single logical attempt. A pending or uncertain request blocks dismissal and navigation; uncertain delivery offers only an exact same-request retry. A safe receipt with `codesUnavailable` reports that the batch exists but plaintext cannot be recovered. Closing a successful result still destroys plaintext and it cannot be reopened.
+- Added shared dirty-state protection for content/media/campaign/code work across editor close, sidebar/hash navigation, and `beforeunload`. Base UI modal primitives now provide accessible title/description, initial focus, focus trap/restore, Escape policy, background inertness, and consistent high-risk confirmation behavior.
+- Added approved content/media updated-time filters and code/claim/referral campaign/user/status/time filters. Filter changes clear cursors; local datetime values are converted to offset-safe ISO instants, invalid ranges are rejected in place, and UUID filters are validated before transmission. The referral screen uses the approved backend's single `userId` filter, which matches inviter or invitee.
+- Tool structured JSON now requires a plain top-level object before any property access. Lifecycle reason validation remains inside the active confirmation, marks the textarea invalid, and focuses it.
 
 ## Design decisions
 
@@ -30,15 +40,15 @@ Initial RED:
 Focused GREEN:
 
 - Content, marketing, navigation, and HTTP boundary: 4 files / 37 tests passed before the final campaign-conflict and published-permission extensions.
-- Final content, marketing, navigation, and HTTP focused run: 4 files / 39 tests passed.
+- Final content and marketing fix-round run: 2 files / 24 tests passed. The round began at 8 expected failures / 13 passes, then added two filter/dirty RED cases before implementation.
 
 ## Final verification
 
-- Full admin test suite, run without competing build load: 19 files / 145 tests passed.
+- Full admin test suite, run without competing build load: 19 files / 155 tests passed.
 - `npm run typecheck`: passed.
 - `npm run build`: passed.
 - `npm run lint`: passed with no warnings.
-- Changed-file `oxfmt --check`: passed on 16 files.
+- Changed admin source-file `oxfmt --check`: passed on 13 files.
 - `git diff --check`: passed.
 
 One resource-saturated run executed tests alongside typecheck and the production build; one pre-existing invitation test exceeded its five-second timeout. The same file passed 13/13 or 2/2 when isolated as applicable, and the final full suite passed 145/145 without concurrent build pressure.

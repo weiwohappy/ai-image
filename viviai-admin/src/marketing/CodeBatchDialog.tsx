@@ -10,6 +10,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { AdminClient, errorText } from '../http';
+import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
+import { useCommandAttempt } from '../operations/useCommandAttempt';
 import type { GeneratedBatch } from './contracts';
 
 export function CodeBatchDialog({
@@ -28,9 +30,15 @@ export function CodeBatchDialog({
   const [reason, setReason] = useState('');
   const [result, setResult] = useState<GeneratedBatch>();
   const [error, setError] = useState('');
-  const [saving, setSaving] = useState(false);
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  const attempt = useCommandAttempt();
+  const saving = attempt.pending;
+  const locked = saving || attempt.uncertain;
+  const dirty = Boolean(campaignId || reason || result);
+  useBeforeUnloadGuard(dirty || locked);
+  useDirtyRegistration({ dirty, pending: locked, discard: onClose });
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
+    if (saving) return;
     setError('');
     if (!/^[0-9a-f-]{36}$/i.test(campaignId)) return setError('请输入有效的活动 ID');
     if (!Number.isInteger(campaignVersion) || campaignVersion < 1)
@@ -42,20 +50,18 @@ export function CodeBatchDialog({
       return setError('生成原因需为 5–500 个字符');
     if (/api[ _-]?key|\bsk-[a-z0-9]|data:image|base64|prompt|\u63d0\u793a\u8bcd/i.test(reason))
       return setError('原因中不得包含密钥、提示词或图片内容');
-    setSaving(true);
+    const body = { campaignId, campaignVersion, quantity, maxUses, reason: reason.trim() };
     try {
-      const batch = await client.command<GeneratedBatch>(
-        'POST',
-        '/redemption-codes',
-        { campaignId, campaignVersion, quantity, maxUses, reason: reason.trim() },
-        crypto.randomUUID(),
+      const batch = await attempt.run(body, (key) =>
+        client.command<GeneratedBatch>('POST', '/redemption-codes', body, key),
       );
+      if (!batch) return;
       setResult(batch);
       onChanged();
     } catch (failure) {
       setError(errorText(failure));
     } finally {
-      setSaving(false);
+      // The logical attempt deliberately survives an uncertain network outcome.
     }
   }
 
@@ -64,7 +70,11 @@ export function CodeBatchDialog({
     onClose();
   }
   return (
-    <Sheet open onOpenChange={(open) => !open && destroy()}>
+    <Sheet
+      open
+      disablePointerDismissal={locked}
+      onOpenChange={(open) => !open && !locked && destroy()}
+    >
       <SheetContent className="team-sheet operation-sheet" showCloseButton={false}>
         <SheetHeader>
           <SheetTitle>生成兑换码</SheetTitle>
@@ -80,14 +90,13 @@ export function CodeBatchDialog({
                 <p>关闭此结果后，系统不会再显示这些明文。</p>
               </div>
               <pre>
-                {result.codes?.map((code) => code.code).join('\n') ||
-                  '幂等重放已确认生成，明文不可再次恢复。'}
+                {result.codes?.map((code) => code.code).join('\n') || '批次已创建，但明文无法恢复'}
               </pre>
               <Button onClick={destroy}>关闭并销毁明文</Button>
             </div>
           ) : (
             <form className="stack" onSubmit={(event) => void submit(event)}>
-              <fieldset className="team-fields" disabled={saving}>
+              <fieldset className="team-fields" disabled={locked}>
                 <label className="field">
                   活动 ID
                   <Input value={campaignId} onChange={(e) => setCampaignId(e.target.value)} />
@@ -136,11 +145,24 @@ export function CodeBatchDialog({
                   {error}
                 </p>
               )}
+              {attempt.uncertain && (
+                <div className="notices" role="status">
+                  网络结果尚未确认。请使用同一请求检查结果，避免重复发码。
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={saving}
+                    onClick={() => void submit()}
+                  >
+                    检查结果/重试同请求
+                  </Button>
+                </div>
+              )}
               <div className="team-form-actions">
-                <Button type="button" variant="outline" onClick={destroy}>
+                <Button type="button" variant="outline" disabled={locked} onClick={destroy}>
                   取消
                 </Button>
-                <Button type="submit" disabled={saving}>
+                <Button type="submit" disabled={locked}>
                   {saving ? '正在生成…' : '确认生成'}
                 </Button>
               </div>
