@@ -58,6 +58,6 @@ describe('application routes', () => {
     render(<App />);
 
     expect(await screen.findByRole('heading', { name: /邀请朋友一起创作/ })).toBeVisible();
-    expect(screen.getByRole('button', { name: '查看通知' })).toBeVisible();
+    expect(screen.getByRole('button', { name: /查看通知，未读 \d+/ })).toBeVisible();
   });
 });

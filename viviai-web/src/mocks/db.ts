@@ -32,6 +32,8 @@ export function loadDb(): MockDatabase {
     }
   }
   if (!memoryDb.redeemedCodes) { memoryDb.redeemedCodes = []; migrated = true; }
+  if (!memoryDb.challenges) { memoryDb.challenges = []; migrated = true; }
+  if (!memoryDb.redemptionAttempts) { memoryDb.redemptionAttempts = []; migrated = true; }
   const legacyDb = memoryDb as MockDatabase & { credentialHash?: string };
   if ('credentialHash' in legacyDb) { delete legacyDb.credentialHash; migrated = true; }
   if (reconcileDb(memoryDb) || migrated) {

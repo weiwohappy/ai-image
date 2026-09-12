@@ -24,7 +24,9 @@ describe('notification sheet', () => {
     render(<QueryClientProvider client={client}><MemoryRouter><NotificationSheet open onClose={() => undefined} /></MemoryRouter></QueryClientProvider>);
 
     expect(await screen.findByText('欢迎来到 VIVIAI')).toBeVisible();
+    expect(screen.getByText('未读 1')).toBeVisible();
     await user.click(screen.getByRole('button', { name: '全部标为已读' }));
     expect(await screen.findByText('全部通知已读')).toBeVisible();
+    expect(screen.getByText('未读 0')).toBeVisible();
   });
 });

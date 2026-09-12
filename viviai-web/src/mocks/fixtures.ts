@@ -33,6 +33,8 @@ export interface MockDatabase {
   notifications: NotificationItem[];
   invites: InviteRelation[];
   redeemedCodes: string[];
+  challenges: Array<{ email: string; purpose: 'register' | 'reset-password' | 'change-email' | 'change-password'; code: string; used: boolean }>;
+  redemptionAttempts: Array<{ key: string; code: string; user: User }>;
 }
 
 const now = new Date('2026-09-05T00:00:00+08:00').toISOString();
@@ -273,6 +275,8 @@ export function createSeedDb(): MockDatabase {
       { id: 'invite-2', username: 'Aster', reward: 10, status: 'rewarded', createdAt: now },
     ],
     redeemedCodes: [],
+    challenges: [],
+    redemptionAttempts: [],
   };
 }
 

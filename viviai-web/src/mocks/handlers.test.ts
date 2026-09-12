@@ -161,10 +161,34 @@ describe('Mock workflow and account boundaries', () => {
     await expect(api.listGenerationTasks()).rejects.toEqual(expect.objectContaining({ code: 'AUTH_REQUIRED', status: 401 }));
   });
 
-  it('redeems a code only once', async () => {
+  it('replays a redemption for the same idempotency key and rejects a conflicting payload', async () => {
     await expect(api.redeemCode('viviai2026', 'mock-redeem-attempt-1')).resolves.toMatchObject({ credits: 1220 });
-    await expect(api.redeemCode('VIVIAI2026', 'mock-redeem-attempt-2')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.redeemCode('VIVIAI2026', 'mock-redeem-attempt-1')).resolves.toMatchObject({ credits: 1220 });
+    await expect(api.redeemCode('OTHER', 'mock-redeem-attempt-1')).rejects.toEqual(expect.objectContaining({ code: 'IDEMPOTENCY_CONFLICT', status: 409 }));
     expect(loadDb().ledger.filter((entry) => entry.type === 'redeem')).toHaveLength(1);
+  });
+
+  it('binds a valid invitation reward and rejects an unknown invitation', async () => {
+    await api.sendCode('invited@example.com', 'register');
+    await expect(api.register({ username: '邀请用户', email: 'invited@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
+    expect(loadDb().ledger).toContainEqual(expect.objectContaining({ type: 'invite', delta: 100 }));
+
+    resetDb();
+    await api.sendCode('unknown@example.com', 'register');
+    await expect(api.register({ username: '未知邀请', email: 'unknown@example.com', password: 'registration-12', code: '123456', inviteCode: 'UNKNOWN-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
+  });
+
+  it('isolates verification code purposes and consumes each code once', async () => {
+    await api.sendCode('next@example.com', 'change-email');
+    await expect(api.changePassword({ code: '123456', password: 'password-long-12' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.changeEmail({ email: 'next@example.com', code: '123456' })).resolves.toMatchObject({ email: 'next@example.com' });
+    await expect(api.changeEmail({ email: 'again@example.com', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+  });
+
+  it('requires a 12-character password without consuming a verification code first', async () => {
+    await api.sendCode('demo@viviai.local', 'change-password');
+    await expect(api.changePassword({ code: '123456', password: 'short-pass1' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.changePassword({ code: '123456', password: 'password-long-12' })).resolves.toMatchObject({ id: 'user-demo' });
   });
 
   it('supports login after registration and after changing email and password', async () => {
@@ -175,7 +199,8 @@ describe('Mock workflow and account boundaries', () => {
       draft.inspirations[0].liked = true;
       draft.templates[0].favorite = true;
     });
-    await api.register({ username: '新用户', email: 'new@example.com', password: 'initial88', code: '123456' });
+    await api.sendCode('new@example.com', 'register');
+    await api.register({ username: '新用户', email: 'new@example.com', password: 'initial-password-88', code: '123456' });
     const registered = loadDb();
     expect(registered.user).toMatchObject({ username: '新用户', email: 'new@example.com', planId: 'free', credits: 5 });
     expect(registered.user.id).not.toBe(priorUserId);
@@ -185,12 +210,14 @@ describe('Mock workflow and account boundaries', () => {
     expect(registered.templates.every((item) => !item.favorite)).toBe(true);
     expect(JSON.parse(window.localStorage.getItem('viviai-mock-db-v1') ?? '{}')).not.toHaveProperty('credentialHash');
     await api.logout();
-    await expect(api.login({ account: 'new@example.com', password: 'initial88' })).resolves.toMatchObject({ username: '新用户' });
+    await expect(api.login({ account: 'new@example.com', password: 'initial-password-88' })).resolves.toMatchObject({ username: '新用户' });
 
+    await api.sendCode('changed@example.com', 'change-email');
     await api.changeEmail({ email: 'changed@example.com', code: '123456' });
-    await api.changePassword({ code: '123456', password: 'changed88' });
+    await api.sendCode('changed@example.com', 'change-password');
+    await api.changePassword({ code: '123456', password: 'changed-password-88' });
     await api.logout();
-    await expect(api.login({ account: 'new@example.com', password: 'initial88' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CREDENTIALS' }));
-    await expect(api.login({ account: 'changed@example.com', password: 'changed88' })).resolves.toMatchObject({ email: 'changed@example.com' });
+    await expect(api.login({ account: 'new@example.com', password: 'initial-password-88' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CREDENTIALS' }));
+    await expect(api.login({ account: 'changed@example.com', password: 'changed-password-88' })).resolves.toMatchObject({ email: 'changed@example.com' });
   });
 });

@@ -38,6 +38,20 @@ function authError() {
   return sessionUser() ? null : fail(401, 'AUTH_REQUIRED', '请先登录后再访问。');
 }
 
+type ChallengePurpose = 'register' | 'reset-password' | 'change-email' | 'change-password';
+
+function consumeChallenge(email: string, purpose: ChallengePurpose, code: string): boolean {
+  let consumed = false;
+  mutateDb((draft) => {
+    const challenge = draft.challenges.find((item) => item.email === email.trim().toLocaleLowerCase() && item.purpose === purpose && item.code === code && !item.used);
+    if (challenge) {
+      challenge.used = true;
+      consumed = true;
+    }
+  });
+  return consumed;
+}
+
 async function credentialHash(value: string): Promise<string> {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -166,21 +180,25 @@ export const handlers = [
   }),
 
   http.post(`${api}/auth/register`, async ({ request }) => {
-    const input = (await request.json()) as { username: string; email: string; password: string; code: string };
-    if (!input.username.trim() || !input.email.includes('@') || input.password.length < 8 || !/^\d{6}$/.test(input.code)) {
+    const input = (await request.json()) as { username: string; email: string; password: string; code: string; inviteCode?: string };
+    if (!input.username.trim() || !input.email.includes('@') || input.password.length < 12 || !/^\d{6}$/.test(input.code)) {
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
+    const email = input.email.trim().toLocaleLowerCase();
+    if (!consumeChallenge(email, 'register', input.code)) return fail(400, 'INVALID_INPUT', '验证码无效或已使用。');
+    const inviter = input.inviteCode?.trim().toUpperCase();
+    if (inviter && inviter !== loadDb().user.inviteCode) return fail(422, 'INVALID_INVITE_CODE', '邀请码无效。');
     const passwordHash = await credentialHash(input.password);
     const userId = `user-${crypto.randomUUID()}`;
     const inviteCode = `VIVI-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
     const db = mutateDb((draft) => {
       draft.user.id = userId;
       draft.user.username = input.username.trim();
-      draft.user.email = input.email.trim();
+      draft.user.email = email;
       delete draft.user.avatarUrl;
       draft.user.planId = 'free';
       draft.user.planName = '免费套餐';
-      draft.user.credits = 5;
+      draft.user.credits = inviter ? 105 : 5;
       draft.user.frozenCredits = 0;
       draft.user.concurrency = 2;
       draft.user.inviteCode = inviteCode;
@@ -193,12 +211,13 @@ export const handlers = [
       draft.orders = [];
       draft.invites = [];
       draft.redeemedCodes = [];
+      draft.redemptionAttempts = [];
       for (const inspiration of draft.inspirations) {
         if (inspiration.liked) inspiration.likes = Math.max(0, inspiration.likes - 1);
         inspiration.liked = false;
       }
       for (const template of draft.templates) template.favorite = false;
-      draft.notifications = [{ id: `notice-${crypto.randomUUID()}`, type: 'system', title: '欢迎来到 VIVIAI', content: '注册奖励已到账，开始你的第一张作品吧。', read: false, createdAt: new Date().toISOString() }];
+      draft.notifications = [{ id: `notice-${crypto.randomUUID()}`, type: 'system', title: '欢迎来到 VIVIAI', content: inviter ? '注册与邀请奖励已到账，开始你的第一张作品吧。' : '注册奖励已到账，开始你的第一张作品吧。', read: false, createdAt: new Date().toISOString() }];
       draft.ledger = [{
         id: `ledger-${crypto.randomUUID()}`,
         type: 'register',
@@ -207,24 +226,31 @@ export const handlers = [
         balance: 5,
         createdAt: new Date().toISOString(),
       }];
+      if (inviter) draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'invite', description: '邀请码奖励', delta: 100, balance: 105, createdAt: new Date().toISOString() });
     });
     setCredentialHash(passwordHash);
     return ok(db.user, '注册成功');
   }),
 
   http.post(`${api}/auth/send-code`, async ({ request }) => {
-    const { email } = (await request.json()) as { email: string };
-    if (!email.includes('@')) return fail(400, 'INVALID_INPUT', '请输入有效邮箱。');
+    const { email, purpose = 'register' } = (await request.json()) as { email: string; purpose?: ChallengePurpose };
+    if (!email.includes('@') || !['register', 'reset-password', 'change-email', 'change-password'].includes(purpose)) return fail(400, 'INVALID_INPUT', '请输入有效邮箱和验证码用途。');
+    mutateDb((draft) => {
+      const normalizedEmail = email.trim().toLocaleLowerCase();
+      draft.challenges = draft.challenges.filter((item) => item.email !== normalizedEmail || item.purpose !== purpose);
+      draft.challenges.push({ email: normalizedEmail, purpose, code: '123456', used: false });
+    });
     await delay(180);
     return ok({ expiresIn: 60 }, '验证码已发送');
   }),
 
   http.post(`${api}/auth/reset-password`, async ({ request }) => {
     const input = (await request.json()) as { email: string; code: string; password: string };
-    if (!input.email.includes('@') || !/^\d{6}$/.test(input.code) || input.password.length < 8) {
+    if (!input.email.includes('@') || !/^\d{6}$/.test(input.code) || input.password.length < 12) {
       return fail(400, 'INVALID_INPUT', '邮箱、验证码或密码格式不正确。');
     }
     if (input.email.trim().toLocaleLowerCase() !== loadDb().user.email.toLocaleLowerCase()) return fail(404, 'INVALID_INPUT', '没有找到该邮箱对应的账户。');
+    if (!consumeChallenge(input.email, 'reset-password', input.code)) return fail(400, 'INVALID_INPUT', '验证码无效或已使用。');
     const passwordHash = await credentialHash(input.password);
     setCredentialHash(passwordHash);
     return ok({ success: true as const }, '密码已重置');
@@ -634,7 +660,7 @@ export const handlers = [
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { email: string; code: string };
-    if (!input.email.includes('@') || input.code !== '123456') return fail(400, 'INVALID_INPUT', '邮箱或验证码不正确。');
+    if (!input.email.includes('@') || !consumeChallenge(input.email, 'change-email', input.code)) return fail(400, 'INVALID_INPUT', '邮箱或验证码不正确。');
     const db = mutateDb((draft) => { draft.user.email = input.email.trim(); });
     return ok(db.user, '邮箱已更新');
   }),
@@ -642,7 +668,7 @@ export const handlers = [
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { code: string; password: string };
-    if (input.code !== '123456' || input.password.length < 8) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 8 位。');
+    if (input.password.length < 12 || !consumeChallenge(loadDb().user.email, 'change-password', input.code)) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 12 位。');
     const passwordHash = await credentialHash(input.password);
     setCredentialHash(passwordHash);
     return ok(loadDb().user, '密码已更新');
@@ -650,13 +676,19 @@ export const handlers = [
   http.post(`${api}/account/redeem`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
+    const idempotencyKey = request.headers.get('Idempotency-Key');
+    if (!idempotencyKey || !/^[A-Za-z0-9-]{8,128}$/.test(idempotencyKey)) return fail(400, 'INVALID_INPUT', '缺少有效的幂等键。');
     const { code } = (await request.json()) as { code: string };
     const normalized = code.trim().toUpperCase();
-    if (normalized !== 'VIVIAI2026' || loadDb().redeemedCodes.includes(normalized)) return fail(400, 'INVALID_INPUT', '兑换码无效或已使用。');
+    const prior = loadDb().redemptionAttempts.find((item) => item.key === idempotencyKey);
+    if (prior) return prior.code === normalized ? ok(prior.user, '兑换成功') : fail(409, 'IDEMPOTENCY_CONFLICT', '幂等键已用于其他兑换码。');
+    if (normalized !== 'VIVIAI2026') return fail(422, 'REDEMPTION_INVALID_OR_EXPIRED', '兑换码无效或已过期。');
+    if (loadDb().redeemedCodes.includes(normalized)) return fail(422, 'REDEMPTION_LIMIT_REACHED', '兑换码已使用。');
     const db = mutateDb((draft) => {
       draft.redeemedCodes.push(normalized);
       draft.user.credits += 100;
       draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'redeem', description: '兑换码奖励', delta: 100, balance: draft.user.credits, createdAt: new Date().toISOString() });
+      draft.redemptionAttempts.push({ key: idempotencyKey, code: normalized, user: structuredClone(draft.user) });
     });
     return ok(db.user, '兑换成功');
   }),

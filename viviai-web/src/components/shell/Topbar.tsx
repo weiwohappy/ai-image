@@ -38,7 +38,7 @@ export function Topbar() {
         <Button render={<NavLink to="/login" />} nativeButton={false} size="sm" className="rounded-full px-4">登录</Button>
       )}
       {me && <TaskDrawer activeCount={activeCount} />}
-      {me && <><Button variant="ghost" size="icon" aria-label="查看通知" className="relative rounded-full" onClick={() => setNoticesOpen(true)}><Bell />{notices.some((notice) => !notice.read) && <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-primary" />}</Button><NotificationSheet open={noticesOpen} onClose={() => setNoticesOpen(false)} /></>}
+      {me && <><Button variant="ghost" size="icon" aria-label={`查看通知，未读 ${notices.filter((notice) => !notice.read).length}`} className="relative rounded-full" onClick={() => setNoticesOpen(true)}><Bell />{notices.some((notice) => !notice.read) && <span className="absolute -right-1 -top-1 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground" aria-label={`未读 ${notices.filter((notice) => !notice.read).length}`}>{notices.filter((notice) => !notice.read).length}</span>}</Button><NotificationSheet open={noticesOpen} onClose={() => setNoticesOpen(false)} /></>}
     </header>
   );
 }

@@ -17,8 +17,14 @@ export function InvitePage() {
   const link = inviteCode ? `${origin}/#/register?invite=${encodeURIComponent(inviteCode)}` : '';
   async function copy() {
     if (!link) return;
+    const clipboard = window.navigator.clipboard;
+    if (!clipboard?.writeText) {
+      setCopied(false);
+      setCopyError('无法访问剪贴板，请手动复制链接。');
+      return;
+    }
     try {
-      await navigator.clipboard?.writeText(link);
+      await clipboard.writeText(link);
       setCopied(true);
       setCopyError('');
       window.setTimeout(() => setCopied(false), 1600);
