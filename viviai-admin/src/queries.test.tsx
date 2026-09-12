@@ -48,6 +48,18 @@ it('shows navigation based on actual permissions rather than role names', () => 
   expect(finance).toEqual(['/dashboard', '/users', '/orders', '/jobs']);
   expect(availableNavigation(actor).map((item) => item.path)).toContain('/alerts');
 });
+
+it('keeps operational navigation icons attached to items across permission filtering', () => {
+  const operational = availableNavigation({
+    ...actor,
+    permissions: ['content.tools.read', 'content.media.read', 'referrals.read'],
+  });
+  expect(operational.map((item) => [item.path, item.group, item.icon.displayName])).toEqual([
+    ['/content/tools', '内容运营', 'WandSparkles'],
+    ['/content/media', '内容运营', 'Images'],
+    ['/marketing/referrals', '营销运营', 'UserRoundPlus'],
+  ]);
+});
 it('renders the native matrix and leaves missing cells unsupported', () => {
   render(
     <ModelSpecs
@@ -205,9 +217,7 @@ it('verifies a configured third-party image channel without probing image genera
   await screen.findByText('sub2api');
   fireEvent.click(screen.getByRole('button', { name: '验证图片接口' }));
   expect(await screen.findByText(/图片接口通过/)).toBeInTheDocument();
-  expect(fetcher.mock.calls[1][0]).toContain(
-    '/api/admin/provider-accounts/sub2api/verify-image',
-  );
+  expect(fetcher.mock.calls[1][0]).toContain('/api/admin/provider-accounts/sub2api/verify-image');
 });
 
 it('renders a safe resource error and recovers after refresh without inventing rows', async () => {

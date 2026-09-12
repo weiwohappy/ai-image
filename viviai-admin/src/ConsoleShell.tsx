@@ -1,19 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import {
-  Activity,
-  CreditCard,
-  Users,
-  ListChecks,
-  Layers,
-  Network,
-  Bell,
-  ScrollText,
-  Shield,
-  LayoutDashboard,
-  LogOut,
-  RefreshCw,
-  ArrowLeft,
-} from 'lucide-react';
+import { Activity, Shield, LogOut, RefreshCw, ArrowLeft } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Sidebar,
@@ -42,20 +28,9 @@ import { useAdminQuery } from './useQuery';
 import { TeamPage } from './team/TeamPage';
 import { RolesPage } from './team/RolesPage';
 import { PricingPage } from './pricing/PricingPage';
-
-const icons = [
-  LayoutDashboard,
-  Users,
-  CreditCard,
-  ListChecks,
-  Layers,
-  CreditCard,
-  Network,
-  Bell,
-  ScrollText,
-  Users,
-  Shield,
-];
+import { ContentListPage } from './content/ContentListPage';
+import { MediaLibraryPage } from './content/MediaLibraryPage';
+import { CampaignPage } from './marketing/CampaignPage';
 export function ConsoleShell({
   actor,
   client,
@@ -85,10 +60,14 @@ export function ConsoleShell({
   }, [initial]);
   const pathname = path.split('?')[0];
   const root = `/${pathname.split('/')[1]}`;
-  const title = navigation.find((item) => item.path === root)?.label ?? '调用详情';
+  const currentItem = navigation.find(
+    (item) => pathname === item.path || pathname.startsWith(`${item.path}/`),
+  );
+  const title = currentItem?.label ?? '调用详情';
   const permission = routePermission(path);
   const allowed = permission && actor.permissions.includes(permission);
-  const detail = pathname.split('/').length > 2;
+  const operationRoute = root === '/content' || root === '/marketing';
+  const detail = !operationRoute && pathname.split('/').length > 2;
   const team = !detail && (root === '/administrators' || root === '/roles');
   const pricing = root === '/model-pricing';
   return (
@@ -189,6 +168,50 @@ export function ConsoleShell({
             <TeamPage actor={actor} client={client} onPermissionsChanged={onPermissionsChanged} />
           ) : root === '/roles' ? (
             <RolesPage actor={actor} client={client} onPermissionsChanged={onPermissionsChanged} />
+          ) : pathname === '/content/inspirations' ? (
+            <ContentListPage
+              kind="inspirations"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
+          ) : pathname === '/content/remix-templates' ? (
+            <ContentListPage
+              kind="remix-templates"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
+          ) : pathname === '/content/tools' ? (
+            <ContentListPage
+              kind="tools"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
+          ) : pathname === '/content/media' ? (
+            <MediaLibraryPage actor={actor} client={client} writeEnabled={teamWritesEnabled} />
+          ) : pathname === '/marketing/campaigns' ? (
+            <CampaignPage
+              view="campaigns"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
+          ) : pathname === '/marketing/codes' ? (
+            <CampaignPage
+              view="codes"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
+          ) : pathname === '/marketing/referrals' ? (
+            <CampaignPage
+              view="referrals"
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+            />
           ) : (
             <ResourcePage path={path} client={client} permissions={actor.permissions} />
           )}
@@ -218,7 +241,7 @@ function TeamNavigation({ actor, path }: { actor: AdminActor; path: string }) {
   return (
     <SidebarContent>
       <nav aria-label="运营导航">
-        {['工作台', '业务查询', '模型运行', '团队安全'].map(
+        {['工作台', '业务查询', '模型运行', '内容运营', '营销运营', '团队安全'].map(
           (group) =>
             items.some((item) => item.group === group) && (
               <SidebarGroup key={group}>
@@ -227,7 +250,7 @@ function TeamNavigation({ actor, path }: { actor: AdminActor; path: string }) {
                   {items
                     .filter((item) => item.group === group)
                     .map((item) => {
-                      const Icon = icons[navigation.indexOf(item)];
+                      const Icon = item.icon;
                       return (
                         <SidebarMenuItem key={item.path}>
                           <SidebarMenuButton

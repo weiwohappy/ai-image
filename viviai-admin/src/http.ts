@@ -5,6 +5,7 @@ const messages: Record<number, string> = {
   404: '记录不存在或不可访问',
   409: '状态已变化，请刷新后重试',
   410: '链接或授权已过期',
+  422: '无法完成变更，请检查字段和当前状态',
   429: '请求过于频繁，请稍后重试',
   503: '服务暂时不可用，请稍后重试',
 };
@@ -13,6 +14,8 @@ export class AdminError extends Error {
     public status: number,
     public requestId?: string,
     public code?: string,
+    public field?: string,
+    public details?: Readonly<Record<string, string | number>>,
   ) {
     super(messages[status] ?? '服务暂时不可用，请稍后重试');
     this.name = 'AdminError';
@@ -56,6 +59,9 @@ export class AdminClient {
   ) {
     return this.request<T>(path, { method, body, signal, idempotencyKey });
   }
+  upload<T>(path: string, body: FormData, idempotencyKey: string, signal?: AbortSignal) {
+    return this.request<T>(path, { method: 'POST', body, signal, idempotencyKey });
+  }
   private async request<T>(
     path: string,
     options: {
@@ -74,10 +80,14 @@ export class AdminClient {
       signal: options.signal,
       headers: {
         Accept: 'application/json',
-        ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        ...(options.body === undefined || options.body instanceof FormData
+          ? {}
+          : { 'Content-Type': 'application/json' }),
         ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
       },
-      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      ...(options.body === undefined
+        ? {}
+        : { body: options.body instanceof FormData ? options.body : JSON.stringify(options.body) }),
     });
     let envelope: unknown;
     try {
@@ -101,7 +111,24 @@ export class AdminClient {
       /^[A-Z0-9_]{1,80}$/.test(envelope.code)
         ? envelope.code
         : undefined;
-    this.check(generation, response.status, options.authenticated !== false, requestId, code);
+    const field =
+      envelope &&
+      typeof envelope === 'object' &&
+      'field' in envelope &&
+      typeof envelope.field === 'string' &&
+      /^[a-zA-Z][a-zA-Z0-9.[\]_-]{0,119}$/.test(envelope.field)
+        ? envelope.field
+        : undefined;
+    const details = safeDetails(envelope);
+    this.check(
+      generation,
+      response.status,
+      options.authenticated !== false,
+      requestId,
+      code,
+      field,
+      details,
+    );
     if (
       !envelope ||
       typeof envelope !== 'object' ||
@@ -135,12 +162,28 @@ export class AdminClient {
     authenticated: boolean,
     requestId?: string,
     code?: string,
+    field?: string,
+    details?: Readonly<Record<string, string | number>>,
   ) {
     if (generation !== this.generation) throw new DOMException('Session changed', 'AbortError');
     if (status === 401 && authenticated) {
       this.invalidate();
       this.onUnauthorized?.();
     }
-    if (status >= 400) throw new AdminError(status, requestId, code);
+    if (status >= 400) throw new AdminError(status, requestId, code, field, details);
   }
+}
+
+function safeDetails(envelope: unknown): Readonly<Record<string, string | number>> | undefined {
+  if (!envelope || typeof envelope !== 'object' || !('details' in envelope)) return undefined;
+  const value = envelope.details;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const result: Record<string, string | number> = {};
+  for (const key of ['reason', 'limit', 'retryAfterSeconds']) {
+    const item = source[key];
+    if (typeof item === 'number' && Number.isFinite(item)) result[key] = item;
+    if (typeof item === 'string' && /^[a-zA-Z0-9_.:-]{1,100}$/.test(item)) result[key] = item;
+  }
+  return Object.keys(result).length ? result : undefined;
 }

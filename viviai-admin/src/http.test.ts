@@ -6,6 +6,53 @@ const response = (data: unknown, status = 200) =>
     status,
   });
 describe('admin HTTP boundary', () => {
+  it('uploads multipart media through the fixed admin boundary without setting Content-Type', async () => {
+    const fetcher = vi.fn().mockResolvedValue(response({ id: 'media-1', version: 1 }));
+    vi.stubGlobal('fetch', fetcher);
+    const body = new FormData();
+    body.set('file', new File(['image'], 'cover.png', { type: 'image/png' }));
+    body.set('reason', '上传运营内容封面');
+    const key = '84d10165-e83f-46ca-abbb-3bcc2a16b6c9';
+
+    await expect(new AdminClient().upload('/content/media', body, key)).resolves.toEqual({
+      id: 'media-1',
+      version: 1,
+    });
+    const request = fetcher.mock.calls[0]![1] as RequestInit;
+    expect(fetcher.mock.calls[0]![0]).toBe('/api/admin/content/media');
+    expect(request.body).toBe(body);
+    expect(request.headers).toMatchObject({
+      Accept: 'application/json',
+      'Idempotency-Key': key,
+    });
+    expect(request.headers).not.toHaveProperty('Content-Type');
+  });
+
+  it('retains only safe field metadata from bindable validation errors', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            data: null,
+            code: 'CONTENT_NOT_PUBLISHABLE',
+            message: 'private model and provider detail',
+            requestId: 'safe-request',
+            field: 'defaultModelId',
+            details: { reason: 'not_publishable', ignored: 'private' },
+          }),
+          { status: 422 },
+        ),
+      ),
+    );
+    await expect(new AdminClient().get('/content/tools/tool-1')).rejects.toMatchObject({
+      status: 422,
+      field: 'defaultModelId',
+      details: { reason: 'not_publishable' },
+      message: '无法完成变更，请检查字段和当前状态',
+    });
+  });
+
   it('sends typed team mutations with a stable idempotency key and JSON version', async () => {
     const fetcher = vi.fn().mockResolvedValue(response({ resourceId: 'member-1', version: 2 }));
     vi.stubGlobal('fetch', fetcher);
