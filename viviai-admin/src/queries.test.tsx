@@ -134,6 +134,44 @@ it('supports scoped job filters without putting a prompt in the query', async ()
   expect(fetcher.mock.calls[1][0]).not.toContain('prompt');
 });
 
+it('verifies a configured third-party provider from the provider account list', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      json({
+        ...emptyTable,
+        title: '供应商账号',
+        columns: [
+          { key: 'provider', label: '供应商' },
+          { key: 'concurrency', label: '并发上限' },
+        ],
+        rows: [{ id: 'third-party-sub2api-sub2api-local', provider: 'sub2api', concurrency: 1 }],
+      }),
+    )
+    .mockResolvedValueOnce(
+      json({
+        provider: 'sub2api',
+        configured: true,
+        ok: true,
+        modelId: 'gpt-5.6',
+        modelListed: true,
+        responseReceived: true,
+      }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <ResourcePage
+      path="/provider-accounts"
+      client={new AdminClient()}
+      permissions={actor.permissions}
+    />,
+  );
+  await screen.findByText('sub2api');
+  fireEvent.click(screen.getByRole('button', { name: '验证渠道' }));
+  expect(await screen.findByText(/验证通过/)).toBeInTheDocument();
+  expect(fetcher.mock.calls[1][0]).toContain('/api/admin/provider-accounts/sub2api/verify');
+});
+
 it('renders a safe resource error and recovers after refresh without inventing rows', async () => {
   const fetcher = vi
     .fn()

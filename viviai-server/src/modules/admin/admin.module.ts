@@ -18,6 +18,8 @@ import { AdminQueryService } from './query.service.js';
 import { AssetsModule } from '../assets/assets.module.js';
 import { AdminSensitiveController } from './sensitive.controller.js';
 import { AdminSensitiveService } from './sensitive.service.js';
+import { AdminProviderVerificationController } from './provider-verification.controller.js';
+import { AdminProviderVerificationService } from './provider-verification.service.js';
 @Module({
   imports: [AssetsModule],
   controllers: [
@@ -27,6 +29,7 @@ import { AdminSensitiveService } from './sensitive.service.js';
     AdminSensitiveController,
     AdminTeamController,
     AdminPasswordResetController,
+    AdminProviderVerificationController,
   ],
   providers: [
     AdminModelPricingService,
@@ -41,6 +44,7 @@ import { AdminSensitiveService } from './sensitive.service.js';
     AdminSessionGuard,
     AdminQueryService,
     AdminSensitiveService,
+    AdminProviderVerificationService,
   ],
 })
 export class AdminModule {}

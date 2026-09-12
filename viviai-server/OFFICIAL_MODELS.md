@@ -28,6 +28,24 @@ Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536�
 
 ## 配置（之后提供 Key 时再启用）
 
+## 第三方 OpenAI 兼容渠道（Sub2API）
+
+Sub2API 不属于官方 Google/OpenAI 账号，也不改变官方图片模型的固定端点；它作为可替换的第三方 OpenAI 兼容聊天渠道配置。开发环境示例使用 `http://localhost:8080`，程序会规范化为 `http://localhost:8080/v1`；生产环境必须使用 HTTPS。当前渠道仅用于聊天模型的配置与连通性验证，不会自动出现在官方图片模型目录，也不会改变 Nano Banana/GPT Image 2 的官方路由。
+
+```bash
+SUB2API_ENABLED=true
+SUB2API_BASE_URL=http://localhost:8080
+SUB2API_API_KEY=<server-only-secret>
+SUB2API_MODEL_ID=<the-exact-model-id-listed-by-Sub2API>
+SUB2API_SCOPE=sub2api-default
+SUB2API_CREDENTIAL_VERSION=v1
+SUB2API_CONCURRENCY=1
+SUB2API_MAX_UNKNOWN=1
+SUB2API_DAILY_BUDGET_MICROS=0
+```
+
+`npm run verify:sub2api` 先请求 `/v1/models`，要求精确模型 ID 存在，再发送 `max_tokens=8`、`stream=false` 的最小 `/v1/chat/completions` 探针。输出只包含渠道、地址、模型和安全状态，不打印 Key 或上游响应正文。401/403、404、429、超时和畸形响应均返回稳定的安全错误。关闭 `SUB2API_ENABLED` 时不会要求 Key；启用但缺少 Key、模型或非法地址时服务启动即拒绝。
+
 API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JSON 字符串，无 Key。默认值：
 
 ```json

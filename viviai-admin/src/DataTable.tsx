@@ -7,6 +7,7 @@ import {
   TableCell,
   TableCaption,
 } from '@/components/ui/table';
+import type { ReactNode } from 'react';
 import type { AdminTable } from './contracts';
 import { formatValue, safeRoute } from './format';
 import { routePermission } from './navigation';
@@ -43,11 +44,14 @@ export function DataTable({
   table,
   permissions = [],
   detailResource,
+  rowAction,
 }: {
   table: AdminTable;
   permissions?: string[];
   detailResource?: string;
+  rowAction?: (row: AdminTable['rows'][number]) => ReactNode;
 }) {
+  const hasTrailingColumn = Boolean(detailResource || rowAction);
   return (
     <div className="data-block">
       <Notices items={table.notices} />
@@ -60,9 +64,9 @@ export function DataTable({
             {table.columns.map((column) => (
               <TableHead key={column.key}>{column.label}</TableHead>
             ))}
-            {detailResource && (
+            {hasTrailingColumn && (
               <TableHead>
-                <span className="sr-only">详情</span>
+                <span className="sr-only">操作</span>
               </TableHead>
             )}
           </TableRow>
@@ -97,21 +101,25 @@ export function DataTable({
                     </TableCell>
                   );
                 })}
-                {detailResource && (
+                {hasTrailingColumn && (
                   <TableCell>
-                    <a
-                      href={`#${detailResource}/${encodeURIComponent(row.id)}`}
-                      aria-label={`查看 ${row.id} 详情`}
-                    >
-                      查看详情
-                    </a>
+                    {rowAction
+                      ? rowAction(row)
+                      : detailResource && (
+                          <a
+                            href={`#${detailResource}/${encodeURIComponent(row.id)}`}
+                            aria-label={`查看 ${row.id} 详情`}
+                          >
+                            查看详情
+                          </a>
+                        )}
                   </TableCell>
                 )}
               </TableRow>
             ))
           ) : (
             <TableRow>
-              <TableCell colSpan={table.columns.length + (detailResource ? 1 : 0)}>
+              <TableCell colSpan={table.columns.length + (hasTrailingColumn ? 1 : 0)}>
                 <div className="empty-state">
                   没有符合条件的记录<p>可调整筛选条件或稍后刷新。</p>
                 </div>

@@ -46,6 +46,7 @@ export class AdminAuthController {
         this.auth.config,
         request.socket.remoteAddress ?? 'unknown',
       ),
+      ...(this.auth.config.thirdPartyChat ? { thirdPartyChatConfigured: true } : {}),
       ...(localTestPasswordsEnabled(this.auth.config) ? { localTestPasswords: true } : {}),
       ...(localPasswordLoginEnabled(this.auth.config) ? { localPasswordLogin: true } : {}),
     };

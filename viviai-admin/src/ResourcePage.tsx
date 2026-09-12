@@ -10,7 +10,7 @@ import {
   SelectItem,
 } from '@/components/ui/select';
 import type { AdminTable } from './contracts';
-import { AdminClient } from './http';
+import { AdminClient, errorText } from './http';
 import { useAdminQuery } from './useQuery';
 import { DataTable } from './DataTable';
 
@@ -318,7 +318,23 @@ function ResourceQuery({
         </p>
       ) : (
         query.data && (
-          <DataTable table={query.data} permissions={permissions} detailResource={detailResource} />
+          <DataTable
+            table={query.data}
+            permissions={permissions}
+            detailResource={detailResource}
+            rowAction={
+              path === '/provider-accounts'
+                ? (row) =>
+                    typeof row.provider === 'string' && row.provider ? (
+                      <ProviderVerification
+                        key={row.id}
+                        client={client}
+                        providerId={row.provider}
+                      />
+                    ) : null
+                : undefined
+            }
+          />
         )
       )}
       <div className="pagination">
@@ -344,5 +360,65 @@ function ResourceQuery({
         </div>
       </div>
     </section>
+  );
+}
+
+type ProviderVerificationResult = {
+  configured: boolean;
+  ok: boolean;
+  code?: string;
+  modelId?: string;
+  modelListed?: boolean;
+  responseReceived?: boolean;
+};
+
+function ProviderVerification({ client, providerId }: { client: AdminClient; providerId: string }) {
+  const [state, setState] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'success'; result: ProviderVerificationResult }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+
+  async function verify() {
+    if (state.status === 'loading') return;
+    setState({ status: 'loading' });
+    try {
+      const result = await client.post<ProviderVerificationResult>(
+        `/provider-accounts/${encodeURIComponent(providerId)}/verify`,
+        {},
+      );
+      if (result.ok) setState({ status: 'success', result });
+      else
+        setState({
+          status: 'error',
+          message: result.code === 'not_configured' ? '未配置' : '验证失败',
+        });
+    } catch (error) {
+      setState({ status: 'error', message: errorText(error) });
+    }
+  }
+
+  return (
+    <div className="provider-action">
+      <Button
+        type="button"
+        variant="outline"
+        onClick={verify}
+        disabled={state.status === 'loading'}
+      >
+        {state.status === 'loading' ? '验证中…' : '验证渠道'}
+      </Button>
+      {state.status === 'success' && (
+        <span className="status-pill status-succeeded" role="status">
+          验证通过{state.result.modelId ? ` · ${state.result.modelId}` : ''}
+        </span>
+      )}
+      {state.status === 'error' && (
+        <span className="status-pill status-failed" role="alert">
+          {state.message}
+        </span>
+      )}
+    </div>
   );
 }

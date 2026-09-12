@@ -77,7 +77,9 @@ NODE_ENV=development npm run admin:bootstrap -- revoke-account --input=/absolute
 | `/orders`                  | q=精确 UUID 或订单号；status；userId；source=支付 channel；from/to                    |
 | `/jobs`                    | q=精确 Job UUID；status=包含该单图状态；userId；modelId；source=create/remix；from/to |
 | `/models`                  | q=精确模型 ID；status=enabled/disabled                                                |
-| `/provider-accounts`       | q=精确供应商配额账号 ID（如 official-google-账号scope）                               |
+| `/provider-accounts`       | q=精确供应商配额账号 ID（如 official-google-账号scope 或 third-party-sub2api-账号scope） |
+
+当 `SUB2API_ENABLED=true` 时，`/provider-accounts` 会列出一个 `sub2api` 第三方 OpenAI 兼容渠道账号，不回传密钥。登录管理员可通过 `POST /api/admin/provider-accounts/sub2api/verify` 发起一次受控验证：先检查 `/v1/models` 中的精确模型 ID，再发送 `max_tokens=8` 的最小聊天请求。返回值仅包含 `configured`、`ok`、模型和安全错误码；401/403、404、429、超时及畸形响应不会透传上游正文。该接口要求 `providers.read`，不会写入价格、任务或账本。
 | `/alerts`                  | q=精确告警 UUID；status=active/resolved；source=告警 kind；from/to=首次创建           |
 | `/audit-events`            | q=精确审计 UUID；status=allowed/denied；from/to                                       |
 | `/administrators`          | q=精确管理员 UUID/邮箱；status；from/to                                               |

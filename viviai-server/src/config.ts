@@ -5,6 +5,11 @@ import {
   validateOfficialConfig,
   type OfficialConfig,
 } from './modules/providers/official-config.js';
+import {
+  loadThirdPartyConfig,
+  validateThirdPartyConfig,
+  type ThirdPartyProviderConfig,
+} from './modules/providers/third-party-config.js';
 
 export type NodeEnvironment = 'development' | 'test' | 'production';
 export type StorageDriver = 'local' | 's3';
@@ -12,6 +17,7 @@ export type StorageDriver = 'local' | 's3';
 export interface AppConfig {
   admin?: AdminConfig;
   officialImages?: OfficialConfig;
+  thirdPartyChat?: ThirdPartyProviderConfig;
   nodeEnv: NodeEnvironment;
   host: string;
   port: number;
@@ -133,9 +139,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   const value = parsed.data;
+  const thirdPartyChat = loadThirdPartyConfig(env, value.NODE_ENV);
   return validateConfig({
     admin: loadAdminConfig(env),
     officialImages: loadOfficialConfig(env),
+    ...(thirdPartyChat ? { thirdPartyChat } : {}),
     nodeEnv: value.NODE_ENV,
     host: value.HOST,
     port: value.PORT,
@@ -166,6 +174,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 export function validateConfig(config: AppConfig): AppConfig {
   validateAdminConfig(config.admin, config.nodeEnv, config.host);
   if (config.officialImages) validateOfficialConfig(config.officialImages);
+  if (config.thirdPartyChat) validateThirdPartyConfig(config.thirdPartyChat, config.nodeEnv);
   const issues: string[] = [];
   const hasAccessKey = config.s3AccessKeyId !== undefined;
   const hasSecretKey = config.s3SecretAccessKey !== undefined;

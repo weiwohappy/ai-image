@@ -539,6 +539,12 @@ h1 {
   font-size: 12px;
   white-space: nowrap;
 }
+.provider-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .status-paid,
 .status-active,
 .status-succeeded,

@@ -776,6 +776,19 @@ export class AdminQueryService {
           dailyBudgetMicros: BigInt(account.dailyBudgetMicros),
         });
       }
+    const thirdParty = this.config.thirdPartyChat;
+    if (thirdParty) {
+      const scope = `third-party-${thirdParty.id}-${thirdParty.scope}`;
+      accounts.set(scope, {
+        scope,
+        budgetScope: `third-party-usd-${thirdParty.id}-${thirdParty.scope}`,
+        provider: thirdParty.id,
+        simulated: false,
+        concurrency: thirdParty.concurrency,
+        maxUnknown: thirdParty.maxUnknown,
+        dailyBudgetMicros: BigInt(thirdParty.dailyBudgetMicros),
+      });
+    }
     if (this.config.simulationProviderEnabled)
       for (const p of SIMULATED_PROFILES)
         accounts.set(p.quotaScope, {

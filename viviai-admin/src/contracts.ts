@@ -50,6 +50,7 @@ export interface AdminStatus {
   stage: 'A' | 'B1';
   teamWritesEnabled?: boolean;
   modelPricingWritesEnabled?: boolean;
+  thirdPartyChatConfigured?: boolean;
   localTestPasswords?: boolean;
   localPasswordLogin?: boolean;
 }
