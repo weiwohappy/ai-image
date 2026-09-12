@@ -25,6 +25,8 @@ import { AdminContentService } from './content/content.service.js';
 import { AdminContentMediaService } from './content/media.service.js';
 import { AdminContentCommands } from './content/command.service.js';
 import { AdminContentPublishValidator } from './content/publish-validator.js';
+import { AdminMarketingController } from './marketing/marketing.controller.js';
+import { AdminMarketingCommands, AdminMarketingService } from './marketing/marketing.service.js';
 @Module({
   imports: [AssetsModule],
   controllers: [
@@ -36,6 +38,7 @@ import { AdminContentPublishValidator } from './content/publish-validator.js';
     AdminPasswordResetController,
     AdminProviderVerificationController,
     AdminContentController,
+    AdminMarketingController,
   ],
   providers: [
     AdminModelPricingService,
@@ -55,6 +58,8 @@ import { AdminContentPublishValidator } from './content/publish-validator.js';
     AdminContentMediaService,
     AdminContentCommands,
     AdminContentPublishValidator,
+    AdminMarketingCommands,
+    AdminMarketingService,
   ],
 })
 export class AdminModule {}

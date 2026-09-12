@@ -98,6 +98,7 @@ it('additively migrates only super permission, invalidates affected grants, pres
       const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
         (permission) =>
           !permission.startsWith('content.') &&
+          !['redemptions.read', 'redemptions.write', 'referrals.read'].includes(permission) &&
           permission !== 'alerts.content.read' &&
           !(role.key === 'content_operator' && permission === 'alerts.read'),
       );

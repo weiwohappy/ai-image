@@ -39,7 +39,11 @@ it('migrates content permissions additively and invalidates only affected admini
     );
     const after = await db.database.client.adminRole.findMany({ orderBy: { key: 'asc' } });
     for (const role of after) {
-      expect([...role.permissions].sort()).toEqual([...ROLE_PERMISSIONS[role.key]!].sort());
+      const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
+        (permission) =>
+          !['redemptions.read', 'redemptions.write', 'referrals.read'].includes(permission),
+      );
+      expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());
       const previous = before.find((candidate) => candidate.key === role.key)!;
       expect(role.version).toBe(
         ['super_admin', 'content_operator'].includes(role.key)

@@ -44,6 +44,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'content.tools.publish',
     'content.media.read',
     'content.media.write',
+    'redemptions.read',
+    'redemptions.write',
+    'referrals.read',
   ],
   owner: [
     'dashboard.read',
@@ -63,6 +66,9 @@ export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
     'dashboard.system.read',
     'alerts.service.read',
     'alerts.model.read',
+    'redemptions.read',
+    'redemptions.write',
+    'referrals.read',
     ...team,
   ],
   support: [
@@ -163,6 +169,9 @@ const labels: Record<string, string> = {
   'content.tools.publish': '发布工具内容',
   'content.media.read': '查看内容媒体',
   'content.media.write': '上传内容媒体',
+  'redemptions.read': '查看兑换活动与记录',
+  'redemptions.write': '管理兑换活动与兑换码',
+  'referrals.read': '查看邀请奖励记录',
 };
 const dependencies: Record<string, string[]> = {
   'model-pricing.write': ['models.read'],
@@ -181,6 +190,7 @@ const dependencies: Record<string, string[]> = {
   'content.tools.write': ['content.tools.read'],
   'content.tools.publish': ['content.tools.read', 'content.tools.write'],
   'content.media.write': ['content.media.read'],
+  'redemptions.write': ['redemptions.read'],
 };
 export const PERMISSION_CATALOG = Object.entries(labels).map(([key, name]) => ({
   key,

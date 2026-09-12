@@ -158,6 +158,7 @@ model RedemptionCode {
   status      String             @default("active")
   maxUses     Int                @map("max_uses")
   usedCount   Int                @default(0) @map("used_count")
+  version     Int                @default(1)
   createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
   campaign    RedemptionCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
