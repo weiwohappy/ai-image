@@ -15,194 +15,298 @@ model HealthProbe {
 }
 
 model User {
-  id String @id @default(uuid()) @db.Uuid
-  email String @unique
-  username String @unique
-  passwordHash String @map("password_hash")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  sessions Session[]
-  assets Asset[]
-  quotes GenerationQuote[]
-  jobs GenerationJob[]
-  creditLots CreditLot[]
-  paymentOrders PaymentOrder[]
+  id               String            @id @default(uuid()) @db.Uuid
+  email            String            @unique
+  username         String            @unique
+  passwordHash     String            @map("password_hash")
+  avatarAssetId    String?           @unique @map("avatar_asset_id") @db.Uuid
+  inviteCode       String            @unique @default(uuid()) @map("invite_code")
+  invitedByUserId  String?           @map("invited_by_user_id") @db.Uuid
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  sessions         Session[]
+  assets           Asset[]           @relation("UserAssets")
+  avatarAsset      Asset?            @relation("UserAvatar", fields: [avatarAssetId], references: [id], onDelete: SetNull)
+  invitedByUser    User?             @relation("UserInviter", fields: [invitedByUserId], references: [id], onDelete: Restrict)
+  invitedUsers     User[]            @relation("UserInviter")
+  quotes           GenerationQuote[]
+  jobs             GenerationJob[]
+  creditLots       CreditLot[]
+  paymentOrders    PaymentOrder[]
+  notifications    Notification[]
+  invitedReferrals Referral[]        @relation("ReferralInviter")
+  receivedReferral Referral?         @relation("ReferralInvitee")
+  redemptionClaims RedemptionClaim[]
+
   @@map("users")
 }
 
 model Session {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @map("user_id") @db.Uuid
-  tokenHash String @unique @map("token_hash")
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  tokenHash String   @unique @map("token_hash")
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   @@index([userId])
   @@map("sessions")
 }
 
 model EmailChallenge {
-  email String
-  purpose String
-  codeHash String @map("code_hash")
-  salt String
-  attempts Int @default(0)
-  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
-  sentAt DateTime @map("sent_at") @db.Timestamptz(6)
+  email      String
+  purpose    String
+  codeHash   String    @map("code_hash")
+  salt       String
+  attempts   Int       @default(0)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(6)
+  sentAt     DateTime  @map("sent_at") @db.Timestamptz(6)
   consumedAt DateTime? @map("consumed_at") @db.Timestamptz(6)
+
   @@id([email, purpose])
   @@map("email_challenges")
 }
 
 model AuthRateBucket {
-  key String @id
-  count Int
+  key       String   @id
+  count     Int
   expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
   @@map("auth_rate_buckets")
 }
 
 model Asset {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @map("user_id") @db.Uuid
-  name String
-  objectKey String @unique @map("object_key")
-  sha256 String @default("")
-  source String @default("upload")
-  width Int
-  height Int
-  byteSize Int @map("byte_size")
-  contentType String @map("content_type")
-  status String @default("ready")
-  favorite Boolean @default(false)
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
-  pins AssetPin[]
+  id            String     @id @default(uuid()) @db.Uuid
+  userId        String     @map("user_id") @db.Uuid
+  name          String
+  objectKey     String     @unique @map("object_key")
+  sha256        String     @default("")
+  source        String     @default("upload")
+  width         Int
+  height        Int
+  byteSize      Int        @map("byte_size")
+  contentType   String     @map("content_type")
+  status        String     @default("ready")
+  favorite      Boolean    @default(false)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  deletedAt     DateTime?  @map("deleted_at") @db.Timestamptz(6)
+  user          User       @relation("UserAssets", fields: [userId], references: [id], onDelete: Restrict)
+  avatarForUser User?      @relation("UserAvatar")
+  pins          AssetPin[]
+
   @@index([userId, deletedAt, createdAt])
   @@map("assets")
 }
 
+model Notification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  type      String
+  title     String
+  body      String
+  action    Json?
+  readAt    DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model Referral {
+  id            String    @id @default(uuid()) @db.Uuid
+  inviterUserId String    @map("inviter_user_id") @db.Uuid
+  inviteeUserId String    @unique @map("invitee_user_id") @db.Uuid
+  status        String    @default("pending")
+  rewardCredits Int       @default(100) @map("reward_credits")
+  qualifiedAt   DateTime? @map("qualified_at") @db.Timestamptz(6)
+  rewardedAt    DateTime? @map("rewarded_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  inviter       User      @relation("ReferralInviter", fields: [inviterUserId], references: [id], onDelete: Restrict)
+  invitee       User      @relation("ReferralInvitee", fields: [inviteeUserId], references: [id], onDelete: Restrict)
+
+  @@index([inviterUserId, createdAt])
+  @@map("referrals")
+}
+
+model RedemptionCampaign {
+  id           String           @id @default(uuid()) @db.Uuid
+  name         String
+  startsAt     DateTime         @map("starts_at") @db.Timestamptz(6)
+  endsAt       DateTime         @map("ends_at") @db.Timestamptz(6)
+  perUserLimit Int              @default(1) @map("per_user_limit")
+  credits      Int
+  totalLimit   Int?             @map("total_limit")
+  status       String           @default("active")
+  version      Int              @default(1)
+  createdAt    DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  codes        RedemptionCode[]
+
+  @@index([status, startsAt, endsAt])
+  @@map("redemption_campaigns")
+}
+
+model RedemptionCode {
+  id          String             @id @default(uuid()) @db.Uuid
+  campaignId  String             @map("campaign_id") @db.Uuid
+  digest      String             @unique
+  displayMask String             @map("display_mask")
+  status      String             @default("active")
+  maxUses     Int                @map("max_uses")
+  usedCount   Int                @default(0) @map("used_count")
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  campaign    RedemptionCampaign @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  claims      RedemptionClaim[]
+
+  @@index([campaignId, status])
+  @@map("redemption_codes")
+}
+
+model RedemptionClaim {
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @map("user_id") @db.Uuid
+  codeId         String         @map("code_id") @db.Uuid
+  credits        Int
+  idempotencyKey String         @unique @map("idempotency_key")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  user           User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  code           RedemptionCode @relation(fields: [codeId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, codeId])
+  @@index([codeId, createdAt])
+  @@map("redemption_claims")
+}
+
 model GenerationQuote {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
-  input Json
-  execution Json?
+  id                  String         @id @default(uuid()) @db.Uuid
+  userId              String         @db.Uuid
+  user                User           @relation(fields: [userId], references: [id], onDelete: Restrict)
+  input               Json
+  execution           Json?
   creditPriceSnapshot Json?
-  inputHash String
-  productVersion String
-  unitCredits BigInt
-  totalCredits BigInt
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  expiresAt DateTime @db.Timestamptz(6)
-  consumedAt DateTime? @db.Timestamptz(6)
-  job GenerationJob?
+  inputHash           String
+  productVersion      String
+  unitCredits         BigInt
+  totalCredits        BigInt
+  createdAt           DateTime       @default(now()) @db.Timestamptz(6)
+  expiresAt           DateTime       @db.Timestamptz(6)
+  consumedAt          DateTime?      @db.Timestamptz(6)
+  job                 GenerationJob?
+
   @@index([userId, expiresAt])
 }
 
 model GenerationJob {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
-  quoteId String @unique @db.Uuid
-  quote GenerationQuote @relation(fields: [quoteId], references: [id], onDelete: Restrict)
-  operation String
-  idempotencyKey String
-  requestHash String
-  input Json
-  execution Json?
+  id                  String           @id @default(uuid()) @db.Uuid
+  userId              String           @db.Uuid
+  user                User             @relation(fields: [userId], references: [id], onDelete: Restrict)
+  quoteId             String           @unique @db.Uuid
+  quote               GenerationQuote  @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  operation           String
+  idempotencyKey      String
+  requestHash         String
+  input               Json
+  execution           Json?
   creditPriceSnapshot Json?
-  cancelRequested Boolean @default(false)
-  retryOfJobId String? @db.Uuid
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
-  queueDeadlineAt DateTime @db.Timestamptz(6)
-  deliveryDeadlineAt DateTime @db.Timestamptz(6)
-  items GenerationItem[]
-  pins AssetPin[]
+  cancelRequested     Boolean          @default(false)
+  retryOfJobId        String?          @db.Uuid
+  createdAt           DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime         @updatedAt @db.Timestamptz(6)
+  queueDeadlineAt     DateTime         @db.Timestamptz(6)
+  deliveryDeadlineAt  DateTime         @db.Timestamptz(6)
+  items               GenerationItem[]
+  pins                AssetPin[]
+
   @@unique([userId, operation, idempotencyKey])
   @@index([userId, createdAt])
 }
 
 model GenerationItem {
-  id String @id @default(uuid()) @db.Uuid
-  jobId String @db.Uuid
-  job GenerationJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
-  ordinal Int
-  unitCredits BigInt
-  status String @default("queued")
-  fence Int @default(0)
-  leaseUntil DateTime? @db.Timestamptz(6)
-  nextRunAt DateTime @default(now()) @db.Timestamptz(6)
-  resultAssetId String? @unique @db.Uuid
-  errorCode String?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
-  reservation CreditReservation?
-  attempts ProviderAttempt[]
+  id            String             @id @default(uuid()) @db.Uuid
+  jobId         String             @db.Uuid
+  job           GenerationJob      @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  ordinal       Int
+  unitCredits   BigInt
+  status        String             @default("queued")
+  fence         Int                @default(0)
+  leaseUntil    DateTime?          @db.Timestamptz(6)
+  nextRunAt     DateTime           @default(now()) @db.Timestamptz(6)
+  resultAssetId String?            @unique @db.Uuid
+  errorCode     String?
+  createdAt     DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @db.Timestamptz(6)
+  reservation   CreditReservation?
+  attempts      ProviderAttempt[]
+
   @@unique([jobId, ordinal])
   @@index([status, nextRunAt])
 }
 
 model AssetPin {
-  jobId String @db.Uuid
-  assetId String @db.Uuid
-  role String
+  jobId    String        @db.Uuid
+  assetId  String        @db.Uuid
+  role     String
   snapshot Json
-  job GenerationJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
-  asset Asset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  job      GenerationJob @relation(fields: [jobId], references: [id], onDelete: Restrict)
+  asset    Asset         @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
   @@id([jobId, assetId])
 }
 
 model CreditLot {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
-  sourceId String
-  issued BigInt
-  available BigInt
-  held BigInt @default(0)
-  consumed BigInt @default(0)
-  expired BigInt @default(0)
-  revoked BigInt @default(0)
-  revenueMinor BigInt @default(0)
-  paymentOrderId String? @unique @db.Uuid
-  paymentOrder PaymentOrder? @relation(fields: [paymentOrderId], references: [id], onDelete: Restrict)
-  expiresAt DateTime? @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  allocations CreditAllocation[]
-  events CreditEvent[]
+  id             String             @id @default(uuid()) @db.Uuid
+  userId         String             @db.Uuid
+  user           User               @relation(fields: [userId], references: [id], onDelete: Restrict)
+  sourceId       String
+  issued         BigInt
+  available      BigInt
+  held           BigInt             @default(0)
+  consumed       BigInt             @default(0)
+  expired        BigInt             @default(0)
+  revoked        BigInt             @default(0)
+  revenueMinor   BigInt             @default(0)
+  paymentOrderId String?            @unique @db.Uuid
+  paymentOrder   PaymentOrder?      @relation(fields: [paymentOrderId], references: [id], onDelete: Restrict)
+  expiresAt      DateTime?          @db.Timestamptz(6)
+  createdAt      DateTime           @default(now()) @db.Timestamptz(6)
+  allocations    CreditAllocation[]
+  events         CreditEvent[]
+
   @@unique([userId, sourceId])
   @@index([userId, expiresAt])
 }
 
 model PaymentOrder {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+  id             String         @id @default(uuid()) @db.Uuid
+  userId         String         @db.Uuid
+  user           User           @relation(fields: [userId], references: [id], onDelete: Restrict)
   idempotencyKey String
-  requestHash String
-  orderNo String @unique
-  planId String
-  name String
-  amountMinor Int
-  currency String @default("CNY")
-  credits Int
-  durationDays Int
-  channel String
-  merchantId String
-  appId String
-  status String @default("creating")
-  checkout Json?
-  tradeNo String?
-  paidAt DateTime? @db.Timestamptz(6)
-  fulfilledAt DateTime? @db.Timestamptz(6)
-  expiresAt DateTime @db.Timestamptz(6)
-  nextSyncAt DateTime @default(now()) @db.Timestamptz(6)
-  syncLeaseUntil DateTime? @db.Timestamptz(6)
-  lastError String?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
-  lot CreditLot?
-  events PaymentEvent[]
+  requestHash    String
+  orderNo        String         @unique
+  planId         String
+  name           String
+  amountMinor    Int
+  currency       String         @default("CNY")
+  credits        Int
+  durationDays   Int
+  channel        String
+  merchantId     String
+  appId          String
+  status         String         @default("creating")
+  checkout       Json?
+  tradeNo        String?
+  paidAt         DateTime?      @db.Timestamptz(6)
+  fulfilledAt    DateTime?      @db.Timestamptz(6)
+  expiresAt      DateTime       @db.Timestamptz(6)
+  nextSyncAt     DateTime       @default(now()) @db.Timestamptz(6)
+  syncLeaseUntil DateTime?      @db.Timestamptz(6)
+  lastError      String?
+  createdAt      DateTime       @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime       @updatedAt @db.Timestamptz(6)
+  lot            CreditLot?
+  events         PaymentEvent[]
+
   @@unique([userId, idempotencyKey])
   @@unique([channel, merchantId, tradeNo])
   @@index([status, nextSyncAt])
@@ -210,278 +314,309 @@ model PaymentOrder {
 }
 
 model PaymentEvent {
-  id String @id @default(uuid()) @db.Uuid
-  channel String
-  merchantId String
-  eventId String
-  digest String
-  orderId String @db.Uuid
-  order PaymentOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
-  processedAt DateTime @default(now()) @db.Timestamptz(6)
+  id          String       @id @default(uuid()) @db.Uuid
+  channel     String
+  merchantId  String
+  eventId     String
+  digest      String
+  orderId     String       @db.Uuid
+  order       PaymentOrder @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  processedAt DateTime     @default(now()) @db.Timestamptz(6)
+
   @@unique([channel, merchantId, eventId])
 }
 
 model CreditReservation {
-  id String @id @default(uuid()) @db.Uuid
-  userId String @db.Uuid
-  jobId String @db.Uuid
-  itemId String @unique @db.Uuid
-  item GenerationItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  amount BigInt
-  status String @default("held")
-  settledAt DateTime? @db.Timestamptz(6)
+  id          String             @id @default(uuid()) @db.Uuid
+  userId      String             @db.Uuid
+  jobId       String             @db.Uuid
+  itemId      String             @unique @db.Uuid
+  item        GenerationItem     @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  amount      BigInt
+  status      String             @default("held")
+  settledAt   DateTime?          @db.Timestamptz(6)
   allocations CreditAllocation[]
+
   @@index([userId, status])
 }
 
 model CreditAllocation {
-  reservationId String @db.Uuid
-  lotId String @db.Uuid
-  amount BigInt
-  reservation CreditReservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
-  lot CreditLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  reservationId String            @db.Uuid
+  lotId         String            @db.Uuid
+  amount        BigInt
+  reservation   CreditReservation @relation(fields: [reservationId], references: [id], onDelete: Restrict)
+  lot           CreditLot         @relation(fields: [lotId], references: [id], onDelete: Restrict)
+
   @@id([reservationId, lotId])
 }
 
 model CreditEvent {
-  id String @id @default(uuid()) @db.Uuid
-  eventKey String @unique
-  userId String @db.Uuid
-  lotId String @db.Uuid
-  lot CreditLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
-  type String
-  itemId String? @db.Uuid
-  availableDelta BigInt @default(0)
-  heldDelta BigInt @default(0)
-  consumedDelta BigInt @default(0)
-  expiredDelta BigInt @default(0)
-  revokedDelta BigInt @default(0)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id             String    @id @default(uuid()) @db.Uuid
+  eventKey       String    @unique
+  userId         String    @db.Uuid
+  lotId          String    @db.Uuid
+  lot            CreditLot @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  type           String
+  itemId         String?   @db.Uuid
+  availableDelta BigInt    @default(0)
+  heldDelta      BigInt    @default(0)
+  consumedDelta  BigInt    @default(0)
+  expiredDelta   BigInt    @default(0)
+  revokedDelta   BigInt    @default(0)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(6)
+
   @@index([userId, createdAt])
 }
 
 model OutboxEvent {
-  id String @id @default(uuid()) @db.Uuid
-  eventKey String @unique
-  itemId String @db.Uuid
-  availableAt DateTime @default(now()) @db.Timestamptz(6)
+  id          String    @id @default(uuid()) @db.Uuid
+  eventKey    String    @unique
+  itemId      String    @db.Uuid
+  availableAt DateTime  @default(now()) @db.Timestamptz(6)
   publishedAt DateTime? @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
   @@index([publishedAt, availableAt])
 }
 
 model ProviderAttempt {
-  id String @id @default(uuid()) @db.Uuid
-  itemId String @db.Uuid
-  item GenerationItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  userId String @db.Uuid
-  ordinal Int
-  fence Int
-  channelId String
-  quotaScope String
-  budgetKey String
-  request Json
-  status String @default("submitting")
-  acceptance String @default("unknown")
-  billing String @default("unknown")
-  providerRequestId String?
-  stagedKey String?
-  slotActive Boolean @default(true)
-  unknownSlot Boolean @default(false)
+  id                  String               @id @default(uuid()) @db.Uuid
+  itemId              String               @db.Uuid
+  item                GenerationItem       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  userId              String               @db.Uuid
+  ordinal             Int
+  fence               Int
+  channelId           String
+  quotaScope          String
+  budgetKey           String
+  request             Json
+  status              String               @default("submitting")
+  acceptance          String               @default("unknown")
+  billing             String               @default("unknown")
+  providerRequestId   String?
+  stagedKey           String?
+  slotActive          Boolean              @default(true)
+  unknownSlot         Boolean              @default(false)
   estimatedCostMicros BigInt
-  usage ProviderUsageRecord?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  usage               ProviderUsageRecord?
+  createdAt           DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
+
   @@unique([itemId, ordinal])
   @@index([userId, slotActive])
 }
 
 model ProviderUsageRecord {
-  id String @id @default(uuid()) @db.Uuid
-  attemptId String @unique @db.Uuid
-  attempt ProviderAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
-  simulated Boolean @default(true)
-  certainty String @default("unknown")
+  id               String          @id @default(uuid()) @db.Uuid
+  attemptId        String          @unique @db.Uuid
+  attempt          ProviderAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+  simulated        Boolean         @default(true)
+  certainty        String          @default("unknown")
   actualCostMicros BigInt?
-  lines Json
-  updatedAt DateTime @updatedAt @db.Timestamptz(6)
+  lines            Json
+  updatedAt        DateTime        @updatedAt @db.Timestamptz(6)
 }
 
 model ProviderBudget {
-  id String @id
+  id             String @id
   reservedMicros BigInt @default(0)
   consumedMicros BigInt @default(0)
 }
 
 model ProviderQuota {
-  id String @id
-  inflight Int @default(0)
-  unknown Int @default(0)
+  id       String @id
+  inflight Int    @default(0)
+  unknown  Int    @default(0)
 }
 
 model AdminAccount {
-  id String @id @default(uuid()) @db.Uuid
-  email String @unique
-  displayName String
-  passwordHash String
-  status String @default("pending")
-  roleBindings AdminAccountRole[]
-  version Int @default(1)
-  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-  disabledAt DateTime? @db.Timestamptz(6)
-  passwordResets AdminPasswordReset[]
-  creditPrices ModelCreditPrice[]
-  extraPermissions String[] @default([])
+  id                 String               @id @default(uuid()) @db.Uuid
+  email              String               @unique
+  displayName        String
+  passwordHash       String
+  status             String               @default("pending")
+  roleBindings       AdminAccountRole[]
+  version            Int                  @default(1)
+  updatedAt          DateTime             @default(now()) @updatedAt @db.Timestamptz(6)
+  disabledAt         DateTime?            @db.Timestamptz(6)
+  passwordResets     AdminPasswordReset[]
+  creditPrices       ModelCreditPrice[]
+  extraPermissions   String[]             @default([])
   encryptedMfaSecret String
-  lastTotpCounter BigInt?
-  authVersion Int @default(1)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  lastTotpCounter    BigInt?
+  authVersion        Int                  @default(1)
+  createdAt          DateTime             @default(now()) @db.Timestamptz(6)
 }
+
 model ModelCreditPrice {
-  id String @id @default(uuid()) @db.Uuid
-  modelId String @db.VarChar(80)
-  resolution String @db.VarChar(16)
-  unitCredits Int
-  enabled Boolean
-  version Int @default(1)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-  updatedBy String? @db.Uuid
+  id            String        @id @default(uuid()) @db.Uuid
+  modelId       String        @db.VarChar(80)
+  resolution    String        @db.VarChar(16)
+  unitCredits   Int
+  enabled       Boolean
+  version       Int           @default(1)
+  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+  updatedBy     String?       @db.Uuid
   administrator AdminAccount? @relation(fields: [updatedBy], references: [id], onDelete: Restrict)
+
   @@unique([modelId, resolution])
 }
+
 model AdminInvitation {
-  id String @id @default(uuid()) @db.Uuid
-  tokenHash String @unique
-  email String @unique
-  roleBindings AdminInvitationRole[]
-  displayName String @default("")
-  version Int @default(1)
-  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-  revokedAt DateTime? @db.Timestamptz(6)
-  createdBy String? @db.Uuid
-  extraPermissions String[] @default([])
-  expiresAt DateTime @db.Timestamptz(6)
-  consumedAt DateTime? @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id               String                @id @default(uuid()) @db.Uuid
+  tokenHash        String                @unique
+  email            String                @unique
+  roleBindings     AdminInvitationRole[]
+  displayName      String                @default("")
+  version          Int                   @default(1)
+  updatedAt        DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  revokedAt        DateTime?             @db.Timestamptz(6)
+  createdBy        String?               @db.Uuid
+  extraPermissions String[]              @default([])
+  expiresAt        DateTime              @db.Timestamptz(6)
+  consumedAt       DateTime?             @db.Timestamptz(6)
+  createdAt        DateTime              @default(now()) @db.Timestamptz(6)
 }
+
 model AdminChallenge {
-  id String @id @default(uuid()) @db.Uuid
-  tokenHash String @unique
-  accountId String @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  tokenHash   String   @unique
+  accountId   String   @db.Uuid
   authVersion Int
-  attempts Int @default(0)
-  expiresAt DateTime @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  attempts    Int      @default(0)
+  expiresAt   DateTime @db.Timestamptz(6)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
   @@index([accountId])
 }
+
 model AdminSession {
-  id String @id @default(uuid()) @db.Uuid
-  tokenHash String @unique
-  accountId String @db.Uuid
+  id          String   @id @default(uuid()) @db.Uuid
+  tokenHash   String   @unique
+  accountId   String   @db.Uuid
   authVersion Int
-  authMethod String @default("mfa")
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
-  expiresAt DateTime @db.Timestamptz(6)
+  authMethod  String   @default("mfa")
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  lastSeenAt  DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt   DateTime @db.Timestamptz(6)
+
   @@index([accountId])
 }
+
 model AdminRecoveryCode {
-  id String @id @default(uuid()) @db.Uuid
-  accountId String @db.Uuid
-  codeHash String @unique
+  id         String    @id @default(uuid()) @db.Uuid
+  accountId  String    @db.Uuid
+  codeHash   String    @unique
   consumedAt DateTime? @db.Timestamptz(6)
+
   @@index([accountId])
 }
+
 model AdminAuditEvent {
-  id String @id @default(uuid()) @db.Uuid
-  accountId String? @db.Uuid
-  sessionId String? @db.Uuid
-  action String
-  resourceId String?
-  outcome String
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String?  @db.Uuid
+  sessionId    String?  @db.Uuid
+  action       String
+  resourceId   String?
+  outcome      String
   reasonDigest String?
-  metadata Json?
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  metadata     Json?
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+
   @@index([createdAt, id])
 }
+
 model AdminSensitiveGrant {
-  id String @id @default(uuid()) @db.Uuid
-  accountId String @db.Uuid
-  sessionId String @db.Uuid
-  jobId String @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  accountId    String   @db.Uuid
+  sessionId    String   @db.Uuid
+  jobId        String   @db.Uuid
   reasonDigest String
-  reason String @db.VarChar(500)
-  expiresAt DateTime @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  reason       String   @db.VarChar(500)
+  expiresAt    DateTime @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
 }
+
 model AdminRole {
-  key String @id
-  name String
-  description String @default("")
-  builtIn Boolean @default(false)
+  key         String                @id
+  name        String
+  description String                @default("")
+  builtIn     Boolean               @default(false)
   permissions String[]
-  version Int @default(1)
-  deletedAt DateTime? @db.Timestamptz(6)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-  accounts AdminAccountRole[]
+  version     Int                   @default(1)
+  deletedAt   DateTime?             @db.Timestamptz(6)
+  createdAt   DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  accounts    AdminAccountRole[]
   invitations AdminInvitationRole[]
 }
+
 model AdminAccountRole {
-  accountId String @db.Uuid
-  roleKey String
-  account AdminAccount @relation(fields: [accountId], references: [id])
-  role AdminRole @relation(fields: [roleKey], references: [key])
+  accountId String       @db.Uuid
+  roleKey   String
+  account   AdminAccount @relation(fields: [accountId], references: [id])
+  role      AdminRole    @relation(fields: [roleKey], references: [key])
+
   @@id([accountId, roleKey])
 }
+
 model AdminInvitationRole {
-  invitationId String @db.Uuid
-  roleKey String
-  invitation AdminInvitation @relation(fields: [invitationId], references: [id])
-  role AdminRole @relation(fields: [roleKey], references: [key])
+  invitationId String          @db.Uuid
+  roleKey      String
+  invitation   AdminInvitation @relation(fields: [invitationId], references: [id])
+  role         AdminRole       @relation(fields: [roleKey], references: [key])
+
   @@id([invitationId, roleKey])
 }
+
 model AdminPasswordReset {
-  id String @id @default(uuid()) @db.Uuid
-  accountId String @db.Uuid
-  account AdminAccount @relation(fields: [accountId], references: [id])
-  tokenHash String @unique
-  expiresAt DateTime @db.Timestamptz(6)
-  consumedAt DateTime? @db.Timestamptz(6)
-  revokedAt DateTime? @db.Timestamptz(6)
-  createdBy String @db.Uuid
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  id         String       @id @default(uuid()) @db.Uuid
+  accountId  String       @db.Uuid
+  account    AdminAccount @relation(fields: [accountId], references: [id])
+  tokenHash  String       @unique
+  expiresAt  DateTime     @db.Timestamptz(6)
+  consumedAt DateTime?    @db.Timestamptz(6)
+  revokedAt  DateTime?    @db.Timestamptz(6)
+  createdBy  String       @db.Uuid
+  createdAt  DateTime     @default(now()) @db.Timestamptz(6)
+
   @@index([accountId])
 }
+
 model AdminCommandReceipt {
-  id String @id @default(uuid()) @db.Uuid
-  accountId String @db.Uuid
-  sessionId String @db.Uuid
-  idempotencyKey String @db.Uuid
-  action String
-  target String
-  requestDigest String
-  result Json
-  completedAt DateTime @default(now()) @db.Timestamptz(6)
+  id             String   @id @default(uuid()) @db.Uuid
+  accountId      String   @db.Uuid
+  sessionId      String   @db.Uuid
+  idempotencyKey String   @db.Uuid
+  action         String
+  target         String
+  requestDigest  String
+  result         Json
+  completedAt    DateTime @default(now()) @db.Timestamptz(6)
+
   @@unique([accountId, idempotencyKey])
 }
+
 model AdminAlert {
-  id String @id @default(uuid()) @db.Uuid
-  sourceKey String @unique
-  category String
-  kind String
-  resourceId String
+  id          String   @id @default(uuid()) @db.Uuid
+  sourceKey   String   @unique
+  category    String
+  kind        String
+  resourceId  String
   firstSeenAt DateTime @default(now()) @db.Timestamptz(6)
-  lastSeenAt DateTime @default(now()) @db.Timestamptz(6)
-  resolved Boolean @default(false)
-  createdAt DateTime @default(now()) @db.Timestamptz(6)
+  lastSeenAt  DateTime @default(now()) @db.Timestamptz(6)
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+
   @@index([createdAt, id])
 }
+
 model GenerationLifecycleEvent {
-  id String @id @default(uuid()) @db.Uuid
-  itemId String @db.Uuid
-  event String
+  id        String   @id @default(uuid()) @db.Uuid
+  itemId    String   @db.Uuid
+  event     String
   createdAt DateTime @default(now()) @db.Timestamptz(6)
+
   @@unique([itemId, event])
 }

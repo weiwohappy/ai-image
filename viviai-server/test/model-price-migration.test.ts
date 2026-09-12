@@ -19,9 +19,10 @@ it('additively migrates only super permission, invalidates affected grants, pres
     const userId = randomUUID(),
       quoteId = randomUUID(),
       jobId = randomUUID();
-    await db.database.client.user.create({
-      data: { id: userId, email: `${userId}@test.local`, username: userId, passwordHash: 'unused' },
-    });
+    await sql.query(
+      'INSERT INTO users (id,email,username,password_hash) VALUES ($1,$2,$3,$4)',
+      [userId, `${userId}@test.local`, userId, 'unused'],
+    );
     await db.database.client.generationQuote.create({
       data: {
         id: quoteId,
