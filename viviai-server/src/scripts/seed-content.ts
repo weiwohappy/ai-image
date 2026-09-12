@@ -12,6 +12,7 @@ import {
 } from '../modules/content/content-contracts.js';
 import { CatalogService } from '../modules/catalog/catalog.service.js';
 import { activeCreditPrice } from '../modules/catalog/credit-pricing.js';
+import { getOfficialOutputSpec, OFFICIAL_MODELS } from '../modules/providers/official-models.js';
 import { DatabaseService, type DbTransaction } from '../shared/database/database.service.js';
 
 export type { ContentSeedManifest } from '../modules/content/content-contracts.js';
@@ -73,6 +74,8 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
     title,
     description: `商业视觉示例 ${index + 1}，主体清晰，光影有层次，保留文案安全区`,
     category: categories[index % categories.length]!,
+    editorialLabel: index < 3 ? '编辑精选' : undefined,
+    baseLikes: 286 + index * 137,
     creatorName: ['Luna Studio', 'North Lab', '见山设计', 'Kite Visual'][index % 4],
     sourceType: 'platform',
     sourceName: 'Viviai curated mock catalog',
@@ -92,6 +95,8 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
     platform: ['小红书', '淘宝', '抖音'][index % 3]!,
     industry: ['美妆', '食品', '消费电子'][index % 3]!,
     style: ['电影感', '自然系', '高级简约'][index % 3]!,
+    popularityLabel: index < 3 ? '近期热门' : '编辑精选',
+    baseRemixCount: 420 + index * 173,
     creatorName: ['Luna Studio', 'North Lab', '见山设计', 'Kite Visual'][index % 4],
     sourceType: 'platform',
     sourceName: 'Viviai curated mock catalog',
@@ -122,6 +127,7 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
       name: '产品精修',
       description: '优化材质、光线与商品轮廓，保持产品结构',
       category: '电商工具',
+      isNew: true,
       fields: [
         {
           id: 'product-type',
@@ -226,7 +232,14 @@ export async function seedContent(
   db: DatabaseService,
   store: ObjectStore,
   options: SeedContentOptions = {},
-): Promise<{ media: number; inspirations: number; templates: number; tools: number }> {
+): Promise<{
+  media: number;
+  inspirations: number;
+  templates: number;
+  tools: number;
+  mediaCounts: { created: number; updated: number; unchanged: number };
+  cleanupWarnings: string[];
+}> {
   const parsed = contentSeedManifestSchema.safeParse(options.manifest ?? contentSeedManifest);
   if (!parsed.success) {
     const detail = parsed.error.issues
@@ -238,41 +251,45 @@ export async function seedContent(
   const preparedMedia = await Promise.all(manifest.media.map(prepareMedia));
   const newlyWritten: string[] = [];
   const obsoleteObjectKeys: string[] = [];
+  const mediaCounts = { created: 0, updated: 0, unchanged: 0 };
+  const changedMediaExternalIds = new Set<string>();
+  const cleanupWarnings: string[] = [];
   try {
-    for (const media of preparedMedia) {
-      const existing = await db.client.contentMedia.findUnique({
-        where: { externalId: media.externalId },
-      });
-      const collision = await db.client.contentMedia.findUnique({
-        where: { objectKey: media.objectKey },
-      });
-      if (collision && collision.externalId !== media.externalId)
-        throw new Error(
-          `Content media ${media.logicalFilename} (${media.externalId}) object key collision`,
-        );
-      if (existing && existing.objectKey !== media.objectKey) {
-        obsoleteObjectKeys.push(existing.objectKey);
-      }
-      if (existing?.sha256 === media.sha256 && existing.objectKey === media.objectKey) {
-        let stored: Uint8Array;
+    await db.transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('content:seed', 0))`;
+      for (const media of preparedMedia) {
+        const existing = await tx.contentMedia.findUnique({
+          where: { externalId: media.externalId },
+        });
+        const collision = await tx.contentMedia.findUnique({
+          where: { objectKey: media.objectKey },
+        });
+        if (collision && collision.externalId !== media.externalId)
+          throw new Error(
+            `Content media ${media.logicalFilename} (${media.externalId}) object key collision`,
+          );
+        if (existing && existing.objectKey !== media.objectKey) {
+          obsoleteObjectKeys.push(existing.objectKey);
+        }
+        if (existing?.sha256 === media.sha256 && existing.objectKey === media.objectKey) {
+          let stored: Uint8Array;
+          try {
+            stored = await store.get(media.objectKey);
+          } catch (error) {
+            throw namedMediaError(media, error);
+          }
+          if (sha256(stored) !== media.sha256)
+            throw namedMediaError(media, new Error('stored bytes do not match the catalog digest'));
+          continue;
+        }
         try {
-          stored = await store.get(media.objectKey);
+          await store.put(media.objectKey, media.bytes, media.contentType);
+          newlyWritten.push(media.objectKey);
         } catch (error) {
           throw namedMediaError(media, error);
         }
-        if (sha256(stored) !== media.sha256)
-          throw namedMediaError(media, new Error('stored bytes do not match the catalog digest'));
-        continue;
       }
-      try {
-        await store.put(media.objectKey, media.bytes, media.contentType);
-        newlyWritten.push(media.objectKey);
-      } catch (error) {
-        throw namedMediaError(media, error);
-      }
-    }
 
-    await db.transaction(async (tx) => {
       await options.beforeTransaction?.();
       const mediaIds = new Map<string, string>();
       for (const media of preparedMedia) {
@@ -288,9 +305,10 @@ export async function seedContent(
           byteSize: media.byteSize,
           status: media.status,
         };
+        const changed = !current || !sameMedia(current, data);
         const saved =
-          current && sameMedia(current, data)
-            ? current
+          current && !changed
+            ? (mediaCounts.unchanged++, current)
             : current
               ? await tx.contentMedia.update({
                   where: { id: current.id },
@@ -308,47 +326,114 @@ export async function seedContent(
                     publishedAt: media.status === 'published' ? new Date() : null,
                   },
                 });
+        if (current && changed) mediaCounts.updated++;
+        if (!current) mediaCounts.created++;
+        if (changed) changedMediaExternalIds.add(media.externalId);
         mediaIds.set(media.externalId, saved.id);
       }
 
       for (const row of manifest.inspirations) {
-        await upsertInspiration(tx, row, mediaIds);
+        await upsertInspiration(
+          tx,
+          row,
+          mediaIds,
+          changedMediaExternalIds.has(row.coverMediaExternalId) ||
+            (row.caseMediaExternalId !== undefined &&
+              changedMediaExternalIds.has(row.caseMediaExternalId)),
+        );
       }
       for (const row of manifest.templates) {
-        await upsertTemplate(tx, row, mediaIds);
+        await upsertTemplate(
+          tx,
+          row,
+          mediaIds,
+          changedMediaExternalIds.has(row.coverMediaExternalId) ||
+            (row.referenceMediaExternalId !== undefined &&
+              changedMediaExternalIds.has(row.referenceMediaExternalId)),
+        );
       }
       for (const row of manifest.tools) {
         if (row.status === 'published') {
+          validatePublishedTool(row);
           if (!(await options.isModelSpecEnabled?.(row.defaultModelId, row.defaultOutputSpecId)))
             throw new Error(`Tool ${row.externalId} requires an enabled model specification`);
           try {
-            await activeCreditPrice(tx, row.defaultModelId, row.defaults.resolution, 409);
+            await activeCreditPrice(
+              tx,
+              row.defaultModelId,
+              getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId)!.resolution,
+              409,
+            );
           } catch (error) {
             if (error instanceof Error && 'code' in error && error.code === 'PRICE_UNAVAILABLE')
               throw new Error(`Tool ${row.externalId} requires an active model credit price`);
             throw error;
           }
         }
-        await upsertTool(tx, row, mediaIds);
+        await upsertTool(
+          tx,
+          row,
+          mediaIds,
+          changedMediaExternalIds.has(row.coverMediaExternalId) ||
+            (row.iconMediaExternalId !== undefined &&
+              changedMediaExternalIds.has(row.iconMediaExternalId)),
+        );
       }
     });
   } catch (error) {
-    await Promise.all(newlyWritten.map((key) => store.delete(key).catch(() => undefined)));
+    await Promise.all(
+      newlyWritten.map(async (key) => {
+        try {
+          await store.delete(key);
+        } catch (cleanupError) {
+          cleanupWarnings.push(`Failed to clean up ${key}: ${String(cleanupError)}`);
+        }
+      }),
+    );
     throw error;
   }
-  await Promise.all(obsoleteObjectKeys.map((key) => store.delete(key).catch(() => undefined)));
+  await Promise.all(
+    obsoleteObjectKeys.map(async (key) => {
+      try {
+        await store.delete(key);
+      } catch (cleanupError) {
+        cleanupWarnings.push(`Failed to clean up ${key}: ${String(cleanupError)}`);
+      }
+    }),
+  );
   return {
     media: manifest.media.length,
     inspirations: manifest.inspirations.length,
     templates: manifest.templates.length,
     tools: manifest.tools.length,
+    mediaCounts,
+    cleanupWarnings,
   };
+}
+
+function validatePublishedTool(row: ContentSeedManifest['tools'][number]) {
+  const definition = OFFICIAL_MODELS.find((model) => model.id === row.defaultModelId);
+  const spec = getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId);
+  if (
+    !definition ||
+    !spec ||
+    spec.resolution !== row.defaults.resolution ||
+    spec.ratio !== row.defaults.ratio
+  )
+    throw new Error(`Tool ${row.externalId} requires an exact output specification`);
+  if (
+    row.maxAssets > definition.maxImages ||
+    row.maxOutputCount > 1 ||
+    row.defaults.count > row.maxOutputCount
+  )
+    throw new Error(`Tool ${row.externalId} exceeds output/reference limits`);
 }
 
 async function upsertInspiration(
   tx: DbTransaction,
   row: ContentSeedManifest['inspirations'][number],
   mediaIds: Map<string, string>,
+  mediaChanged = false,
 ) {
   const data = {
     title: row.title,
@@ -358,6 +443,8 @@ async function upsertInspiration(
     sourceType: row.sourceType ?? null,
     sourceName: row.sourceName ?? null,
     sourceUrl: row.sourceUrl ?? null,
+    editorialLabel: row.editorialLabel ?? null,
+    baseLikes: row.baseLikes,
     tags: row.tags,
     defaultPrompt: row.defaultPrompt,
     defaultModelId: row.defaultModelId,
@@ -376,7 +463,7 @@ async function upsertInspiration(
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data)) return current;
+  if (sameRecord(current, data) && !mediaChanged) return current;
   return tx.inspiration.update({
     where: { id: current.id },
     data: {
@@ -391,6 +478,7 @@ async function upsertTemplate(
   tx: DbTransaction,
   row: ContentSeedManifest['templates'][number],
   mediaIds: Map<string, string>,
+  mediaChanged = false,
 ) {
   const data = {
     title: row.title,
@@ -403,6 +491,8 @@ async function upsertTemplate(
     sourceType: row.sourceType ?? null,
     sourceName: row.sourceName ?? null,
     sourceUrl: row.sourceUrl ?? null,
+    popularityLabel: row.popularityLabel ?? null,
+    baseRemixCount: row.baseRemixCount,
     tags: row.tags,
     visualAnalysis: row.visualAnalysis,
     defaultPrompt: row.defaultPrompt,
@@ -425,7 +515,7 @@ async function upsertTemplate(
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data)) return current;
+  if (sameRecord(current, data) && !mediaChanged) return current;
   return tx.remixTemplate.update({
     where: { id: current.id },
     data: {
@@ -440,6 +530,7 @@ async function upsertTool(
   tx: DbTransaction,
   row: ContentSeedManifest['tools'][number],
   mediaIds: Map<string, string>,
+  mediaChanged = false,
 ) {
   const data = {
     name: row.name,
@@ -449,6 +540,7 @@ async function upsertTool(
     sourceType: row.sourceType ?? null,
     sourceName: row.sourceName ?? null,
     sourceUrl: row.sourceUrl ?? null,
+    isNew: row.isNew,
     fieldSchema: row.fields,
     promptTemplate: row.promptTemplate,
     defaults: row.defaults,
@@ -471,7 +563,7 @@ async function upsertTool(
         publishedAt: row.status === 'published' ? new Date() : null,
       },
     });
-  if (sameRecord(current, data)) return current;
+  if (sameRecord(current, data) && !mediaChanged) return current;
   return tx.toolDefinition.update({
     where: { id: current.id },
     data: {
@@ -587,7 +679,7 @@ export async function seedContentCommand(env: NodeJS.ProcessEnv = process.env): 
       isModelSpecEnabled: (modelId, outputSpecId) => enabled.has(`${modelId}:${outputSpecId}`),
     });
     console.info(
-      `Seeded content catalogs: ${result.media} media, ${result.inspirations} inspirations, ${result.templates} templates, ${result.tools} tools`,
+      `Seeded content catalogs: ${result.media} media, ${result.inspirations} inspirations, ${result.templates} templates, ${result.tools} tools; media ${result.mediaCounts.created} created, ${result.mediaCounts.updated} updated, ${result.mediaCounts.unchanged} unchanged; ${result.cleanupWarnings.length} cleanup warnings`,
     );
   } finally {
     await db.onModuleDestroy();

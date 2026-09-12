@@ -97,6 +97,47 @@ describe('operational content seed', () => {
         fields: [{ ...contentSeedManifest.tools[0]!.fields[0]!, options: [] }],
       }).success,
     ).toBe(false);
+    expect(
+      toolDefinitionInputSchema.safeParse({
+        ...contentSeedManifest.tools[0]!,
+        promptTemplate: 'Malformed {{product-type',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('serializes concurrent complete imports and reports created, updated, unchanged, and cleanup warnings', async () => {
+    const fresh = structuredClone(contentSeedManifest);
+    fresh.media[0]!.externalId = 'content-media-concurrent';
+    fresh.media = [fresh.media[0]!];
+    fresh.inspirations = [];
+    fresh.templates = [];
+    fresh.tools = [];
+    const [first, second] = await Promise.all([
+      seedContent(database.database, storage.store, { manifest: fresh }),
+      seedContent(database.database, storage.store, { manifest: fresh }),
+    ]);
+    expect(first.mediaCounts.created + second.mediaCounts.created).toBe(1);
+    expect(first.mediaCounts.unchanged + second.mediaCounts.unchanged).toBe(1);
+    expect(first.cleanupWarnings).toEqual([]);
+    expect(second.cleanupWarnings).toEqual([]);
+  });
+
+  it('increments each referencing catalog item once when only its media changes', async () => {
+    const manifest = structuredClone(contentSeedManifest);
+    const before = await database.database.client.inspiration.findUniqueOrThrow({
+      where: { externalId: manifest.inspirations[0]!.externalId },
+    });
+    manifest.media[0]!.colors = ['#112233', '#445566', '#778899'];
+    await seedContent(database.database, storage.store, { manifest });
+    const changed = await database.database.client.inspiration.findUniqueOrThrow({
+      where: { externalId: manifest.inspirations[0]!.externalId },
+    });
+    expect(changed.version).toBe(before.version + 1);
+    await seedContent(database.database, storage.store, { manifest });
+    expect(
+      (await database.database.client.inspiration.findUniqueOrThrow({ where: { id: changed.id } }))
+        .version,
+    ).toBe(changed.version);
   });
 
   it('publishes a tool only with an enabled executable model and active price', async () => {
@@ -129,6 +170,16 @@ describe('operational content seed', () => {
         isModelSpecEnabled: () => false,
       }),
     ).rejects.toThrow('enabled model specification');
+
+    const mismatched = publishedToolManifest();
+    mismatched.tools[0]!.externalId = 'tool-mismatched-spec';
+    mismatched.tools[0]!.defaults.ratio = '16:9';
+    await expect(
+      seedContent(database.database, storage.store, {
+        manifest: mismatched,
+        isModelSpecEnabled: () => true,
+      }),
+    ).rejects.toThrow('exact output specification');
   });
 
   it('cleans newly stored objects when its database transaction fails', async () => {

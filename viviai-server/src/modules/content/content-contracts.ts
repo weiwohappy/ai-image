@@ -46,6 +46,8 @@ export const inspirationInputSchema = z
     title: label,
     description: z.string().trim().min(1).max(2000),
     category: label,
+    editorialLabel: label.optional(),
+    baseLikes: z.number().int().min(0).max(1_000_000),
     tags: z.array(label).max(20),
     defaultPrompt: z.string().trim().min(1).max(4000),
     defaultModelId: modelId,
@@ -81,6 +83,8 @@ export const remixTemplateInputSchema = z
     platform: label,
     industry: label,
     style: label,
+    popularityLabel: label.optional(),
+    baseRemixCount: z.number().int().min(0).max(1_000_000),
     tags: z.array(label).max(20),
     visualAnalysis: visualAnalysisSchema,
     defaultPrompt: z.string().trim().min(1).max(4000),
@@ -150,13 +154,14 @@ export const toolDefinitionInputSchema = z
     fields: z.array(toolFieldSchema).max(20),
     promptTemplate: z.string().trim().min(1).max(4000),
     defaults: generationDefaultsSchema,
-    maxAssets: z.number().int().min(0).max(10),
+    maxAssets: z.number().int().min(0).max(4),
     maxOutputCount: z.number().int().min(1).max(4),
     assetLabel: label,
     defaultModelId: modelId,
     defaultOutputSpecId: outputSpecId,
     coverMediaExternalId: externalId,
     iconMediaExternalId: externalId.optional(),
+    isNew: z.boolean().default(false),
     status: lifecycleSchema,
     sortOrder: z.number().int().min(0).max(1_000_000),
   })
@@ -178,6 +183,12 @@ export const toolDefinitionInputSchema = z
     const placeholders = [...tool.promptTemplate.matchAll(/{{([a-z][a-z0-9_-]{1,63})}}/g)].map(
       (match) => match[1]!,
     );
+    if (tool.promptTemplate.replace(/{{[a-z][a-z0-9_-]{1,63}}}/g, '').match(/{{|}}/))
+      context.addIssue({
+        code: 'custom',
+        path: ['promptTemplate'],
+        message: 'Malformed prompt token',
+      });
     const fieldIds = new Set(tool.fields.map((field) => field.id));
     for (const placeholder of placeholders)
       if (!fieldIds.has(placeholder))
