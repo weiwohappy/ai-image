@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import pg from 'pg';
 import sharp from 'sharp';
 import { loadConfig, type AppConfig } from '../config.js';
 import { LocalObjectStore } from '../modules/assets/local-object-store.js';
@@ -255,152 +256,200 @@ export async function seedContent(
   const changedMediaExternalIds = new Set<string>();
   const cleanupWarnings: string[] = [];
   try {
-    await db.transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended('content:seed', 0))`;
-      for (const media of preparedMedia) {
-        const existing = await tx.contentMedia.findUnique({
-          where: { externalId: media.externalId },
-        });
-        const collision = await tx.contentMedia.findUnique({
-          where: { objectKey: media.objectKey },
-        });
-        if (collision && collision.externalId !== media.externalId)
-          throw new Error(
-            `Content media ${media.logicalFilename} (${media.externalId}) object key collision`,
-          );
-        if (existing && existing.objectKey !== media.objectKey) {
-          obsoleteObjectKeys.push(existing.objectKey);
-        }
-        if (existing?.sha256 === media.sha256 && existing.objectKey === media.objectKey) {
-          let stored: Uint8Array;
+    await withSeedLock(db, async () => {
+      try {
+        for (const media of preparedMedia) {
+          const existing = await db.client.contentMedia.findUnique({
+            where: { externalId: media.externalId },
+          });
+          const collision = await db.client.contentMedia.findUnique({
+            where: { objectKey: media.objectKey },
+          });
+          if (collision && collision.externalId !== media.externalId)
+            throw new Error(
+              `Content media ${media.logicalFilename} (${media.externalId}) object key collision`,
+            );
+          if (existing && existing.objectKey !== media.objectKey) {
+            obsoleteObjectKeys.push(existing.objectKey);
+          }
+          if (existing?.sha256 === media.sha256 && existing.objectKey === media.objectKey) {
+            let stored: Uint8Array;
+            try {
+              stored = await store.get(media.objectKey);
+            } catch (error) {
+              throw namedMediaError(media, error);
+            }
+            if (sha256(stored) !== media.sha256)
+              throw namedMediaError(
+                media,
+                new Error('stored bytes do not match the catalog digest'),
+              );
+            continue;
+          }
           try {
-            stored = await store.get(media.objectKey);
+            await store.put(media.objectKey, media.bytes, media.contentType);
+            newlyWritten.push(media.objectKey);
           } catch (error) {
             throw namedMediaError(media, error);
           }
-          if (sha256(stored) !== media.sha256)
-            throw namedMediaError(media, new Error('stored bytes do not match the catalog digest'));
-          continue;
         }
-        try {
-          await store.put(media.objectKey, media.bytes, media.contentType);
-          newlyWritten.push(media.objectKey);
-        } catch (error) {
-          throw namedMediaError(media, error);
-        }
-      }
 
-      await options.beforeTransaction?.();
-      const mediaIds = new Map<string, string>();
-      for (const media of preparedMedia) {
-        const current = await tx.contentMedia.findUnique({
-          where: { externalId: media.externalId },
-        });
-        const data = {
-          objectKey: media.objectKey,
-          sha256: media.sha256,
-          contentType: media.contentType,
-          width: media.width,
-          height: media.height,
-          byteSize: media.byteSize,
-          status: media.status,
-        };
-        const changed = !current || !sameMedia(current, data);
-        const saved =
-          current && !changed
-            ? (mediaCounts.unchanged++, current)
-            : current
-              ? await tx.contentMedia.update({
-                  where: { id: current.id },
-                  data: {
-                    ...data,
-                    version: { increment: 1 },
-                    publishedAt:
-                      media.status === 'published' ? (current.publishedAt ?? new Date()) : null,
-                  },
-                })
-              : await tx.contentMedia.create({
-                  data: {
-                    externalId: media.externalId,
-                    ...data,
-                    publishedAt: media.status === 'published' ? new Date() : null,
-                  },
-                });
-        if (current && changed) mediaCounts.updated++;
-        if (!current) mediaCounts.created++;
-        if (changed) changedMediaExternalIds.add(media.externalId);
-        mediaIds.set(media.externalId, saved.id);
-      }
-
-      for (const row of manifest.inspirations) {
-        await upsertInspiration(
-          tx,
-          row,
-          mediaIds,
-          changedMediaExternalIds.has(row.coverMediaExternalId) ||
-            (row.caseMediaExternalId !== undefined &&
-              changedMediaExternalIds.has(row.caseMediaExternalId)),
-        );
-      }
-      for (const row of manifest.templates) {
-        await upsertTemplate(
-          tx,
-          row,
-          mediaIds,
-          changedMediaExternalIds.has(row.coverMediaExternalId) ||
-            (row.referenceMediaExternalId !== undefined &&
-              changedMediaExternalIds.has(row.referenceMediaExternalId)),
-        );
-      }
-      for (const row of manifest.tools) {
-        if (row.status === 'published') {
-          validatePublishedTool(row);
-          if (!(await options.isModelSpecEnabled?.(row.defaultModelId, row.defaultOutputSpecId)))
-            throw new Error(`Tool ${row.externalId} requires an enabled model specification`);
-          try {
-            await activeCreditPrice(
-              tx,
-              row.defaultModelId,
-              getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId)!.resolution,
-              409,
-            );
-          } catch (error) {
-            if (error instanceof Error && 'code' in error && error.code === 'PRICE_UNAVAILABLE')
-              throw new Error(`Tool ${row.externalId} requires an active model credit price`);
-            throw error;
+        await db.transaction(async (tx) => {
+          await options.beforeTransaction?.();
+          const mediaIds = new Map<string, string>();
+          for (const media of preparedMedia) {
+            const current = await tx.contentMedia.findUnique({
+              where: { externalId: media.externalId },
+            });
+            const data = {
+              objectKey: media.objectKey,
+              sha256: media.sha256,
+              contentType: media.contentType,
+              width: media.width,
+              height: media.height,
+              byteSize: media.byteSize,
+              status: media.status,
+            };
+            const changed = !current || !sameMedia(current, data);
+            const saved =
+              current && !changed
+                ? (mediaCounts.unchanged++, current)
+                : current
+                  ? await tx.contentMedia.update({
+                      where: { id: current.id },
+                      data: {
+                        ...data,
+                        version: { increment: 1 },
+                        publishedAt:
+                          media.status === 'published' ? (current.publishedAt ?? new Date()) : null,
+                      },
+                    })
+                  : await tx.contentMedia.create({
+                      data: {
+                        externalId: media.externalId,
+                        ...data,
+                        publishedAt: media.status === 'published' ? new Date() : null,
+                      },
+                    });
+            if (current && changed) mediaCounts.updated++;
+            if (!current) mediaCounts.created++;
+            if (changed) changedMediaExternalIds.add(media.externalId);
+            mediaIds.set(media.externalId, saved.id);
           }
-        }
-        await upsertTool(
-          tx,
-          row,
-          mediaIds,
-          changedMediaExternalIds.has(row.coverMediaExternalId) ||
-            (row.iconMediaExternalId !== undefined &&
-              changedMediaExternalIds.has(row.iconMediaExternalId)),
+
+          const changedMediaIds = [...changedMediaExternalIds].map((externalId) =>
+            requiredMedia(mediaIds, externalId),
+          );
+          if (changedMediaIds.length) {
+            const update = { version: { increment: 1 } };
+            await tx.inspiration.updateMany({
+              where: {
+                externalId: { notIn: manifest.inspirations.map((row) => row.externalId) },
+                OR: [
+                  { coverMediaId: { in: changedMediaIds } },
+                  { caseMediaId: { in: changedMediaIds } },
+                ],
+              },
+              data: update,
+            });
+            await tx.remixTemplate.updateMany({
+              where: {
+                externalId: { notIn: manifest.templates.map((row) => row.externalId) },
+                OR: [
+                  { coverMediaId: { in: changedMediaIds } },
+                  { referenceMediaId: { in: changedMediaIds } },
+                ],
+              },
+              data: update,
+            });
+            await tx.toolDefinition.updateMany({
+              where: {
+                externalId: { notIn: manifest.tools.map((row) => row.externalId) },
+                OR: [
+                  { coverMediaId: { in: changedMediaIds } },
+                  { iconMediaId: { in: changedMediaIds } },
+                ],
+              },
+              data: update,
+            });
+          }
+
+          for (const row of manifest.inspirations) {
+            await upsertInspiration(
+              tx,
+              row,
+              mediaIds,
+              changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                (row.caseMediaExternalId !== undefined &&
+                  changedMediaExternalIds.has(row.caseMediaExternalId)),
+            );
+          }
+          for (const row of manifest.templates) {
+            await upsertTemplate(
+              tx,
+              row,
+              mediaIds,
+              changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                (row.referenceMediaExternalId !== undefined &&
+                  changedMediaExternalIds.has(row.referenceMediaExternalId)),
+            );
+          }
+          for (const row of manifest.tools) {
+            if (row.status === 'published') {
+              validatePublishedTool(row);
+              if (
+                !(await options.isModelSpecEnabled?.(row.defaultModelId, row.defaultOutputSpecId))
+              )
+                throw new Error(`Tool ${row.externalId} requires an enabled model specification`);
+              try {
+                await activeCreditPrice(
+                  tx,
+                  row.defaultModelId,
+                  getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId)!.resolution,
+                  409,
+                );
+              } catch (error) {
+                if (error instanceof Error && 'code' in error && error.code === 'PRICE_UNAVAILABLE')
+                  throw new Error(`Tool ${row.externalId} requires an active model credit price`);
+                throw error;
+              }
+            }
+            await upsertTool(
+              tx,
+              row,
+              mediaIds,
+              changedMediaExternalIds.has(row.coverMediaExternalId) ||
+                (row.iconMediaExternalId !== undefined &&
+                  changedMediaExternalIds.has(row.iconMediaExternalId)),
+            );
+          }
+        });
+        await Promise.all(
+          obsoleteObjectKeys.map(async (key) => {
+            try {
+              await store.delete(key);
+            } catch {
+              cleanupWarnings.push('obsolete-object cleanup failed');
+            }
+          }),
         );
+      } catch (error) {
+        await Promise.all(
+          newlyWritten.map(async (key) => {
+            try {
+              await store.delete(key);
+            } catch {
+              cleanupWarnings.push('rollback-object cleanup failed');
+            }
+          }),
+        );
+        if (cleanupWarnings.length) throw new SeedCleanupError(cleanupWarnings.length);
+        throw error;
       }
     });
   } catch (error) {
-    await Promise.all(
-      newlyWritten.map(async (key) => {
-        try {
-          await store.delete(key);
-        } catch (cleanupError) {
-          cleanupWarnings.push(`Failed to clean up ${key}: ${String(cleanupError)}`);
-        }
-      }),
-    );
     throw error;
   }
-  await Promise.all(
-    obsoleteObjectKeys.map(async (key) => {
-      try {
-        await store.delete(key);
-      } catch (cleanupError) {
-        cleanupWarnings.push(`Failed to clean up ${key}: ${String(cleanupError)}`);
-      }
-    }),
-  );
   return {
     media: manifest.media.length,
     inspirations: manifest.inspirations.length,
@@ -409,6 +458,29 @@ export async function seedContent(
     mediaCounts,
     cleanupWarnings,
   };
+}
+
+export class SeedCleanupError extends Error {
+  constructor(readonly warningCount: number) {
+    super(`Content seed failed with ${warningCount} cleanup warning(s)`);
+  }
+}
+
+async function withSeedLock<T>(db: DatabaseService, work: () => Promise<T>): Promise<T> {
+  const url = new URL(db.url);
+  url.searchParams.delete('schema');
+  const client = new pg.Client({ connectionString: url.toString() });
+  await client.connect();
+  try {
+    await client.query("SET lock_timeout TO '30000ms'");
+    await client.query("SELECT pg_advisory_lock(hashtextextended('content:seed', 0))");
+    return await work();
+  } finally {
+    await client
+      .query("SELECT pg_advisory_unlock(hashtextextended('content:seed', 0))")
+      .catch(() => undefined);
+    await client.end();
+  }
 }
 
 function validatePublishedTool(row: ContentSeedManifest['tools'][number]) {

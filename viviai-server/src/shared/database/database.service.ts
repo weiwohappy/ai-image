@@ -7,8 +7,10 @@ export type DbTransaction = Prisma.TransactionClient;
 @Injectable()
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   readonly client: PrismaClient;
+  readonly url: string;
 
   constructor(databaseUrl: string) {
+    this.url = databaseUrl;
     const schema = new URL(databaseUrl).searchParams.get('schema') ?? undefined;
     this.client = new PrismaClient({
       adapter: new PrismaPg(
