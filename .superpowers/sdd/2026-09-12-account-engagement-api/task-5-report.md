@@ -2,7 +2,7 @@
 
 Status: complete (review fix round 1/5)
 
-Commit: `feat(web): connect account and engagement APIs` (follow-up review fix committed separately)
+Commit: `a1452e8 feat(web): connect account and engagement APIs` (review fix round 1/5)
 
 ## Files
 
