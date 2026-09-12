@@ -24,6 +24,7 @@
     "admin:super-admin": "tsx src/scripts/admin-super-admin.ts",
     "admin:import-model-prices": "tsx src/scripts/admin-import-model-prices.ts",
     "verify:sub2api": "tsx src/scripts/verify-third-party-provider.ts",
+    "verify:sub2api-images": "tsx src/scripts/verify-third-party-images.ts",
     "pretest": "prisma generate",
     "test": "vitest run"
   },

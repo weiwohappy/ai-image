@@ -9,6 +9,21 @@ export type ProviderVerification =
       message: string;
     };
 
+export type ImageProviderVerification =
+  | {
+      ok: true;
+      modelIds: string[];
+      modelListed: true;
+      responseReceived: true;
+      generationProbe: 'not_run';
+    }
+  | {
+      ok: false;
+      code:
+        'auth' | 'model_not_found' | 'endpoint_not_found' | 'rate_limit' | 'timeout' | 'upstream';
+      message: string;
+    };
+
 interface ModelsResponse {
   data?: unknown;
 }
@@ -113,7 +128,61 @@ export class OpenAICompatibleChatClient {
   }
 }
 
-function classifyStatus(status: number): ProviderVerification | undefined {
+export class OpenAICompatibleImageClient {
+  constructor(
+    private readonly config: Pick<ThirdPartyProviderConfig, 'baseUrl' | 'apiKey'>,
+    private readonly modelIds: readonly string[],
+    private readonly fetcher: typeof fetch = fetch,
+  ) {}
+
+  async verify(signal?: AbortSignal): Promise<ImageProviderVerification> {
+    const requestSignal = signal ?? AbortSignal.timeout(15_000);
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.config.baseUrl}/models`, {
+        method: 'GET',
+        headers: {
+          authorization: `Bearer ${this.config.apiKey}`,
+          accept: 'application/json',
+        },
+        redirect: 'error',
+        signal: requestSignal,
+      });
+    } catch {
+      return requestSignal.aborted
+        ? { ok: false, code: 'timeout', message: safeMessages.timeout }
+        : { ok: false, code: 'upstream', message: safeMessages.upstream };
+    }
+    const failure = classifyStatus(response.status);
+    if (failure) return failure;
+    let payload: ModelsResponse;
+    try {
+      payload = (await boundedJson(response)) as ModelsResponse;
+    } catch {
+      return { ok: false, code: 'upstream', message: safeMessages.upstream };
+    }
+    const available = new Set(
+      Array.isArray(payload.data)
+        ? payload.data.flatMap((item) =>
+            typeof item === 'object' && item !== null && 'id' in item && typeof item.id === 'string'
+              ? [item.id]
+              : [],
+          )
+        : [],
+    );
+    if (this.modelIds.some((modelId) => !available.has(modelId)))
+      return { ok: false, code: 'model_not_found', message: safeMessages.model_not_found };
+    return {
+      ok: true,
+      modelIds: [...this.modelIds],
+      modelListed: true,
+      responseReceived: true,
+      generationProbe: 'not_run',
+    };
+  }
+}
+
+function classifyStatus(status: number): Extract<ProviderVerification, { ok: false }> | undefined {
   if (status === 401 || status === 403)
     return { ok: false, code: 'auth', message: safeMessages.auth };
   if (status === 404)

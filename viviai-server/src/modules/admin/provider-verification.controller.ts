@@ -13,4 +13,8 @@ export class AdminProviderVerificationController {
   @Post(':id/verify') verify(@Req() request: AdminRequest, @Param('id') id: string) {
     return this.verification.verify(request.admin.actor, id);
   }
+
+  @Post(':id/verify-image') verifyImages(@Req() request: AdminRequest, @Param('id') id: string) {
+    return this.verification.verifyImages(request.admin.actor, id);
+  }
 }

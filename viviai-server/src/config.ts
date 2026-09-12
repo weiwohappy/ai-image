@@ -7,7 +7,10 @@ import {
 } from './modules/providers/official-config.js';
 import {
   loadThirdPartyConfig,
+  loadThirdPartyImageConfig,
   validateThirdPartyConfig,
+  validateThirdPartyImageConfig,
+  type ThirdPartyImageConfig,
   type ThirdPartyProviderConfig,
 } from './modules/providers/third-party-config.js';
 
@@ -18,6 +21,7 @@ export interface AppConfig {
   admin?: AdminConfig;
   officialImages?: OfficialConfig;
   thirdPartyChat?: ThirdPartyProviderConfig;
+  thirdPartyImages?: ThirdPartyImageConfig;
   nodeEnv: NodeEnvironment;
   host: string;
   port: number;
@@ -140,10 +144,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   const value = parsed.data;
   const thirdPartyChat = loadThirdPartyConfig(env, value.NODE_ENV);
+  const thirdPartyImages = loadThirdPartyImageConfig(env, value.NODE_ENV);
   return validateConfig({
     admin: loadAdminConfig(env),
     officialImages: loadOfficialConfig(env),
     ...(thirdPartyChat ? { thirdPartyChat } : {}),
+    ...(thirdPartyImages ? { thirdPartyImages } : {}),
     nodeEnv: value.NODE_ENV,
     host: value.HOST,
     port: value.PORT,
@@ -175,6 +181,8 @@ export function validateConfig(config: AppConfig): AppConfig {
   validateAdminConfig(config.admin, config.nodeEnv, config.host);
   if (config.officialImages) validateOfficialConfig(config.officialImages);
   if (config.thirdPartyChat) validateThirdPartyConfig(config.thirdPartyChat, config.nodeEnv);
+  if (config.thirdPartyImages)
+    validateThirdPartyImageConfig(config.thirdPartyImages, config.nodeEnv);
   const issues: string[] = [];
   const hasAccessKey = config.s3AccessKeyId !== undefined;
   const hasSecretKey = config.s3SecretAccessKey !== undefined;

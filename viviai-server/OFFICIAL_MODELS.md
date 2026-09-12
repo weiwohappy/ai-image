@@ -2,19 +2,19 @@
 
 本轮交付代码和离线测试，不需要 Key。默认关闭官方调用，没有执行真实付费请求。前端创作页仍为 Mock，本轮实现后端 API；后续单独切换前端真实接口。
 
-支持官方 ID：`gemini-2.5-flash-image`、`gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image`、`gpt-image-2`。只有官方 API，无订阅账号代理、第三方中转或隐式型号升级。
+支持官方 ID：`gemini-2.5-flash-image`、`gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image`、`gpt-image-2`。官方通道不使用订阅账号代理或隐式型号升级；第三方 Sub2API 仅作为显式、独立的 OpenAI-compatible 渠道。
 
 ## 尺寸选择
 
 用户选择分辨率 + 比例；客户端从 `GET /api/models` 的 `specs` 中筛选组合，每项明确列出 width、height、unitCredits。请求只传 resolution / ratio，不接受任意宽高。型号、比例、分辨率和输出像素在报价、任务快照、派发、落盘四处校验，不会缩放替代不支持的规格。
 
-| 模型 | 本轮分辨率 | 比例 |
-| --- | --- | --- |
-| Nano Banana | 1K | 下述 10 种常用比例 |
-| Nano Banana 2 Lite | 1K | 暂仅 1:1，其他比例像素表待官方核验 |
-| Nano Banana 2 | 0.5K / 1K / 2K / 4K | 下述 10 种常用比例 |
-| Nano Banana Pro | 1K / 2K / 4K | 下述 10 种常用比例 |
-| GPT Image 2 | 产品预设 1K / 2K；4K 横竖屏 | 1K/2K 10 种；4K 仅 16:9、9:16 |
+| 模型               | 本轮分辨率                  | 比例                               |
+| ------------------ | --------------------------- | ---------------------------------- |
+| Nano Banana        | 1K                          | 下述 10 种常用比例                 |
+| Nano Banana 2 Lite | 1K                          | 暂仅 1:1，其他比例像素表待官方核验 |
+| Nano Banana 2      | 0.5K / 1K / 2K / 4K         | 下述 10 种常用比例                 |
+| Nano Banana Pro    | 1K / 2K / 4K                | 下述 10 种常用比例                 |
+| GPT Image 2        | 产品预设 1K / 2K；4K 横竖屏 | 1K/2K 10 种；4K 仅 16:9、9:16      |
 
 常用比例：1:1、2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9。Google 的精确像素表与 OpenAI 合法预设维护于 `src/modules/providers/official-models.ts`。GPT Image 2 的 4K 是 3840×2160 或 2160×3840，不支持 4096 方图；OpenAI 将超过 2560×1440 的尺寸标为实验性，联调时需重点验证。
 
@@ -30,7 +30,7 @@ Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536�
 
 ## 第三方 OpenAI 兼容渠道（Sub2API）
 
-Sub2API 不属于官方 Google/OpenAI 账号，也不改变官方图片模型的固定端点；它作为可替换的第三方 OpenAI 兼容聊天渠道配置。开发环境示例使用 `http://localhost:8080`，程序会规范化为 `http://localhost:8080/v1`；生产环境必须使用 HTTPS。当前渠道仅用于聊天模型的配置与连通性验证，不会自动出现在官方图片模型目录，也不会改变 Nano Banana/GPT Image 2 的官方路由。
+Sub2API 不属于官方 Google/OpenAI 账号，也不改变官方图片模型的固定端点；它作为可替换的第三方 OpenAI 兼容渠道配置。开发环境示例使用 `http://localhost:8080`，程序会规范化为 `http://localhost:8080/v1`；生产环境必须使用 HTTPS。聊天渠道和图片渠道共用账号边界，但分别配置模型与协议。当前第三方图片协议只接入 OpenAI Images 兼容的 `gpt-image-2`；Nano Banana 仍走官方 Google Interactions，除非未来第三方明确提供并通过单独协议验收。
 
 ```bash
 SUB2API_ENABLED=true
@@ -44,12 +44,20 @@ SUB2API_MAX_UNKNOWN=1
 SUB2API_DAILY_BUDGET_MICROS=0
 ```
 
+如需将 GPT Image 2 作为第三方图片渠道，增加服务端配置（不要把价格示例直接用于生产）：
+
+```bash
+SUB2API_IMAGE_MODELS_JSON='{"revision":"sub2api-images-v1","models":[{"modelId":"gpt-image-2","enabledResolutions":["1K","2K","4K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}}]}'
+```
+
+服务启动时会复用 `SUB2API_*` 的地址、凭据、预算和并发配置。`POST /api/admin/provider-accounts/sub2api/verify-image` 只请求 `/v1/models`，确认精确的 `gpt-image-2` 已列出，不会调用生图接口；实际生图仍需先完成小额联调和账单核对。第三方图片配置使用与官方相同的审核规格和积分定价，未配置数据库售价的分辨率不会出现在目录。
+
 `npm run verify:sub2api` 先请求 `/v1/models`，要求精确模型 ID 存在，再发送 `max_tokens=8`、`stream=false` 的最小 `/v1/chat/completions` 探针。输出只包含渠道、地址、模型和安全状态，不打印 Key 或上游响应正文。401/403、404、429、超时和畸形响应均返回稳定的安全错误。关闭 `SUB2API_ENABLED` 时不会要求 Key；启用但缺少 Key、模型或非法地址时服务启动即拒绝。
 
 API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JSON 字符串，无 Key。默认值：
 
 ```json
-{"revision":"disabled","accounts":{},"models":[]}
+{ "revision": "disabled", "accounts": {}, "models": [] }
 ```
 
 启用前按以下字段准备配置；此处故意不提供可直接误用的生产价格：
@@ -65,7 +73,16 @@ API 与 Worker 必须加载同一份配置。`OFFICIAL_IMAGE_MODELS_JSON` 为 JS
 模型输入同原有报价接口，例如：
 
 ```json
-{"source":"create","modelId":"gemini-3.1-flash-image","prompt":"蓝色陶瓷杯商品图","resolution":"2K","ratio":"16:9","format":"png","quality":"standard","count":1}
+{
+  "source": "create",
+  "modelId": "gemini-3.1-flash-image",
+  "prompt": "蓝色陶瓷杯商品图",
+  "resolution": "2K",
+  "ratio": "16:9",
+  "format": "png",
+  "quality": "standard",
+  "count": 1
+}
 ```
 
 复刻改为 `source: remix` 并提供当前用户上传的 `referenceAssetId`，可增加 `subjectAssetId`（Lite 不提供主体图）。strength 表示提示词策略，不冒称官方数值保真度参数。每张成功交付才消费积分。

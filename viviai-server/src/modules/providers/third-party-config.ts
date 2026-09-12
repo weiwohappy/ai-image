@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { OFFICIAL_MODELS, officialSpecs, type OfficialModelId } from './official-models.js';
+import type { PriceSnapshot } from './pricing.js';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9._-]{1,120}$/);
 
@@ -13,6 +16,29 @@ export interface ThirdPartyProviderConfig {
   readonly concurrency: number;
   readonly maxUnknown: number;
   readonly dailyBudgetMicros: string;
+}
+
+export interface ThirdPartyImageModelConfig {
+  readonly modelId: 'gpt-image-2';
+  readonly enabledResolutions: readonly string[];
+  readonly reserveCostMicros: string;
+  readonly pricing: PriceSnapshot;
+}
+
+export interface ThirdPartyImageConfig extends Pick<
+  ThirdPartyProviderConfig,
+  | 'id'
+  | 'kind'
+  | 'baseUrl'
+  | 'apiKey'
+  | 'scope'
+  | 'credentialVersion'
+  | 'concurrency'
+  | 'maxUnknown'
+  | 'dailyBudgetMicros'
+> {
+  readonly revision: string;
+  readonly models: readonly ThirdPartyImageModelConfig[];
 }
 
 const required = z
@@ -38,6 +64,48 @@ const required = z
 function invalid(message = 'Invalid Sub2API configuration') {
   return new Error(`${message}; verify SUB2API_BASE_URL, SUB2API_API_KEY and SUB2API_MODEL_ID`);
 }
+
+const imagePricing = z
+  .object({
+    version: identifier,
+    currency: z.literal('USD'),
+    rates: z
+      .record(z.string(), z.string().regex(/^(0|[1-9]\d{0,14})$/))
+      .refine(
+        (rates) =>
+          ['input_text_tokens', 'input_image_tokens', 'output_image_tokens'].every(
+            (key) => rates[key] !== undefined,
+          ),
+        'image pricing must include input and output image rates',
+      ),
+  })
+  .strict();
+
+const imageSchema = z
+  .object({
+    revision: identifier,
+    models: z
+      .array(
+        z
+          .object({
+            // Sub2API is currently wired to the OpenAI Images contract. Gemini/Nano Banana
+            // remains on the official Google Interactions adapter until a third-party contract
+            // is explicitly verified; accepting that ID here would produce a false capability.
+            modelId: z.literal('gpt-image-2'),
+            enabledResolutions: z
+              .array(z.string())
+              .min(1)
+              .max(8)
+              .refine((values) => new Set(values).size === values.length),
+            reserveCostMicros: z.string().regex(/^[1-9]\d{0,14}$/),
+            pricing: imagePricing,
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(5),
+  })
+  .strict();
 
 export function normalizeOpenAICompatibleBaseUrl(raw: string, nodeEnv = 'development'): string {
   let parsed: URL;
@@ -115,6 +183,108 @@ export function validateThirdPartyConfig(
     throw invalid();
   const baseUrl = normalizeOpenAICompatibleBaseUrl(config.baseUrl, nodeEnv);
   return { ...config, baseUrl };
+}
+
+export function loadThirdPartyImageConfig(
+  env: Record<string, string | undefined>,
+  nodeEnv = env.NODE_ENV ?? 'development',
+): ThirdPartyImageConfig | undefined {
+  const raw = env.SUB2API_IMAGE_MODELS_JSON;
+  if (!raw || raw.trim() === '') return undefined;
+  const common = loadThirdPartyConfig(env, nodeEnv);
+  if (!common) throw invalid('Sub2API image models require an enabled Sub2API channel');
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(raw);
+  } catch {
+    throw invalid('Invalid SUB2API_IMAGE_MODELS_JSON');
+  }
+  const parsed = imageSchema.safeParse(decoded);
+  if (!parsed.success) throw invalid('Invalid SUB2API_IMAGE_MODELS_JSON');
+  const modelIds = parsed.data.models.map((model) => model.modelId);
+  if (new Set(modelIds).size !== modelIds.length)
+    throw invalid('SUB2API_IMAGE_MODELS_JSON contains duplicate models');
+  for (const model of parsed.data.models) {
+    const resolutions = officialSpecs(model.modelId).map((spec) => spec.resolution);
+    if (
+      model.enabledResolutions.some((resolution) => !resolutions.includes(resolution)) ||
+      !officialSpecs(model.modelId).some((spec) =>
+        model.enabledResolutions.includes(spec.resolution),
+      )
+    )
+      throw invalid('SUB2API_IMAGE_MODELS_JSON contains an unsupported resolution');
+  }
+  return {
+    id: common.id,
+    kind: common.kind,
+    baseUrl: common.baseUrl,
+    apiKey: common.apiKey,
+    scope: common.scope,
+    credentialVersion: common.credentialVersion,
+    concurrency: common.concurrency,
+    maxUnknown: common.maxUnknown,
+    dailyBudgetMicros: common.dailyBudgetMicros,
+    revision: parsed.data.revision,
+    models: parsed.data.models,
+  };
+}
+
+export function validateThirdPartyImageConfig(
+  config: ThirdPartyImageConfig,
+  nodeEnv = 'development',
+): ThirdPartyImageConfig {
+  validateThirdPartyConfig({ ...config, modelId: 'gpt-image-2' }, nodeEnv);
+  const parsed = imageSchema.safeParse({ revision: config.revision, models: config.models });
+  if (!parsed.success) throw invalid('Invalid Sub2API image configuration');
+  if (new Set(config.models.map((model) => model.modelId)).size !== config.models.length)
+    throw invalid('Sub2API image configuration contains duplicate models');
+  for (const model of config.models) {
+    const resolutions = officialSpecs(model.modelId).map((spec) => spec.resolution);
+    if (model.enabledResolutions.some((resolution) => !resolutions.includes(resolution)))
+      throw invalid('Sub2API image configuration contains an unsupported resolution');
+    if (BigInt(model.reserveCostMicros) > BigInt(config.dailyBudgetMicros))
+      throw invalid('Sub2API image reserve exceeds the configured daily budget');
+  }
+  return config;
+}
+
+export function thirdPartyImageSnapshot(
+  config: ThirdPartyImageConfig | undefined,
+  modelId: string,
+  resolution: string,
+  ratio: string,
+) {
+  const model = config?.models.find((item) => item.modelId === modelId);
+  const output = officialSpecs(modelId).find(
+    (spec) => spec.resolution === resolution && spec.ratio === ratio,
+  );
+  if (!config || !model || !output || !model.enabledResolutions.includes(resolution)) return;
+  const definition = OFFICIAL_MODELS.find((item) => item.id === modelId);
+  if (!definition || definition.id !== 'gpt-image-2') return;
+  const revision = createHash('sha256')
+    .update(
+      JSON.stringify({
+        revision: config.revision,
+        baseUrl: config.baseUrl,
+        scope: config.scope,
+        credentialVersion: config.credentialVersion,
+        model,
+        output,
+      }),
+    )
+    .digest('hex')
+    .slice(0, 24);
+  return {
+    ...output,
+    protocol: 'openai-images-third-party-v1',
+    channelId: `third-party-${config.id}-${modelId}-${output.id}-${revision}`,
+    revision,
+    upstreamModelId: modelId as OfficialModelId,
+    provider: 'openai' as const,
+    credentialVersion: config.credentialVersion,
+    pricing: model.pricing,
+    reserveCostMicros: model.reserveCostMicros,
+  };
 }
 
 export function redactThirdPartyConfig(config: ThirdPartyProviderConfig) {

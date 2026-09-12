@@ -32,14 +32,22 @@ const OPENAI_MODEL = ['gpt-image-2'] as const;
 const OPENAI_GENERATIONS_URL = 'https://api.openai.com/v1/images/generations';
 const OPENAI_EDITS_URL = 'https://api.openai.com/v1/images/edits';
 
-export class OpenAIImageProvider implements ProviderAdapter {
-  readonly protocol = OFFICIAL_PROTOCOLS.openai;
+export interface OpenAIImageProviderOptions {
+  baseUrl?: string;
+  protocol?: string;
+}
 
+export class OpenAIImageProvider implements ProviderAdapter {
   constructor(
     private readonly store: ObjectStore,
     private readonly apiKey: string,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly options: OpenAIImageProviderOptions = {},
   ) {}
+
+  get protocol() {
+    return this.options.protocol ?? OFFICIAL_PROTOCOLS.openai;
+  }
 
   capabilities(): ProviderCapabilities {
     return {
@@ -84,14 +92,15 @@ export class OpenAIImageProvider implements ProviderAdapter {
       quality: 'medium',
       output_format: 'png',
     } as const;
-    let url = OPENAI_GENERATIONS_URL;
+    const baseUrl = this.options.baseUrl?.replace(/\/+$/, '');
+    let url = baseUrl ? `${baseUrl}/images/generations` : OPENAI_GENERATIONS_URL;
     let headers: Record<string, string> = {
       authorization: `Bearer ${this.apiKey}`,
       'content-type': 'application/json',
     };
     let body: RequestInit['body'] = JSON.stringify(fields);
     if (inputs.length > 0) {
-      url = OPENAI_EDITS_URL;
+      url = baseUrl ? `${baseUrl}/images/edits` : OPENAI_EDITS_URL;
       headers = { authorization: `Bearer ${this.apiKey}` };
       const form = new FormData();
       for (const [key, value] of Object.entries(fields)) form.append(key, String(value));

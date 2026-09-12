@@ -172,6 +172,44 @@ it('verifies a configured third-party provider from the provider account list', 
   expect(fetcher.mock.calls[1][0]).toContain('/api/admin/provider-accounts/sub2api/verify');
 });
 
+it('verifies a configured third-party image channel without probing image generation', async () => {
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(
+      json({
+        ...emptyTable,
+        title: '供应商账号',
+        columns: [{ key: 'provider', label: '供应商' }],
+        rows: [{ id: 'third-party-sub2api-sub2api-local', provider: 'sub2api' }],
+      }),
+    )
+    .mockResolvedValueOnce(
+      json({
+        provider: 'sub2api',
+        configured: true,
+        ok: true,
+        modelIds: ['gpt-image-2'],
+        modelListed: true,
+        responseReceived: true,
+        generationProbe: 'not_run',
+      }),
+    );
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <ResourcePage
+      path="/provider-accounts"
+      client={new AdminClient()}
+      permissions={actor.permissions}
+    />,
+  );
+  await screen.findByText('sub2api');
+  fireEvent.click(screen.getByRole('button', { name: '验证图片接口' }));
+  expect(await screen.findByText(/图片接口通过/)).toBeInTheDocument();
+  expect(fetcher.mock.calls[1][0]).toContain(
+    '/api/admin/provider-accounts/sub2api/verify-image',
+  );
+});
+
 it('renders a safe resource error and recovers after refresh without inventing rows', async () => {
   const fetcher = vi
     .fn()

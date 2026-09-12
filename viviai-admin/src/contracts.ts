@@ -51,6 +51,7 @@ export interface AdminStatus {
   teamWritesEnabled?: boolean;
   modelPricingWritesEnabled?: boolean;
   thirdPartyChatConfigured?: boolean;
+  thirdPartyImagesConfigured?: boolean;
   localTestPasswords?: boolean;
   localPasswordLogin?: boolean;
 }

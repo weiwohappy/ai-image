@@ -166,4 +166,4 @@ Docker 镜像/Compose 和真实 S3/SMTP 未完成运行验收；目前验证的�
 
 本地存储只适用于受信任的开发目录，不能防御能任意修改该目录的其它本机进程。当前不执行图片物理清理，长期使用前需补充保留策略、备份与容量治理。列表暂为有界最新记录，不是完整分页后台。
 
-下一步应完成真实渠道/账单验收及运营对账能力，然后单独迁移前端 API。Sub2API 等第三方 OpenAI 兼容聊天渠道通过 `SUB2API_*` 服务端环境变量配置，可用 `npm run verify:sub2api` 做 `/v1/models` + `/v1/chat/completions` 最小验证；密钥不进 JSON、前端或 Git。当前前端重置密码流程还需传 purpose=reset-password；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。
+下一步应完成真实渠道/账单验收及运营对账能力，然后单独迁移前端 API。Sub2API 等第三方 OpenAI 兼容聊天/图片渠道通过 `SUB2API_*` 服务端环境变量配置：聊天可用 `npm run verify:sub2api` 做 `/v1/models` + `/v1/chat/completions` 最小验证，图片后台验证只检查 `/v1/models` 中的精确 `gpt-image-2`，不会自动产生图片费用。Nano Banana 仍需官方 Google Key 和官方 Interactions 配置；密钥不进 JSON、前端或 Git。当前前端重置密码流程还需传 purpose=reset-password；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。

@@ -545,6 +545,11 @@ h1 {
   align-items: center;
   gap: 8px;
 }
+.provider-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .status-paid,
 .status-active,
 .status-succeeded,

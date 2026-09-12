@@ -7,6 +7,7 @@ import { safeInteger } from '../../shared/database/locks.js';
 import { digest, normalizeInput, PRODUCT_ID, type GenerationInput } from './input-schema.js';
 import { OFFICIAL_MODELS, officialSpecs } from '../providers/official-models.js';
 import { officialSnapshot } from '../providers/official-config.js';
+import { thirdPartyImageSnapshot } from '../providers/third-party-config.js';
 import { activeCreditPrice } from './credit-pricing.js';
 
 @Injectable()
@@ -31,21 +32,32 @@ export class CatalogService {
           ]
         : [];
     const prices = await this.db.client.modelCreditPrice.findMany({ where: { enabled: true } });
-    const official = (this.config.officialImages?.models ?? []).flatMap((model) => {
-      const definition = OFFICIAL_MODELS.find((d) => d.id === model.modelId)!;
-      const specs = officialSpecs(model.modelId).flatMap((s) => {
+    const configuredModelIds = new Set([
+      ...(this.config.officialImages?.models ?? []).map((model) => model.modelId),
+      ...(this.config.thirdPartyImages?.models ?? []).map((model) => model.modelId),
+    ]);
+    const official = OFFICIAL_MODELS.filter((definition) =>
+      configuredModelIds.has(definition.id),
+    ).flatMap((definition) => {
+      const specs = officialSpecs(definition.id).flatMap((s) => {
         const price = prices.find(
-          (p) => p.modelId === model.modelId && p.resolution === s.resolution,
+          (p) => p.modelId === definition.id && p.resolution === s.resolution,
         );
         return price &&
-          officialSnapshot(this.config.officialImages, model.modelId, s.resolution, s.ratio)
+          (officialSnapshot(this.config.officialImages, definition.id, s.resolution, s.ratio) ??
+            thirdPartyImageSnapshot(
+              this.config.thirdPartyImages,
+              definition.id,
+              s.resolution,
+              s.ratio,
+            ))
           ? [{ ...s, unitCredits: price.unitCredits }]
           : [];
       });
       if (!specs.length) return [];
       return [
         {
-          id: model.modelId,
+          id: definition.id,
           name: definition.name,
           simulated: false,
           resolutions: [...new Set(specs.map((s) => s.resolution))],
@@ -61,22 +73,28 @@ export class CatalogService {
     return [...simulated, ...official];
   }
   requireAvailable(modelId: string = PRODUCT_ID) {
+    const configured = new Set<string>([
+      ...(this.config.officialImages?.models ?? []).map((model) => model.modelId),
+      ...(this.config.thirdPartyImages?.models ?? []).map((model) => model.modelId),
+    ]);
     if (
       modelId === PRODUCT_ID
         ? !(this.config.simulationProviderEnabled && this.config.nodeEnv !== 'production')
-        : !this.config.officialImages?.models.some((m) => m.modelId === modelId)
+        : !configured.has(modelId)
     )
       throw new AppError(503, 'MODEL_UNAVAILABLE', 'No enabled model is available');
   }
   execution(input: GenerationInput) {
     this.requireAvailable(input.modelId);
     if (input.modelId === PRODUCT_ID) return;
-    const snapshot = officialSnapshot(
-      this.config.officialImages,
-      input.modelId,
-      input.resolution,
-      input.ratio,
-    );
+    const snapshot =
+      officialSnapshot(this.config.officialImages, input.modelId, input.resolution, input.ratio) ??
+      thirdPartyImageSnapshot(
+        this.config.thirdPartyImages,
+        input.modelId,
+        input.resolution,
+        input.ratio,
+      );
     if (!snapshot)
       throw new AppError(503, 'MODEL_UNAVAILABLE', 'Model specification is not enabled');
     return snapshot;

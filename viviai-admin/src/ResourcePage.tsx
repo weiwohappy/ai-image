@@ -326,11 +326,18 @@ function ResourceQuery({
               path === '/provider-accounts'
                 ? (row) =>
                     typeof row.provider === 'string' && row.provider ? (
-                      <ProviderVerification
-                        key={row.id}
-                        client={client}
-                        providerId={row.provider}
-                      />
+                      <div className="provider-action-group">
+                        <ProviderVerification
+                          key={`${row.id}-chat`}
+                          client={client}
+                          providerId={row.provider}
+                        />
+                        <ImageProviderVerification
+                          key={`${row.id}-image`}
+                          client={client}
+                          providerId={row.provider}
+                        />
+                      </div>
                     ) : null
                 : undefined
             }
@@ -370,6 +377,14 @@ type ProviderVerificationResult = {
   modelId?: string;
   modelListed?: boolean;
   responseReceived?: boolean;
+};
+
+type ImageProviderVerificationResult = {
+  configured: boolean;
+  ok: boolean;
+  code?: string;
+  modelIds?: string[];
+  generationProbe?: 'not_run';
 };
 
 function ProviderVerification({ client, providerId }: { client: AdminClient; providerId: string }) {
@@ -412,6 +427,63 @@ function ProviderVerification({ client, providerId }: { client: AdminClient; pro
       {state.status === 'success' && (
         <span className="status-pill status-succeeded" role="status">
           验证通过{state.result.modelId ? ` · ${state.result.modelId}` : ''}
+        </span>
+      )}
+      {state.status === 'error' && (
+        <span className="status-pill status-failed" role="alert">
+          {state.message}
+        </span>
+      )}
+    </div>
+  );
+}
+
+function ImageProviderVerification({
+  client,
+  providerId,
+}: {
+  client: AdminClient;
+  providerId: string;
+}) {
+  const [state, setState] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'success'; result: ImageProviderVerificationResult }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+
+  async function verify() {
+    if (state.status === 'loading') return;
+    setState({ status: 'loading' });
+    try {
+      const result = await client.post<ImageProviderVerificationResult>(
+        `/provider-accounts/${encodeURIComponent(providerId)}/verify-image`,
+        {},
+      );
+      if (result.ok) setState({ status: 'success', result });
+      else
+        setState({
+          status: 'error',
+          message: result.code === 'not_configured' ? '未配置' : '验证失败',
+        });
+    } catch (error) {
+      setState({ status: 'error', message: errorText(error) });
+    }
+  }
+
+  return (
+    <div className="provider-action">
+      <Button
+        type="button"
+        variant="outline"
+        onClick={verify}
+        disabled={state.status === 'loading'}
+      >
+        {state.status === 'loading' ? '验证中…' : '验证图片接口'}
+      </Button>
+      {state.status === 'success' && (
+        <span className="status-pill status-succeeded" role="status">
+          图片接口通过{state.result.modelIds?.length ? ` · ${state.result.modelIds.join(', ')}` : ''}
         </span>
       )}
       {state.status === 'error' && (

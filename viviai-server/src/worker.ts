@@ -11,7 +11,11 @@ import { QueueRuntime } from './shared/queue/queue-runtime.js';
 
 export async function startWorker(overrides: Partial<AppConfig> = {}) {
   const config = validateConfig({ ...loadConfig(), ...overrides });
-  if (!config.simulationProviderEnabled && !config.officialImages?.models.length)
+  if (
+    !config.simulationProviderEnabled &&
+    !config.officialImages?.models.length &&
+    !config.thirdPartyImages?.models.length
+  )
     throw new Error('No explicitly enabled image provider');
   // Worker owns shutdown ordering: stop scheduling, drain work, then close DB.
   const app = await createApp(config, { shutdownHooks: false });

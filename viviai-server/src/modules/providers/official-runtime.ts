@@ -7,6 +7,7 @@ import { OpenAIImageProvider } from './official/openai.js';
 import { ProviderRegistry, type Channel } from './registry.js';
 import { SIMULATED_PROFILES } from './provider-config.js';
 import { SimulatedProvider } from './simulated-provider.js';
+import { thirdPartyImageSnapshot, validateThirdPartyImageConfig } from './third-party-config.js';
 
 export function buildProviderRegistry(
   config: AppConfig,
@@ -60,6 +61,50 @@ export function buildProviderRegistry(
               definition.provider === 'google'
                 ? 'https://generativelanguage.googleapis.com'
                 : 'https://api.openai.com',
+          },
+        });
+      }
+    }
+  }
+  const thirdPartyImages = config.thirdPartyImages;
+  if (thirdPartyImages) {
+    validateThirdPartyImageConfig(thirdPartyImages, config.nodeEnv);
+    for (const model of thirdPartyImages.models) {
+      for (const spec of officialSpecs(model.modelId)) {
+        const snapshot = thirdPartyImageSnapshot(
+          thirdPartyImages,
+          model.modelId,
+          spec.resolution,
+          spec.ratio,
+        );
+        if (!snapshot) continue;
+        channels.push({
+          adapter: new OpenAIImageProvider(store, thirdPartyImages.apiKey, fetcher, {
+            baseUrl: thirdPartyImages.baseUrl,
+            protocol: snapshot.protocol,
+          }),
+          profile: {
+            id: snapshot.channelId,
+            enabled: true,
+            simulated: false,
+            productVersion: model.modelId,
+            upstreamModelId: model.modelId,
+            outputSpecId: spec.id,
+            width: spec.width,
+            height: spec.height,
+            region: 'global',
+            roles: ['reference', 'subject'],
+            credentialVersion: thirdPartyImages.credentialVersion,
+            capabilityVersion: `${snapshot.protocol}-${snapshot.revision}`,
+            quotaScope: `third-party-${thirdPartyImages.id}-${thirdPartyImages.scope}`,
+            budgetScope: `third-party-usd-${thirdPartyImages.id}-${thirdPartyImages.scope}`,
+            concurrency: thirdPartyImages.concurrency,
+            maxUnknown: thirdPartyImages.maxUnknown,
+            dailyBudgetMicros: BigInt(thirdPartyImages.dailyBudgetMicros),
+            estimatedCostMicros: BigInt(model.reserveCostMicros),
+            pricing: model.pricing,
+            responseTimeoutMs: 180_000,
+            baseUrl: thirdPartyImages.baseUrl,
           },
         });
       }

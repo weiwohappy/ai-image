@@ -688,11 +688,15 @@ export class AdminQueryService {
     requirePermission(actor, 'models.read');
     const q = query(raw, ['q', 'status']);
     if (q.status && !['enabled', 'disabled'].includes(q.status)) throw bad();
+    const configuredModelIds = new Set([
+      ...(this.config.officialImages?.models ?? []).map((model) => model.modelId),
+      ...(this.config.thirdPartyImages?.models ?? []).map((model) => model.modelId),
+    ]);
     const rows = OFFICIAL_MODELS.map((m) => ({
       id: m.id,
       name: m.name,
       provider: m.provider,
-      enabled: this.config.officialImages?.models.some((c) => c.modelId === m.id) ?? false,
+      enabled: configuredModelIds.has(m.id),
       maxImages: m.maxImages,
       verification: '尚未进行线上验证',
       createdAt: new Date(0).toISOString(),
@@ -777,16 +781,18 @@ export class AdminQueryService {
         });
       }
     const thirdParty = this.config.thirdPartyChat;
-    if (thirdParty) {
-      const scope = `third-party-${thirdParty.id}-${thirdParty.scope}`;
+    const thirdPartyImage = this.config.thirdPartyImages;
+    if (thirdParty || thirdPartyImage) {
+      const account = thirdParty ?? thirdPartyImage!;
+      const scope = `third-party-${account.id}-${account.scope}`;
       accounts.set(scope, {
         scope,
-        budgetScope: `third-party-usd-${thirdParty.id}-${thirdParty.scope}`,
-        provider: thirdParty.id,
+        budgetScope: `third-party-usd-${account.id}-${account.scope}`,
+        provider: account.id,
         simulated: false,
-        concurrency: thirdParty.concurrency,
-        maxUnknown: thirdParty.maxUnknown,
-        dailyBudgetMicros: BigInt(thirdParty.dailyBudgetMicros),
+        concurrency: account.concurrency,
+        maxUnknown: account.maxUnknown,
+        dailyBudgetMicros: BigInt(account.dailyBudgetMicros),
       });
     }
     if (this.config.simulationProviderEnabled)
@@ -1179,7 +1185,10 @@ export class AdminQueryService {
         });
       }
     if (['dashboard.models.read', 'models.read'].every((p) => actor.permissions.includes(p))) {
-      const enabled = this.config.officialImages?.models.length ?? 0;
+      const enabled = new Set([
+        ...(this.config.officialImages?.models ?? []).map((model) => model.modelId),
+        ...(this.config.thirdPartyImages?.models ?? []).map((model) => model.modelId),
+      ]).size;
       metrics.push({
         key: 'enabledModels',
         label: 'Configured models',

@@ -22,6 +22,26 @@ describe('third-party OpenAI-compatible provider configuration', () => {
       SUB2API_BASE_URL: 'http://localhost:8080',
       SUB2API_API_KEY: secret,
       SUB2API_MODEL_ID: 'gpt-5.1',
+      SUB2API_DAILY_BUDGET_MICROS: '10000000',
+      SUB2API_IMAGE_MODELS_JSON: JSON.stringify({
+        revision: 'sub2api-images-v1',
+        models: [
+          {
+            modelId: 'gpt-image-2',
+            enabledResolutions: ['1K'],
+            reserveCostMicros: '1000000',
+            pricing: {
+              version: 'provider-cost-v1',
+              currency: 'USD',
+              rates: {
+                input_text_tokens: '1',
+                input_image_tokens: '1',
+                output_image_tokens: '1',
+              },
+            },
+          },
+        ],
+      }),
     });
 
     expect(config.thirdPartyChat).toMatchObject({
@@ -29,6 +49,10 @@ describe('third-party OpenAI-compatible provider configuration', () => {
       kind: 'third_party',
       baseUrl: 'http://localhost:8080/v1',
       modelId: 'gpt-5.1',
+    });
+    expect(config.thirdPartyImages).toMatchObject({
+      revision: 'sub2api-images-v1',
+      models: [{ modelId: 'gpt-image-2', enabledResolutions: ['1K'] }],
     });
   });
 
@@ -155,6 +179,60 @@ describe('OpenAI-compatible provider verification', () => {
         modelListed: true,
         responseReceived: true,
       });
+      expect(JSON.stringify(result)).not.toContain(secret);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
+  it('verifies configured third-party image models by listing them without generating an image', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe('http://localhost:8080/v1/models');
+      return new Response(JSON.stringify({ data: [{ id: 'gpt-image-2' }] }), { status: 200 });
+    });
+    const previous = globalThis.fetch;
+    globalThis.fetch = fetcher;
+    try {
+      const result = await new AdminProviderVerificationService({
+        thirdPartyImages: {
+          id: 'sub2api',
+          kind: 'third_party',
+          baseUrl: 'http://localhost:8080/v1',
+          apiKey: secret,
+          scope: 'sub2api-default',
+          credentialVersion: 'v1',
+          concurrency: 1,
+          maxUnknown: 1,
+          dailyBudgetMicros: '0',
+          revision: 'image-v1',
+          models: [
+            {
+              modelId: 'gpt-image-2',
+              enabledResolutions: ['1K'],
+              reserveCostMicros: '1000000',
+              pricing: {
+                version: 'cost-v1',
+                currency: 'USD',
+                rates: {
+                  input_text_tokens: '1',
+                  input_image_tokens: '1',
+                  output_image_tokens: '1',
+                },
+              },
+            },
+          ],
+        },
+      } as never).verifyImages({ permissions: ['providers.read'] }, 'sub2api');
+      expect(result).toEqual({
+        provider: 'sub2api',
+        configured: true,
+        ok: true,
+        modelIds: ['gpt-image-2'],
+        modelListed: true,
+        responseReceived: true,
+        generationProbe: 'not_run',
+      });
+      expect(fetcher).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(result)).not.toContain(secret);
     } finally {
       globalThis.fetch = previous;
