@@ -11,6 +11,7 @@ import { requirePermission } from '../permissions.js';
 import { failure, teamWritesEnabled } from './policy.js';
 import { lockTeam } from './transaction.js';
 import type { TeamMutationResult } from './contracts.js';
+import { adminCommandReceiptLockKey } from '../command-receipt.js';
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -46,81 +47,88 @@ export class AdminTeamCommands {
       throw failure(400, 'ADMIN_INVALID_INPUT', '需要有效幂等键');
     const requestDigest = digest(JSON.stringify(canonical({ action, target, input })));
     try {
-      return await this.db.transaction(async (tx) => {
-        await lockTeam(tx);
-        const invitation = locks.invitation
-          ? await tx.adminInvitation.findUnique({
-              where: { id: locks.invitation },
-              select: { email: true, tokenHash: true },
-            })
-          : null;
-        const email = locks.email ?? invitation?.email;
-        if (email) await lockAdmin(tx, `email:${email}`);
-        if (invitation) await lockAdmin(tx, `invitation:${invitation.tokenHash}`);
-        const affected =
-          action === 'team.role.edit'
-            ? (
-                await tx.adminAccountRole.findMany({
-                  where: { roleKey: target },
-                  select: { accountId: true },
+      return await this.db.withSessionAdvisoryLock(
+        adminCommandReceiptLockKey(context.actor.id, key),
+        30_000,
+        () =>
+          this.db.transaction(async (tx) => {
+            await lockTeam(tx);
+            const invitation = locks.invitation
+              ? await tx.adminInvitation.findUnique({
+                  where: { id: locks.invitation },
+                  select: { email: true, tokenHash: true },
                 })
-              ).map((b) => b.accountId)
-            : [];
-        for (const id of [
-          ...new Set([context.actor.id, ...(locks.accounts ?? []), ...affected]),
-        ].sort())
-          await lockAdmin(tx, id);
-        const current = await this.auth.reauthorize(
-          tx,
-          context.sessionId,
-          context.actor.id,
-          context.requestIp ?? 'unknown',
-        );
-        if (!teamWritesEnabled(this.config, current.requestIp))
-          throw failure(503, 'ADMIN_TEAM_WRITES_DISABLED', '团队写入仅在本机开发环境开放');
-        requirePermission(
-          current.actor,
-          permission === 'model-pricing.write' ? 'models.read' : 'admins.read',
-        );
-        requirePermission(current.actor, permission);
-        const receipt = await tx.adminCommandReceipt.findUnique({
-          where: { accountId_idempotencyKey: { accountId: current.actor.id, idempotencyKey: key } },
-        });
-        if (receipt) {
-          if (
-            receipt.action !== action ||
-            receipt.target !== target ||
-            receipt.requestDigest !== requestDigest
-          )
-            throw failure(409, 'ADMIN_IDEMPOTENCY_CONFLICT', '幂等键已用于其他请求');
-          return receipt.result as unknown as TeamMutationResult;
-        }
-        const { result, metadata } = await work(tx, current);
-        const { link, ...safe } = result;
-        const stored = { ...safe, ...(link ? { linkUnavailable: true } : {}) };
-        await this.audit.write(
-          tx,
-          action,
-          'allowed',
-          current.actor.id,
-          current.sessionId,
-          result.resourceId,
-          digest(input.reason),
-          metadata,
-        );
-        await tx.adminCommandReceipt.create({
-          data: {
-            accountId: current.actor.id,
-            sessionId: current.sessionId,
-            idempotencyKey: key,
-            action,
-            target,
-            requestDigest,
-            result: stored,
-          },
-        });
-        return result;
-      });
+              : null;
+            const email = locks.email ?? invitation?.email;
+            if (email) await lockAdmin(tx, `email:${email}`);
+            if (invitation) await lockAdmin(tx, `invitation:${invitation.tokenHash}`);
+            const affected =
+              action === 'team.role.edit'
+                ? (
+                    await tx.adminAccountRole.findMany({
+                      where: { roleKey: target },
+                      select: { accountId: true },
+                    })
+                  ).map((b) => b.accountId)
+                : [];
+            for (const id of [
+              ...new Set([context.actor.id, ...(locks.accounts ?? []), ...affected]),
+            ].sort())
+              await lockAdmin(tx, id);
+            const current = await this.auth.reauthorize(
+              tx,
+              context.sessionId,
+              context.actor.id,
+              context.requestIp ?? 'unknown',
+            );
+            if (!teamWritesEnabled(this.config, current.requestIp))
+              throw failure(503, 'ADMIN_TEAM_WRITES_DISABLED', '团队写入仅在本机开发环境开放');
+            requirePermission(
+              current.actor,
+              permission === 'model-pricing.write' ? 'models.read' : 'admins.read',
+            );
+            requirePermission(current.actor, permission);
+            const receipt = await tx.adminCommandReceipt.findUnique({
+              where: {
+                accountId_idempotencyKey: { accountId: current.actor.id, idempotencyKey: key },
+              },
+            });
+            if (receipt) {
+              if (
+                receipt.action !== action ||
+                receipt.target !== target ||
+                receipt.requestDigest !== requestDigest
+              )
+                throw failure(409, 'ADMIN_IDEMPOTENCY_CONFLICT', '幂等键已用于其他请求');
+              return receipt.result as unknown as TeamMutationResult;
+            }
+            const { result, metadata } = await work(tx, current);
+            const { link, ...safe } = result;
+            const stored = { ...safe, ...(link ? { linkUnavailable: true } : {}) };
+            await this.audit.write(
+              tx,
+              action,
+              'allowed',
+              current.actor.id,
+              current.sessionId,
+              result.resourceId,
+              digest(input.reason),
+              metadata,
+            );
+            await tx.adminCommandReceipt.create({
+              data: {
+                accountId: current.actor.id,
+                sessionId: current.sessionId,
+                idempotencyKey: key,
+                action,
+                target,
+                requestDigest,
+                result: stored,
+              },
+            });
+            return result;
+          }),
+      );
     } catch (error) {
       if (error instanceof AppError && [403, 409].includes(error.status)) {
         // One rejection event per actor/action per ten minutes limits repeated denied requests.

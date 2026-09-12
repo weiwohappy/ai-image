@@ -11,6 +11,7 @@ import { DatabaseService } from '../../src/shared/database/database.service.js';
 import { adminApp, adminOrigin, fixtureAdmin } from '../helpers/admin.js';
 import { createTestDatabase, type TestDatabase } from '../helpers/database.js';
 import { contentSeedManifest, seedContent } from '../../src/scripts/seed-content.js';
+import { validateImage } from '../../src/modules/assets/image-validation.js';
 
 const reason = 'Content operation approved for integration test';
 const modelId = 'gemini-3.1-flash-image';
@@ -87,6 +88,7 @@ describe('admin operational content commands', () => {
   let db: TestDatabase;
   let app: Awaited<ReturnType<typeof adminApp>>;
   let operator: Awaited<ReturnType<typeof fixtureAdmin>>;
+  let superAdmin: Awaited<ReturnType<typeof fixtureAdmin>>;
   let support: Awaited<ReturnType<typeof fixtureAdmin>>;
   let image: Buffer;
 
@@ -152,6 +154,7 @@ describe('admin operational content commands', () => {
       simulationProviderEnabled: false,
     });
     operator = await fixtureAdmin(db, ['content_operator']);
+    superAdmin = await fixtureAdmin(db, ['super_admin']);
     support = await fixtureAdmin(db, ['support']);
   });
 
@@ -206,6 +209,95 @@ describe('admin operational content commands', () => {
     expect(audit).not.toContain(reason);
     expect(audit).not.toContain('content/admin/');
   });
+
+  it.each(['upload', 'team'] as const)(
+    'serializes cross-domain receipt writers when %s queues first',
+    async (firstKind) => {
+      const key = randomUUID();
+      const roleKey = `custom_receipt_${randomUUID().replaceAll('-', '').slice(0, 12)}`;
+      const store = app.get<ObjectStore>(ASSET_STORE);
+      const normalized = await validateImage(image);
+      const mediaId = deterministicTestMediaId(superAdmin.account.id, key);
+      const sha256 = createHash('sha256').update(normalized.bytes).digest('hex');
+      const expectedObjectKey = `content/admin/${mediaId}-${sha256}.png`;
+      const blocker = new pg.Client({ connectionString: db.url });
+      await blocker.connect();
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+        `admin:command-receipt:${superAdmin.account.id}:${key}`,
+      ]);
+      const team = () =>
+        request(app.getHttpServer())
+          .post('/api/admin/team/roles')
+          .set('Cookie', superAdmin.cookie)
+          .set('Origin', adminOrigin)
+          .set('Idempotency-Key', key)
+          .send({
+            key: roleKey,
+            name: 'Receipt race role',
+            description: 'Exercises the shared receipt lock',
+            permissions: ['dashboard.read'],
+            reason,
+          });
+      const media = () => upload(superAdmin.cookie, key, 'receipt-race.png');
+      const start = (kind: 'upload' | 'team') =>
+        (kind === 'upload' ? media() : team()).then((response) => response);
+      const first = start(firstKind);
+      let second: ReturnType<typeof start> | undefined;
+      try {
+        expect(await waitForExactAdvisoryWaiters(blocker, 1)).toBe(true);
+        second = start(firstKind === 'upload' ? 'team' : 'upload');
+        expect(await waitForExactAdvisoryWaiters(blocker, 2)).toBe(true);
+        await blocker.query('COMMIT');
+        const [firstResponse, secondResponse] = await Promise.all([first, second]);
+        expect(firstResponse.status).toBe(201);
+        expect(secondResponse.status).toBe(409);
+        expect(secondResponse.body.code).toBe('ADMIN_IDEMPOTENCY_CONFLICT');
+        const receipt = await db.database.client.adminCommandReceipt.findUniqueOrThrow({
+          where: {
+            accountId_idempotencyKey: {
+              accountId: superAdmin.account.id,
+              idempotencyKey: key,
+            },
+          },
+        });
+        expect(receipt.action).toBe(
+          firstKind === 'upload' ? 'content.media.create' : 'team.role.create',
+        );
+        const row = await db.database.client.contentMedia.findUnique({ where: { id: mediaId } });
+        const role = await db.database.client.adminRole.findUnique({ where: { key: roleKey } });
+        if (firstKind === 'upload') {
+          expect(row).toMatchObject({ objectKey: expectedObjectKey, sha256 });
+          expect(role).toBeNull();
+          expect(Buffer.from(await store.get(expectedObjectKey))).toEqual(
+            Buffer.from(normalized.bytes),
+          );
+        } else {
+          expect(row).toBeNull();
+          expect(role).toMatchObject({ key: roleKey });
+          await expect(store.get(expectedObjectKey)).rejects.toBeDefined();
+        }
+      } finally {
+        await blocker.query('ROLLBACK').catch(() => undefined);
+        await blocker.end();
+        await Promise.allSettled([first, ...(second ? [second] : [])]);
+        await store.delete(expectedObjectKey).catch(() => undefined);
+        await db.database.client.adminCommandReceipt.deleteMany({
+          where: { accountId: superAdmin.account.id, idempotencyKey: key },
+        });
+        await db.database.client.contentMedia.deleteMany({ where: { id: mediaId } });
+        await db.database.client.adminRole.deleteMany({ where: { key: roleKey } });
+        expect(
+          await db.database.client.adminCommandReceipt.count({
+            where: { accountId: superAdmin.account.id, idempotencyKey: key },
+          }),
+        ).toBe(0);
+        expect(await db.database.client.contentMedia.count({ where: { id: mediaId } })).toBe(0);
+        await expect(store.get(expectedObjectKey)).rejects.toBeDefined();
+      }
+    },
+    30_000,
+  );
 
   it('validates media and serves authenticated integrity-checked draft previews', async () => {
     const invalid = await request(app.getHttpServer())
@@ -518,6 +610,9 @@ describe('admin operational content commands', () => {
   });
 
   it('stores an unready draft tool but enforces current model image capacity at publish', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
     const media = (await upload()).body.data;
     await call('post', operator.cookie, `/media/${media.id}/transition`, {
       version: 1,
@@ -854,6 +949,141 @@ describe('admin operational content commands', () => {
     ).toBe(0);
   });
 
+  it('durably counts authorized invalid publish attempts after business rollback', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    const created = await call(
+      'post',
+      operator.cookie,
+      '/inspirations',
+      inspiration(`quota-invalid-${randomUUID().slice(0, 8)}`, media.externalId),
+    );
+    const statuses: number[] = [];
+    for (let index = 0; index < 6; index++)
+      statuses.push(
+        (
+          await call(
+            'post',
+            operator.cookie,
+            `/inspirations/${created.body.data.id}/transition`,
+            { version: 1, reason, status: 'published' },
+            randomUUID(),
+          )
+        ).status,
+      );
+    expect(statuses).toEqual([422, 422, 422, 422, 422, 429]);
+    expect(
+      await db.database.client.inspiration.findUniqueOrThrow({
+        where: { id: created.body.data.id },
+      }),
+    ).toMatchObject({ status: 'draft', version: 1 });
+    const second = await fixtureAdmin(db, ['content_operator']);
+    expect(
+      (
+        await call(
+          'post',
+          second.cookie,
+          `/inspirations/${created.body.data.id}/transition`,
+          { version: 1, reason, status: 'published' },
+          randomUUID(),
+        )
+      ).status,
+    ).toBe(422);
+    const buckets = await db.database.client.authRateBucket.findMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    expect(
+      buckets.find((bucket) =>
+        bucket.key.startsWith(
+          `admin-content-publish:${operator.account.id}:content.inspirations.publish`,
+        ),
+      )?.count,
+    ).toBe(6);
+    expect(
+      buckets.find((bucket) =>
+        bucket.key.startsWith(
+          `admin-content-publish:${second.account.id}:content.inspirations.publish`,
+        ),
+      )?.count,
+    ).toBe(1);
+    expect(
+      buckets.find(
+        (bucket) =>
+          bucket.key.startsWith('admin-content-publish:ip:') &&
+          bucket.key.endsWith(':content.inspirations.publish'),
+      )?.count,
+    ).toBe(7);
+  });
+
+  it('retains publish quota across version conflicts and infrastructure rollback', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const created = await call(
+      'post',
+      operator.cookie,
+      '/inspirations',
+      inspiration(`quota-rollback-${randomUUID().slice(0, 8)}`, media.externalId),
+    );
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const conflict = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${created.body.data.id}/transition`,
+      { version: 2, reason, status: 'published' },
+      randomUUID(),
+    );
+    expect(conflict.status).toBe(409);
+    const constraint = `test_publish_rollback_${randomUUID().replaceAll('-', '')}`;
+    const schema = new URL(db.url).searchParams.get('schema')!;
+    try {
+      await db.database.client.$executeRawUnsafe(
+        `ALTER TABLE "${schema}"."inspirations" ADD CONSTRAINT "${constraint}" CHECK ("id" <> '${created.body.data.id}'::uuid OR "status" <> 'published')`,
+      );
+      const failed = await call(
+        'post',
+        operator.cookie,
+        `/inspirations/${created.body.data.id}/transition`,
+        { version: 1, reason, status: 'published' },
+        randomUUID(),
+      );
+      expect(failed.status).toBe(500);
+    } finally {
+      await db.database.client.$executeRawUnsafe(
+        `ALTER TABLE "${schema}"."inspirations" DROP CONSTRAINT IF EXISTS "${constraint}"`,
+      );
+    }
+    expect(
+      await db.database.client.authRateBucket.findFirstOrThrow({
+        where: {
+          key: {
+            startsWith: `admin-content-publish:${operator.account.id}:content.inspirations.publish`,
+          },
+        },
+      }),
+    ).toMatchObject({ count: 2 });
+    expect(
+      await db.database.client.inspiration.findUniqueOrThrow({
+        where: { id: created.body.data.id },
+      }),
+    ).toMatchObject({ status: 'draft', version: 1 });
+  });
+
   it('replays an exact publish receipt after quota is exhausted without charging again', async () => {
     await db.database.client.authRateBucket.deleteMany({
       where: { key: { startsWith: 'admin-content-publish:' } },
@@ -911,6 +1141,15 @@ describe('admin operational content commands', () => {
         },
       }),
     ).toBe(1);
+    expect(
+      await db.database.client.authRateBucket.findFirstOrThrow({
+        where: {
+          key: {
+            startsWith: `admin-content-publish:${operator.account.id}:content.inspirations.publish`,
+          },
+        },
+      }),
+    ).toMatchObject({ count: 5 });
   });
 
   it('rate-limits published PATCH and reorder mutations independently of idempotency keys', async () => {
@@ -1432,40 +1671,19 @@ describe('admin operational content commands', () => {
       `content:resource:media:${media.id}`,
     ]);
     const seeded = seedContent(db.database, sharedStore, { manifest });
-    const offlined = call('post', operator.cookie, `/media/${media.id}/transition`, {
-      version: 2,
-      reason,
-      status: 'offline',
-    }).then((response) => response);
+    let offlined: Promise<Awaited<ReturnType<typeof call>>> | undefined;
     try {
-      const deadline = Date.now() + 12_000;
-      let waiters = 0;
-      while (Date.now() < deadline) {
-        const waiting = await blocker.query<{ count: number }>(
-          `SELECT count(DISTINCT waiting.pid)::int AS count
-             FROM pg_locks held
-             JOIN pg_locks waiting
-               ON waiting.locktype = 'advisory'
-              AND waiting.database = held.database
-              AND waiting.classid = held.classid
-              AND waiting.objid = held.objid
-              AND waiting.objsubid = held.objsubid
-             JOIN pg_stat_activity activity ON activity.pid = waiting.pid
-            WHERE held.pid = pg_backend_pid()
-              AND held.locktype = 'advisory'
-              AND held.granted
-              AND NOT waiting.granted
-              AND activity.wait_event_type = 'Lock'
-              AND activity.wait_event = 'advisory'`,
-        );
-        waiters = waiting.rows[0]?.count ?? 0;
-        if (waiters >= 2) break;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(waiters).toBeGreaterThanOrEqual(2);
+      expect(await waitForExactAdvisoryWaiters(blocker, 1, 12_000)).toBe(true);
+      const offlineRequest = call('post', operator.cookie, `/media/${media.id}/transition`, {
+        version: 2,
+        reason,
+        status: 'offline',
+      }).then((response) => response);
+      offlined = offlineRequest;
+      expect(await waitForExactAdvisoryWaiters(blocker, 2, 12_000)).toBe(true);
       await blocker.query('COMMIT');
-      const [, offlineResponse] = await Promise.all([seeded, offlined]);
-      expect([201, 422]).toContain(offlineResponse.status);
+      const [, offlineResponse] = await Promise.all([seeded, offlineRequest]);
+      expect(offlineResponse.status).toBe(409);
       const finalContent = await db.database.client.inspiration.findUniqueOrThrow({
         where: { id: created.body.data.id },
       });
@@ -1496,7 +1714,7 @@ describe('admin operational content commands', () => {
     } finally {
       await blocker.query('ROLLBACK').catch(() => undefined);
       await blocker.end();
-      await Promise.allSettled([seeded, offlined]);
+      await Promise.allSettled([seeded, ...(offlined ? [offlined] : [])]);
     }
   }, 30_000);
 
@@ -1506,24 +1724,11 @@ describe('admin operational content commands', () => {
     await blocker.connect();
     await blocker.query('BEGIN');
     await blocker.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
-      `admin:content-command:${operator.account.id}:${key}`,
+      `admin:command-receipt:${operator.account.id}:${key}`,
     ]);
     const before = await db.database.client.contentMedia.count();
     const pending = upload(operator.cookie, key, 'reauthorize.png').then((response) => response);
-    const deadline = Date.now() + 2_000;
-    let observedWaiter = false;
-    while (Date.now() < deadline) {
-      const waiting = await blocker.query<{ count: number }>(
-        `SELECT count(*)::int AS count FROM pg_stat_activity
-          WHERE pid <> pg_backend_pid() AND wait_event_type = 'Lock' AND wait_event = 'advisory'`,
-      );
-      if ((waiting.rows[0]?.count ?? 0) > 0) {
-        observedWaiter = true;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(observedWaiter).toBe(true);
+    expect(await waitForExactAdvisoryWaiters(blocker, 1)).toBe(true);
     await db.database.client.adminAccountRole.delete({
       where: { accountId_roleKey: { accountId: operator.account.id, roleKey: 'content_operator' } },
     });
@@ -1537,3 +1742,41 @@ describe('admin operational content commands', () => {
     ).toBe(0);
   });
 });
+
+async function waitForExactAdvisoryWaiters(
+  blocker: pg.Client,
+  minimum: number,
+  timeoutMs = 2_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const waiting = await blocker.query<{ count: number }>(
+      `SELECT count(DISTINCT waiting.pid)::int AS count
+         FROM pg_locks held
+         JOIN pg_locks waiting
+           ON waiting.locktype = 'advisory'
+          AND waiting.database = held.database
+          AND waiting.classid = held.classid
+          AND waiting.objid = held.objid
+          AND waiting.objsubid = held.objsubid
+        WHERE held.pid = pg_backend_pid()
+          AND held.locktype = 'advisory'
+          AND held.granted
+          AND NOT waiting.granted`,
+    );
+    if ((waiting.rows[0]?.count ?? 0) >= minimum) return true;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return false;
+}
+
+function deterministicTestMediaId(accountId: string, idempotencyKey: string): string {
+  const bytes = createHash('sha256')
+    .update(`admin-content-media-v1:${accountId}:${idempotencyKey}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}

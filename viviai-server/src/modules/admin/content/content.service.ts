@@ -258,7 +258,7 @@ export class AdminContentService {
           };
         }
         if (before.status === 'published')
-          await this.commands.enforcePublishRateLimit(tx, current, `content.${family}.update`);
+          await this.commands.enforcePublishRateLimit(current, `content.${family}.update`);
         if (before.version >= 2_147_483_647)
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         const proposed = { ...before, ...data };
@@ -315,7 +315,6 @@ export class AdminContentService {
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         if (before.status === 'published' && input.status !== 'published')
           await this.commands.enforcePublishRateLimit(
-            tx,
             current,
             `content.${family}.${input.status === 'offline' ? 'offline' : 'archive'}`,
           );
@@ -391,7 +390,7 @@ export class AdminContentService {
             return row.status === 'published' && row.sortOrder !== item.sortOrder;
           })
         )
-          await this.commands.enforcePublishRateLimit(tx, current, `content.${family}.reorder`);
+          await this.commands.enforcePublishRateLimit(current, `content.${family}.reorder`);
         const results = [];
         for (const item of input.items) {
           const row = before.get(item.id)!;

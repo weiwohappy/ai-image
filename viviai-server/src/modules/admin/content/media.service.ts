@@ -148,139 +148,135 @@ export class AdminContentMediaService {
       byteSize: image.bytes.byteLength,
     };
     const requestDigest = contentCommandRequestDigest(action, target, commandInput);
-    return this.db.withSessionAdvisoryLock(
-      `content:media-upload:${context.actor.id}:${key}`,
-      30_000,
-      async () => {
-        let putAttempted = false;
-        let putConfirmed = false;
-        try {
-          return await this.commands.run(
-            context,
-            key,
-            action,
-            target,
-            commandInput,
-            ['content.media.read', 'content.media.write'],
-            async (tx, current) => {
-              putAttempted = true;
-              await this.store.put(objectKey, image.bytes, image.contentType);
-              putConfirmed = true;
-              const row = await tx.contentMedia.create({
-                data: {
-                  id,
-                  externalId: `content-media-${id}`,
-                  objectKey,
-                  sha256: hash,
-                  contentType: image.contentType,
-                  width: image.width,
-                  height: image.height,
-                  byteSize: image.bytes.byteLength,
-                  createdByAdminId: current.actor.id,
-                  updatedByAdminId: current.actor.id,
-                },
-              });
-              return {
-                result: { ...this.dto(row), filename },
-                metadata: {
-                  contentKind: 'media',
-                  changedFields: ['create'],
-                  afterStatus: 'draft',
-                  afterVersion: 1,
-                },
-              };
-            },
-          );
-        } catch (error) {
-          if (!putAttempted) throw error;
-          let receipt:
-            | { action: string; target: string; requestDigest: string; result: unknown }
-            | null
-            | undefined;
-          let row:
-            | {
-                id: string;
-                externalId: string;
-                objectKey: string;
-                sha256: string;
-                contentType: string;
-                width: number;
-                height: number;
-                byteSize: number;
-              }
-            | null
-            | undefined;
-          try {
-            [receipt, row] = await Promise.all([
-              this.db.client.adminCommandReceipt.findUnique({
-                where: {
-                  accountId_idempotencyKey: { accountId: context.actor.id, idempotencyKey: key },
-                },
-                select: { action: true, target: true, requestDigest: true, result: true },
-              }),
-              this.db.client.contentMedia.findUnique({
-                where: { id },
-                select: {
-                  id: true,
-                  externalId: true,
-                  objectKey: true,
-                  sha256: true,
-                  contentType: true,
-                  width: true,
-                  height: true,
-                  byteSize: true,
-                },
-              }),
-            ]);
-          } catch {
-            await this.recordUploadAlert(id, 'upload_outcome_unknown');
-            throw new AppError(
-              503,
-              'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN',
-              '上传结果正在对账，请稍后查询',
-              { details: { reason: 'outcome_unknown' } },
-            );
-          }
-          const receiptMatches =
-            receipt?.action === action &&
-            receipt.target === target &&
-            receipt.requestDigest === requestDigest;
-          const rowMatches =
-            row?.id === id &&
-            row.externalId === `content-media-${id}` &&
-            row.objectKey === objectKey &&
-            row.sha256 === hash &&
-            row.contentType === image.contentType &&
-            row.width === image.width &&
-            row.height === image.height &&
-            row.byteSize === image.bytes.byteLength;
-          if (receiptMatches && rowMatches) {
-            if (!putConfirmed && !(await this.storedUploadMatches(objectKey, image))) {
-              await this.recordUploadAlert(id, 'upload_outcome_unknown');
-              throw uploadOutcomeUnknown();
+    return this.commands.withReceiptLock(context, key, async () => {
+      let putAttempted = false;
+      let putConfirmed = false;
+      try {
+        return await this.commands.runWithReceiptLock(
+          context,
+          key,
+          action,
+          target,
+          commandInput,
+          ['content.media.read', 'content.media.write'],
+          async (tx, current) => {
+            putAttempted = true;
+            await this.store.put(objectKey, image.bytes, image.contentType);
+            putConfirmed = true;
+            const row = await tx.contentMedia.create({
+              data: {
+                id,
+                externalId: `content-media-${id}`,
+                objectKey,
+                sha256: hash,
+                contentType: image.contentType,
+                width: image.width,
+                height: image.height,
+                byteSize: image.bytes.byteLength,
+                createdByAdminId: current.actor.id,
+                updatedByAdminId: current.actor.id,
+              },
+            });
+            return {
+              result: { ...this.dto(row), filename },
+              metadata: {
+                contentKind: 'media',
+                changedFields: ['create'],
+                afterStatus: 'draft',
+                afterVersion: 1,
+              },
+            };
+          },
+        );
+      } catch (error) {
+        if (!putAttempted) throw error;
+        let receipt:
+          | { action: string; target: string; requestDigest: string; result: unknown }
+          | null
+          | undefined;
+        let row:
+          | {
+              id: string;
+              externalId: string;
+              objectKey: string;
+              sha256: string;
+              contentType: string;
+              width: number;
+              height: number;
+              byteSize: number;
             }
-            return receipt!.result;
-          }
-          if (receipt || row) {
-            await this.recordUploadAlert(id, 'upload_outcome_unknown');
-            throw uploadOutcomeUnknown();
-          }
+          | null
+          | undefined;
+        try {
+          [receipt, row] = await Promise.all([
+            this.db.client.adminCommandReceipt.findUnique({
+              where: {
+                accountId_idempotencyKey: { accountId: context.actor.id, idempotencyKey: key },
+              },
+              select: { action: true, target: true, requestDigest: true, result: true },
+            }),
+            this.db.client.contentMedia.findUnique({
+              where: { id },
+              select: {
+                id: true,
+                externalId: true,
+                objectKey: true,
+                sha256: true,
+                contentType: true,
+                width: true,
+                height: true,
+                byteSize: true,
+              },
+            }),
+          ]);
+        } catch {
+          await this.recordUploadAlert(id, 'upload_outcome_unknown');
+          throw new AppError(
+            503,
+            'CONTENT_MEDIA_UPLOAD_OUTCOME_UNKNOWN',
+            '上传结果正在对账，请稍后查询',
+            { details: { reason: 'outcome_unknown' } },
+          );
+        }
+        const receiptMatches =
+          receipt?.action === action &&
+          receipt.target === target &&
+          receipt.requestDigest === requestDigest;
+        const rowMatches =
+          row?.id === id &&
+          row.externalId === `content-media-${id}` &&
+          row.objectKey === objectKey &&
+          row.sha256 === hash &&
+          row.contentType === image.contentType &&
+          row.width === image.width &&
+          row.height === image.height &&
+          row.byteSize === image.bytes.byteLength;
+        if (receiptMatches && rowMatches) {
           if (!putConfirmed && !(await this.storedUploadMatches(objectKey, image))) {
             await this.recordUploadAlert(id, 'upload_outcome_unknown');
             throw uploadOutcomeUnknown();
           }
-          try {
-            await this.store.delete(objectKey);
-          } catch {
-            await this.recordUploadAlert(id, 'rollback_cleanup_failed');
-            throw new AppError(503, 'CONTENT_MEDIA_CLEANUP_PENDING', '上传回滚清理待处理', {
-              details: { reason: 'cleanup_pending' },
-            });
-          }
-          throw error;
+          return receipt!.result;
         }
-      },
-    );
+        if (receipt || row) {
+          await this.recordUploadAlert(id, 'upload_outcome_unknown');
+          throw uploadOutcomeUnknown();
+        }
+        if (!putConfirmed && !(await this.storedUploadMatches(objectKey, image))) {
+          await this.recordUploadAlert(id, 'upload_outcome_unknown');
+          throw uploadOutcomeUnknown();
+        }
+        try {
+          await this.store.delete(objectKey);
+        } catch {
+          await this.recordUploadAlert(id, 'rollback_cleanup_failed');
+          throw new AppError(503, 'CONTENT_MEDIA_CLEANUP_PENDING', '上传回滚清理待处理', {
+            details: { reason: 'cleanup_pending' },
+          });
+        }
+        throw error;
+      }
+    });
   }
 
   async metadata(context: AdminContext, id: string) {
