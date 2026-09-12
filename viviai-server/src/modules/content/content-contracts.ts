@@ -145,13 +145,24 @@ export const toolFieldSchema = z
       });
   });
 
+export const toolFieldArraySchema = z
+  .array(toolFieldSchema)
+  .max(20)
+  .superRefine((fields, context) => {
+    if (new Set(fields.map((field) => field.id)).size !== fields.length)
+      context.addIssue({
+        code: 'custom',
+        message: 'Tool field IDs must be unique',
+      });
+  });
+
 export const toolDefinitionInputSchema = z
   .object({
     externalId,
     name: label,
     description: z.string().trim().min(1).max(2000),
     category: label,
-    fields: z.array(toolFieldSchema).max(20),
+    fields: toolFieldArraySchema,
     promptTemplate: z.string().trim().min(1).max(4000),
     defaults: generationDefaultsSchema,
     maxAssets: z.number().int().min(0).max(4),
@@ -168,12 +179,6 @@ export const toolDefinitionInputSchema = z
   .extend(sourceSchema.shape)
   .strict()
   .superRefine((tool, context) => {
-    if (new Set(tool.fields.map((field) => field.id)).size !== tool.fields.length)
-      context.addIssue({
-        code: 'custom',
-        path: ['fields'],
-        message: 'Tool field IDs must be unique',
-      });
     if (tool.defaults.modelId !== tool.defaultModelId)
       context.addIssue({
         code: 'custom',

@@ -25,7 +25,7 @@ const externalIdSchema = z.string().regex(/^[a-z][a-z0-9-]{1,159}$/);
 const mediaPathIdSchema = z.string().regex(/^[A-Za-z0-9-]{2,160}$/);
 const filterValue = z.string().trim().min(1).max(160);
 const pageShape = {
-  cursor: z.string().max(2048).optional(),
+  cursor: z.string().min(1).max(2048).optional(),
   limit: z
     .string()
     .regex(/^[1-9]\d?$/)
@@ -40,7 +40,12 @@ export class PublicContentController {
 
   @Get('inspirations')
   @UseGuards(OptionalSessionGuard)
-  inspirations(@Req() request: OptionalSessionRequest, @Query() query: unknown) {
+  inspirations(
+    @Req() request: OptionalSessionRequest,
+    @Query() query: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    setPersonalizedCacheHeaders(response);
     const input = parseInput(
       z.object({ ...pageShape, category: filterValue.optional() }).strict(),
       query,
@@ -69,7 +74,12 @@ export class PublicContentController {
 
   @Get('remix-templates')
   @UseGuards(OptionalSessionGuard)
-  remixTemplates(@Req() request: OptionalSessionRequest, @Query() query: unknown) {
+  remixTemplates(
+    @Req() request: OptionalSessionRequest,
+    @Query() query: unknown,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    setPersonalizedCacheHeaders(response);
     const input = parseInput(
       z
         .object({
@@ -97,7 +107,12 @@ export class PublicContentController {
 
   @Get('remix-templates/:id')
   @UseGuards(OptionalSessionGuard)
-  remixTemplate(@Req() request: OptionalSessionRequest, @Param('id') rawId: string) {
+  remixTemplate(
+    @Req() request: OptionalSessionRequest,
+    @Param('id') rawId: string,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    setPersonalizedCacheHeaders(response);
     return this.content.remixTemplate(parseInput(externalIdSchema, rawId), request.userId);
   }
 
@@ -143,7 +158,7 @@ export class PublicContentController {
     response.setHeader('Content-Type', media.contentType);
     response.setHeader('Content-Length', media.byteSize);
     response.setHeader('ETag', media.etag);
-    response.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+    response.setHeader('Cache-Control', 'public, max-age=0, must-revalidate');
     response.setHeader('Content-Disposition', 'inline');
     if (matchesEtag(ifNoneMatch, media.etag)) {
       response.status(304).end();
@@ -151,6 +166,11 @@ export class PublicContentController {
     }
     response.status(200).send(Buffer.from(media.bytes));
   }
+}
+
+function setPersonalizedCacheHeaders(response: Response): void {
+  response.setHeader('Cache-Control', 'private, no-store');
+  response.vary('Cookie');
 }
 
 function matchesEtag(header: string | undefined, etag: string): boolean {

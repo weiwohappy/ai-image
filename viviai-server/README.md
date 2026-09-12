@@ -54,7 +54,7 @@ npm start
 npm run worker:start
 ```
 
-开发热更新分别使用 `npm run dev`、`npm run worker`。每个部署环境应设置独立的 `QUEUE_NAMESPACE`，API 和 Worker 指向同一数据库、Redis 和私有存储。
+开发热更新分别使用 `npm run dev`、`npm run worker`。每个部署环境应设置独立的 `QUEUE_NAMESPACE`，API 和 Worker 指向同一数据库、Redis 和私有存储。生产环境还必须设置独立、随机且至少 32 个字符的 `CONTENT_CURSOR_SECRET`；开发与测试环境在未设置时使用仅限非生产的确定性回退值。
 
 ### 创建开发账号
 

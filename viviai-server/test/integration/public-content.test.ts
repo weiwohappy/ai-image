@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import pg from 'pg';
 import request from 'supertest';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../../src/main.js';
@@ -95,6 +96,23 @@ describe('public operational content', () => {
         sortOrder: input.sortOrder,
       },
     });
+  }
+
+  async function waitForAdvisoryWaiter(client: pg.Client): Promise<void> {
+    const deadline = Date.now() + 2_000;
+    while (Date.now() < deadline) {
+      const result = await client.query<{ waiting: number }>(
+        `SELECT count(*)::int AS waiting
+           FROM pg_stat_activity
+          WHERE datname = current_database()
+            AND pid <> pg_backend_pid()
+            AND wait_event_type = 'Lock'
+            AND wait_event = 'advisory'`,
+      );
+      if ((result.rows[0]?.waiting ?? 0) > 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error('Timed out waiting for the content interaction advisory lock');
   }
 
   beforeAll(async () => {
@@ -314,6 +332,8 @@ describe('public operational content', () => {
   it('returns strict published inspiration DTOs to signed-out and invalid sessions', async () => {
     for (const cookie of [undefined, `${SESSION_COOKIE}=${'x'.repeat(43)}`, expiredCookie]) {
       const response = await get('/inspirations?category=featured', cookie).expect(200);
+      expect(response.headers['cache-control']).toBe('private, no-store');
+      expect(response.headers.vary?.split(/\s*,\s*/)).toContain('Cookie');
       expect(response.body.data).toEqual({
         items: [
           {
@@ -334,6 +354,7 @@ describe('public operational content', () => {
       );
     }
     await get('/inspirations?unknown=value').expect(400);
+    await get('/inspirations?cursor=').expect(400);
     await get('/inspirations?limit=0').expect(400);
     await get('/inspirations?limit=51').expect(400);
   });
@@ -376,12 +397,56 @@ describe('public operational content', () => {
     await get(
       `/inspirations?category=featured&limit=2&cursor=${encodeURIComponent(cursor)}`,
     ).expect(400);
+
+    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    const forgeWithPlainSha = (changes: Record<string, unknown>) => {
+      const payload = { ...decoded, ...changes };
+      delete payload.checksum;
+      return Buffer.from(
+        JSON.stringify({
+          ...payload,
+          checksum: createHash('sha256')
+            .update(`content-cursor-v1:${JSON.stringify(payload)}`)
+            .digest('hex'),
+        }),
+      ).toString('base64url');
+    };
+    const forgedErrors = [];
+    for (const changes of [
+      { externalId: 'inspiration-page-3' },
+      { externalId: 'inspiration-anchor-does-not-exist' },
+      { sortOrder: 11 },
+      { filter: '{"category":"featured"}' },
+      { kind: 'tools' },
+    ]) {
+      const forged = forgeWithPlainSha(changes);
+      const forgedResponse = await get(
+        `/inspirations?category=paging&limit=2&cursor=${encodeURIComponent(forged)}`,
+      ).expect(400);
+      const publicError = {
+        data: forgedResponse.body.data,
+        code: forgedResponse.body.code,
+        message: forgedResponse.body.message,
+      };
+      expect(publicError).toEqual({
+        data: null,
+        code: 'INVALID_CURSOR',
+        message: 'Pagination cursor is invalid',
+      });
+      forgedErrors.push(publicError);
+    }
+    expect(new Set(forgedErrors.map((error) => JSON.stringify(error))).size).toBe(1);
   });
 
   it('maps template and tool JSON into exact frontend contracts and hides offline detail', async () => {
     const templates = await get(
       '/remix-templates?category=commerce&platform=xiaohongshu&industry=beauty&style=cinematic',
     ).expect(200);
+    expect(templates.headers['cache-control']).toBe('private, no-store');
+    expect(templates.headers.vary?.split(/\s*,\s*/)).toContain('Cookie');
     expect(templates.body.data).toEqual({
       items: [
         {
@@ -413,9 +478,10 @@ describe('public operational content', () => {
       ],
       nextCursor: null,
     });
-    expect((await get('/remix-templates/template-main').expect(200)).body.data).toEqual(
-      templates.body.data.items[0],
-    );
+    const templateDetail = await get('/remix-templates/template-main').expect(200);
+    expect(templateDetail.headers['cache-control']).toBe('private, no-store');
+    expect(templateDetail.headers.vary?.split(/\s*,\s*/)).toContain('Cookie');
+    expect(templateDetail.body.data).toEqual(templates.body.data.items[0]);
     await get('/remix-templates/template-offline').expect(404);
     await get('/remix-templates/does-not-exist').expect(404);
     await get('/remix-templates?unknown=value').expect(400);
@@ -479,6 +545,9 @@ describe('public operational content', () => {
     });
     const aliceInspiration = await get('/inspirations?category=featured', aliceCookie).expect(200);
     const bobInspiration = await get('/inspirations?category=featured', bobCookie).expect(200);
+    expect(aliceInspiration.headers['cache-control']).toBe('private, no-store');
+    expect(aliceInspiration.headers.vary?.split(/\s*,\s*/)).toContain('Cookie');
+    expect(bobInspiration.headers['cache-control']).toBe('private, no-store');
     expect(aliceInspiration.body.data.items[0]).toMatchObject({ likes: 11, liked: true });
     expect(bobInspiration.body.data.items[0]).toMatchObject({ likes: 11, liked: false });
     expect(
@@ -559,7 +628,51 @@ describe('public operational content', () => {
     await post('/remix-templates/template-offline/favorite', aliceCookie).expect(404);
   });
 
-  it('streams only published reachable media with immutable validators', async () => {
+  it('serializes concurrent inspiration mutations before returning authoritative counts', async () => {
+    const target = await database.database.client.inspiration.findUniqueOrThrow({
+      where: { externalId: 'inspiration-main' },
+    });
+    await database.database.client.inspirationLike.deleteMany({
+      where: { inspirationId: target.id },
+    });
+
+    const lockClient = new pg.Client({ connectionString: database.url });
+    await lockClient.connect();
+    await lockClient.query('BEGIN');
+    await lockClient.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `content:inspiration-interaction:${target.id}`,
+    ]);
+    const pending = [
+      post('/inspirations/inspiration-main/like', aliceCookie)
+        .expect(201)
+        .then((response) => response),
+      post('/inspirations/inspiration-main/like', bobCookie)
+        .expect(201)
+        .then((response) => response),
+    ];
+    let waitError: unknown;
+    try {
+      await waitForAdvisoryWaiter(lockClient);
+    } catch (error) {
+      waitError = error;
+    } finally {
+      await lockClient.query('ROLLBACK').catch(() => undefined);
+      await lockClient.end().catch(() => undefined);
+    }
+    const responses = await Promise.all(pending);
+    if (waitError) throw waitError;
+
+    expect(responses.map((response) => response.body.data.likes).sort()).toEqual([11, 12]);
+    expect(
+      await database.database.client.inspirationLike.count({
+        where: { inspirationId: target.id },
+      }),
+    ).toBe(2);
+    const replay = await post('/inspirations/inspiration-main/like', aliceCookie).expect(201);
+    expect(replay.body.data).toMatchObject({ likes: 12, liked: true });
+  });
+
+  it('streams only published reachable media with revalidating validators', async () => {
     const response = await get('/content-media/media-public/content').expect(200);
     expect(Buffer.compare(response.body, publicBytes)).toBe(0);
     expect(response.headers['content-type']).toMatch(/^image\/png/);
@@ -567,7 +680,7 @@ describe('public operational content', () => {
     expect(response.headers.etag).toBe(
       `"${createHash('sha256').update(publicBytes).digest('hex')}"`,
     );
-    expect(response.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+    expect(response.headers['cache-control']).toBe('public, max-age=0, must-revalidate');
     expect(response.headers['x-content-type-options']).toBe('nosniff');
 
     await request(app.getHttpServer())
@@ -575,11 +688,52 @@ describe('public operational content', () => {
       .set('If-None-Match', response.headers.etag!)
       .expect(304)
       .expect((notModified) => expect(notModified.body).toHaveLength(0));
+
+    const replacement = Buffer.from('\x89PNG\r\n\x1a\npublic-content-v2');
+    const media = await database.database.client.contentMedia.findUniqueOrThrow({
+      where: { externalId: 'media-public' },
+    });
+    await app.get<ObjectStore>(ASSET_STORE).put(media.objectKey, replacement, 'image/png');
+    await database.database.client.contentMedia.update({
+      where: { id: media.id },
+      data: {
+        sha256: createHash('sha256').update(replacement).digest('hex'),
+        byteSize: replacement.length,
+      },
+    });
+    const refreshed = await request(app.getHttpServer())
+      .get('/api/content-media/media-public/content')
+      .set('If-None-Match', response.headers.etag!)
+      .expect(200);
+    expect(Buffer.compare(refreshed.body, replacement)).toBe(0);
+    expect(refreshed.headers.etag).toBe(
+      `"${createHash('sha256').update(replacement).digest('hex')}"`,
+    );
+    expect(refreshed.headers.etag).not.toBe(response.headers.etag);
     await get('/content-media/media-unreferenced/content').expect(404);
     await get('/content-media/media-offline/content').expect(404);
     await get('/content-media/media-offline-reference/content').expect(404);
     await get('/content-media/media-missing-object/content').expect(404);
     await get(`/content-media/${publicMediaId}/content`).expect(404);
+
+    await Promise.all([
+      database.database.client.inspiration.updateMany({
+        where: { OR: [{ coverMediaId: media.id }, { caseMediaId: media.id }] },
+        data: { status: 'offline' },
+      }),
+      database.database.client.remixTemplate.updateMany({
+        where: { OR: [{ coverMediaId: media.id }, { referenceMediaId: media.id }] },
+        data: { status: 'offline' },
+      }),
+      database.database.client.toolDefinition.updateMany({
+        where: { OR: [{ coverMediaId: media.id }, { iconMediaId: media.id }] },
+        data: { status: 'offline' },
+      }),
+    ]);
+    await request(app.getHttpServer())
+      .get('/api/content-media/media-public/content')
+      .set('If-None-Match', refreshed.headers.etag!)
+      .expect(404);
   });
 
   it('fails safely when published structured content is corrupt', async () => {
@@ -609,6 +763,46 @@ describe('public operational content', () => {
     } finally {
       await database.database.client.toolDefinition.update({
         where: { id: corrupt.id },
+        data: { status: 'offline' },
+      });
+    }
+  });
+
+  it('rejects duplicate stored tool field IDs instead of projecting an ambiguous form', async () => {
+    const duplicate = await database.database.client.toolDefinition.create({
+      data: {
+        externalId: 'tool-duplicate-fields',
+        name: 'Duplicate fields',
+        description: 'Duplicate fields',
+        category: 'corrupt-duplicate',
+        fieldSchema: [
+          { id: 'style', label: 'First', type: 'text', required: true },
+          { id: 'style', label: 'Second', type: 'text', required: false },
+        ],
+        promptTemplate: 'private {{style}} prompt',
+        defaults: {
+          modelId: 'gemini-3.1-flash-image',
+          resolution: '1K',
+          ratio: '1:1',
+          count: 1,
+        },
+        maxAssets: 0,
+        maxOutputCount: 1,
+        assetLabel: 'Image',
+        defaultModelId: 'gemini-3.1-flash-image',
+        defaultOutputSpecId: 'png-1k-1x1-v1',
+        coverMediaId: publicMediaId,
+        status: 'published',
+        sortOrder: 0,
+      },
+    });
+    try {
+      const response = await get('/tools?category=corrupt-duplicate').expect(500);
+      expect(response.body).toMatchObject({ data: null, code: 'CONTENT_DATA_INVALID' });
+      expect(JSON.stringify(response.body)).not.toContain('Second');
+    } finally {
+      await database.database.client.toolDefinition.update({
+        where: { id: duplicate.id },
         data: { status: 'offline' },
       });
     }

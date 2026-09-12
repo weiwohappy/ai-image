@@ -196,6 +196,7 @@ describe('private accounts', () => {
     const production = await createApp({
       databaseUrl: db.url,
       nodeEnv: 'production',
+      contentCursorSecret: 'test-only-production-content-cursor-secret',
       devMailEnabled: false,
       simulationProviderEnabled: false,
       storageDriver: 's3',

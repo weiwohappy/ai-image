@@ -1,9 +1,11 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
+import type { AppConfig } from '../../config.js';
 import type { Prisma } from '../../generated/prisma/client.js';
 import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
+import { APP_CONFIG } from '../../shared/infrastructure.module.js';
 import { ASSET_STORE } from '../assets/assets.service.js';
 import type { ObjectStore } from '../assets/object-store.js';
 import {
@@ -51,12 +53,15 @@ export class PublicContentService {
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(ASSET_STORE) private readonly store: ObjectStore,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async listInspirations(input: PageInput & InspirationFilters, userId?: string) {
     const filter = filterDigest({ category: input.category });
     const after = input.cursor
-      ? await this.inspirationAnchor(decodeCursor(input.cursor, 'inspirations', filter))
+      ? await this.inspirationAnchor(
+          decodeCursor(input.cursor, 'inspirations', filter, this.config.contentCursorSecret),
+        )
       : undefined;
     const rows = await this.db.client.inspiration.findMany({
       where: {
@@ -68,7 +73,14 @@ export class PublicContentService {
       take: input.limit + 1,
       include: inspirationInclude(userId),
     });
-    return page(rows, input.limit, 'inspirations', filter, presentInspiration);
+    return page(
+      rows,
+      input.limit,
+      'inspirations',
+      filter,
+      this.config.contentCursorSecret,
+      presentInspiration,
+    );
   }
 
   async listRemixTemplates(input: PageInput & RemixFilters, userId?: string) {
@@ -79,7 +91,9 @@ export class PublicContentService {
       style: input.style,
     });
     const after = input.cursor
-      ? await this.templateAnchor(decodeCursor(input.cursor, 'remix-templates', filter))
+      ? await this.templateAnchor(
+          decodeCursor(input.cursor, 'remix-templates', filter, this.config.contentCursorSecret),
+        )
       : undefined;
     const rows = await this.db.client.remixTemplate.findMany({
       where: {
@@ -94,7 +108,14 @@ export class PublicContentService {
       take: input.limit + 1,
       include: templateInclude(userId),
     });
-    return page(rows, input.limit, 'remix-templates', filter, presentRemixTemplate);
+    return page(
+      rows,
+      input.limit,
+      'remix-templates',
+      filter,
+      this.config.contentCursorSecret,
+      presentRemixTemplate,
+    );
   }
 
   async remixTemplate(externalId: string, userId?: string) {
@@ -109,7 +130,9 @@ export class PublicContentService {
   async listTools(input: PageInput & ToolFilters) {
     const filter = filterDigest({ category: input.category });
     const after = input.cursor
-      ? await this.toolAnchor(decodeCursor(input.cursor, 'tools', filter))
+      ? await this.toolAnchor(
+          decodeCursor(input.cursor, 'tools', filter, this.config.contentCursorSecret),
+        )
       : undefined;
     const rows = await this.db.client.toolDefinition.findMany({
       where: {
@@ -121,7 +144,14 @@ export class PublicContentService {
       take: input.limit + 1,
       include: toolInclude,
     });
-    return page(rows, input.limit, 'tools', filter, presentToolDefinition);
+    return page(
+      rows,
+      input.limit,
+      'tools',
+      filter,
+      this.config.contentCursorSecret,
+      presentToolDefinition,
+    );
   }
 
   async tool(externalId: string) {
@@ -193,6 +223,7 @@ export class PublicContentService {
   private async changeLike(userId: string, externalId: string, liked: boolean) {
     return this.db.transaction(async (tx) => {
       const inspirationId = await findPublished(tx, 'inspirations', externalId);
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`content:inspiration-interaction:${inspirationId}`}, 0))`;
       if (liked)
         await tx.inspirationLike.upsert({
           where: { userId_inspirationId: { userId, inspirationId } },
@@ -266,13 +297,13 @@ function filterDigest(filter: Record<string, string | undefined>): string {
   return JSON.stringify(Object.fromEntries(Object.entries(filter).filter(([, value]) => value)));
 }
 
-function checksum(cursor: Omit<Cursor, 'checksum'>): string {
-  return createHash('sha256')
+function cursorMac(cursor: Omit<Cursor, 'checksum'>, secret: string): string {
+  return createHmac('sha256', secret)
     .update(`content-cursor-v1:${JSON.stringify(cursor)}`)
     .digest('hex');
 }
 
-function encodeCursor(kind: CatalogKind, row: CursorRow, filter: string): string {
+function encodeCursor(kind: CatalogKind, row: CursorRow, filter: string, secret: string): string {
   const payload = {
     version: 1 as const,
     kind,
@@ -280,12 +311,12 @@ function encodeCursor(kind: CatalogKind, row: CursorRow, filter: string): string
     sortOrder: row.sortOrder,
     filter,
   };
-  return Buffer.from(JSON.stringify({ ...payload, checksum: checksum(payload) })).toString(
+  return Buffer.from(JSON.stringify({ ...payload, checksum: cursorMac(payload, secret) })).toString(
     'base64url',
   );
 }
 
-function decodeCursor(value: string, kind: CatalogKind, filter: string): Cursor {
+function decodeCursor(value: string, kind: CatalogKind, filter: string, secret: string): Cursor {
   if (!/^[A-Za-z0-9_-]{1,2048}$/.test(value)) return invalidCursor();
   let decoded: unknown;
   try {
@@ -298,7 +329,12 @@ function decodeCursor(value: string, kind: CatalogKind, filter: string): Cursor 
   const parsed = cursorSchema.safeParse(decoded);
   if (!parsed.success) return invalidCursor();
   const { checksum: received, ...payload } = parsed.data;
-  if (received !== checksum(payload) || payload.kind !== kind || payload.filter !== filter)
+  const expected = cursorMac(payload, secret);
+  if (
+    !timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex')) ||
+    payload.kind !== kind ||
+    payload.filter !== filter
+  )
     return invalidCursor();
   return parsed.data;
 }
@@ -322,6 +358,7 @@ function page<Row extends CursorRow, Output>(
   limit: number,
   kind: CatalogKind,
   filter: string,
+  secret: string,
   present: (row: Row) => Output,
 ) {
   const hasMore = rows.length > limit;
@@ -329,7 +366,7 @@ function page<Row extends CursorRow, Output>(
   const last = visible.at(-1);
   return {
     items: visible.map(present),
-    nextCursor: hasMore && last ? encodeCursor(kind, last, filter) : null,
+    nextCursor: hasMore && last ? encodeCursor(kind, last, filter, secret) : null,
   };
 }
 

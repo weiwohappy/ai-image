@@ -3,7 +3,7 @@ import { AppError } from '../../shared/http/errors.js';
 import { getOfficialOutputSpec } from '../providers/official-models.js';
 import {
   generationDefaultsSchema,
-  toolFieldSchema,
+  toolFieldArraySchema,
   visualAnalysisSchema,
 } from './content-contracts.js';
 
@@ -122,7 +122,7 @@ export interface ToolDefinitionProjection {
 }
 
 export function presentToolDefinition(row: ToolDefinitionProjection) {
-  const fields = parseStored(z.array(toolFieldSchema).max(20), row.fieldSchema);
+  const fields = parseStored(toolFieldArraySchema, row.fieldSchema);
   const defaults = parseStored(generationDefaultsSchema, row.defaults);
   const outputSpec = getOfficialOutputSpec(row.defaultModelId, row.defaultOutputSpecId);
   if (

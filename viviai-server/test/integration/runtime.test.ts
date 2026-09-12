@@ -151,6 +151,7 @@ describe('runtime integration', () => {
       S3_ENDPOINT: 'https://s3.example.com',
       S3_ACCESS_KEY_ID: 'access',
       S3_SECRET_ACCESS_KEY: 'secret',
+      CONTENT_CURSOR_SECRET: 'production-content-cursor-secret-123456',
       SIMULATION_PROVIDER_ENABLED: 'false',
       DEV_MAIL_ENABLED: 'false',
     };
@@ -160,6 +161,35 @@ describe('runtime integration', () => {
     );
     expect(() => loadConfig({ ...productionBase, STORAGE_DRIVER: 'local' })).toThrow(/local/i);
     expect(() => loadConfig({ ...productionBase, DEV_MAIL_ENABLED: 'true' })).toThrow(/mail/i);
+  });
+
+  it('requires a non-disclosing content cursor secret in production', () => {
+    const productionBase = {
+      NODE_ENV: 'production',
+      DATABASE_URL: testDatabase.url,
+      REDIS_URL: 'redis://127.0.0.1:56379',
+      CORS_ORIGINS: 'https://app.viviai.example',
+      STORAGE_DRIVER: 's3',
+      S3_BUCKET: 'private-assets',
+      S3_REGION: 'us-east-1',
+      S3_ENDPOINT: 'https://s3.example.com',
+      SMTP_URL: 'smtp://mail.example.com',
+      MAIL_FROM: 'noreply@viviai.example',
+      SIMULATION_PROVIDER_ENABLED: 'false',
+      DEV_MAIL_ENABLED: 'false',
+    };
+
+    expect(() => loadConfig(productionBase)).toThrow(/content cursor secret/i);
+    const recognizableShortSecret = 'do-not-print-this-secret';
+    let caught: unknown;
+    try {
+      loadConfig({ ...productionBase, CONTENT_CURSOR_SECRET: recognizableShortSecret });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/content cursor secret/i);
+    expect((caught as Error).message).not.toContain(recognizableShortSecret);
   });
 
   it('roundtrips private local objects and refuses path traversal', async () => {

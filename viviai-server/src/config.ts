@@ -28,6 +28,7 @@ export interface AppConfig {
   databaseUrl: string;
   redisUrl: string;
   queueNamespace: string;
+  contentCursorSecret: string;
   corsOrigins: string[];
   jsonBodyLimit: string;
   formBodyLimit: string;
@@ -48,6 +49,7 @@ export interface AppConfig {
 
 const booleanString = z.enum(['true', 'false']).transform((value) => value === 'true');
 const url = z.string().url();
+const NON_PRODUCTION_CONTENT_CURSOR_SECRET = 'development-only-content-cursor-secret-v1';
 
 const environmentSchema = z
   .object({
@@ -60,6 +62,10 @@ const environmentSchema = z
       .string()
       .regex(/^[a-z0-9-]{3,80}$/)
       .default('development'),
+    CONTENT_CURSOR_SECRET: z
+      .string()
+      .min(32, 'content cursor secret must contain at least 32 characters')
+      .optional(),
     CORS_ORIGINS: z.string().min(1).default('http://127.0.0.1:3000,http://localhost:3000'),
     JSON_BODY_LIMIT: z.string().min(1).default('1mb'),
     FORM_BODY_LIMIT: z.string().min(1).default('1mb'),
@@ -100,6 +106,13 @@ const environmentSchema = z
     }
 
     if (value.NODE_ENV === 'production') {
+      if (!value.CONTENT_CURSOR_SECRET) {
+        context.addIssue({
+          code: 'custom',
+          path: ['CONTENT_CURSOR_SECRET'],
+          message: 'content cursor secret is required in production',
+        });
+      }
       if (value.SIMULATION_PROVIDER_ENABLED) {
         context.addIssue({
           code: 'custom',
@@ -156,6 +169,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl: value.DATABASE_URL,
     redisUrl: value.REDIS_URL,
     queueNamespace: value.QUEUE_NAMESPACE,
+    contentCursorSecret: value.CONTENT_CURSOR_SECRET ?? NON_PRODUCTION_CONTENT_CURSOR_SECRET,
     corsOrigins: value.CORS_ORIGINS.split(',').map((origin) => origin.trim()),
     jsonBodyLimit: value.JSON_BODY_LIMIT,
     formBodyLimit: value.FORM_BODY_LIMIT,
@@ -203,6 +217,16 @@ export function validateConfig(config: AppConfig): AppConfig {
     issues.push('Redis URL must be a Redis URL');
   }
   if (!/^[a-z0-9-]{3,80}$/.test(config.queueNamespace)) issues.push('queue namespace is invalid');
+  if (
+    typeof config.contentCursorSecret !== 'string' ||
+    config.contentCursorSecret.length < 32 ||
+    (config.nodeEnv === 'production' &&
+      config.contentCursorSecret === NON_PRODUCTION_CONTENT_CURSOR_SECRET)
+  ) {
+    issues.push(
+      'content cursor secret must contain at least 32 characters and be set in production',
+    );
+  }
   if (
     !Array.isArray(config.corsOrigins) ||
     config.corsOrigins.length === 0 ||
