@@ -19,10 +19,12 @@ it('additively migrates only super permission, invalidates affected grants, pres
     const userId = randomUUID(),
       quoteId = randomUUID(),
       jobId = randomUUID();
-    await sql.query(
-      'INSERT INTO users (id,email,username,password_hash) VALUES ($1,$2,$3,$4)',
-      [userId, `${userId}@test.local`, userId, 'unused'],
-    );
+    await sql.query('INSERT INTO users (id,email,username,password_hash) VALUES ($1,$2,$3,$4)', [
+      userId,
+      `${userId}@test.local`,
+      userId,
+      'unused',
+    ]);
     await db.database.client.generationQuote.create({
       data: {
         id: quoteId,
@@ -93,7 +95,10 @@ it('additively migrates only super permission, invalidates affected grants, pres
     );
     const rolesAfter = await db.database.client.adminRole.findMany({ orderBy: { key: 'asc' } });
     for (const role of rolesAfter) {
-      expect([...role.permissions].sort()).toEqual([...ROLE_PERMISSIONS[role.key]!].sort());
+      const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
+        (permission) => !permission.startsWith('content.'),
+      );
+      expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());
       if (role.key === 'super_admin') expect(role.version).toBe(2);
       else expect(role).toEqual(rolesBefore.find((r) => r.key === role.key));
     }

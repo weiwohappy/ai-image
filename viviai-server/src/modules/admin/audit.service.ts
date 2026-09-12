@@ -19,6 +19,8 @@ export interface AuditMetadata {
   beforeEnabled?: boolean | null;
   afterEnabled?: boolean;
   source?: 'offline_import';
+  contentKind?: 'inspiration' | 'remix_template' | 'tool' | 'media';
+  itemCount?: number;
 }
 @Injectable()
 export class AdminAuditService {
@@ -63,6 +65,8 @@ export class AdminAuditService {
                     'beforeEnabled',
                     'afterEnabled',
                     'source',
+                    'contentKind',
+                    'itemCount',
                   ].includes(key),
                 ),
               ),

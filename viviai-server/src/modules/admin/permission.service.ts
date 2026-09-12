@@ -16,7 +16,7 @@ export function roleOption(role: RoleRecord): RoleOption {
     key: role.key,
     name: role.name,
     builtIn: role.builtIn,
-    permissions: [...role.permissions].sort(),
+    permissions: [...(role.builtIn ? (ROLE_PERMISSIONS[role.key] ?? []) : role.permissions)].sort(),
   };
 }
 @Injectable()
@@ -29,13 +29,22 @@ export class AdminPermissionService {
         (b) =>
           b.role.deletedAt ||
           (b.role.builtIn && !Object.hasOwn(ROLE_PERMISSIONS, b.role.key)) ||
-          !validPermissionSet(b.role.permissions, !b.role.builtIn),
+          (!b.role.builtIn && !validPermissionSet(b.role.permissions, true)),
       )
     )
       return { roles: [], permissions: [] };
     return {
       roles: bindings.map((b) => b.role.key).sort(),
-      permissions: [...new Set([...bindings.flatMap((b) => b.role.permissions), ...extras])].sort(),
+      permissions: [
+        ...new Set([
+          ...bindings.flatMap((binding) =>
+            binding.role.builtIn
+              ? (ROLE_PERMISSIONS[binding.role.key] ?? [])
+              : binding.role.permissions,
+          ),
+          ...extras,
+        ]),
+      ].sort(),
     };
   }
   async account(tx: DbTransaction, id: string) {

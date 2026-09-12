@@ -20,6 +20,11 @@ import { AdminSensitiveController } from './sensitive.controller.js';
 import { AdminSensitiveService } from './sensitive.service.js';
 import { AdminProviderVerificationController } from './provider-verification.controller.js';
 import { AdminProviderVerificationService } from './provider-verification.service.js';
+import { AdminContentController } from './content/content.controller.js';
+import { AdminContentService } from './content/content.service.js';
+import { AdminContentMediaService } from './content/media.service.js';
+import { AdminContentCommands } from './content/command.service.js';
+import { AdminContentPublishValidator } from './content/publish-validator.js';
 @Module({
   imports: [AssetsModule],
   controllers: [
@@ -30,6 +35,7 @@ import { AdminProviderVerificationService } from './provider-verification.servic
     AdminTeamController,
     AdminPasswordResetController,
     AdminProviderVerificationController,
+    AdminContentController,
   ],
   providers: [
     AdminModelPricingService,
@@ -45,6 +51,10 @@ import { AdminProviderVerificationService } from './provider-verification.servic
     AdminQueryService,
     AdminSensitiveService,
     AdminProviderVerificationService,
+    AdminContentService,
+    AdminContentMediaService,
+    AdminContentCommands,
+    AdminContentPublishValidator,
   ],
 })
 export class AdminModule {}
