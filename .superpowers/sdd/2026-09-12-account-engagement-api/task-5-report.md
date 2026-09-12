@@ -1,8 +1,8 @@
 # Task 5 report — account and engagement web integration
 
-Status: complete (review fix round 3/5)
+Status: complete (review fix round 4/5)
 
-Latest implementation commit: `0a08e97 fix(web): close account redemption and mock races`
+Latest implementation commit: `4775655 fix(web): match mock registration email validation`
 
 ## Files
 
@@ -99,3 +99,27 @@ Commit: `0a08e97 fix(web): close account redemption and mock races`
 Round 3 self-review: the lock prevents code edits and duplicate submits while any mutation or authoritative replacement-balance fetch is active, while preserving unchanged uncertain retries and existing refresh-failure behavior. Registration never calls `setCredentialHash` or consumes the challenge before all observable validation passes. No payment, admin, server, database, or secret files changed.
 
 Concerns: browser UI tests cover controlled input and click behavior; the synchronous ref additionally guards the brief interval before disabled attributes render.
+
+## Review fix round 4/5
+
+Commit: `4775655 fix(web): match mock registration email validation`
+
+- Confirmed the backend registration controller uses `z.string().trim().toLowerCase().email().max(254)` and that the backend package resolves Zod `4.5.4`.
+- The frontend mock now imports that exact Zod chain and declares direct `zod@^4.5.4`, rather than using a permissive hand-written email regular expression or relying on the previous transitive Zod 3 package.
+- The new regression covers consecutive-dot domain rejection, one-character TLD rejection, 255-character rejection, full state preservation after each rejection, and a whitespace/uppercase valid email normalizing successfully with the same still-usable challenge.
+
+### Round 4 RED / GREEN
+
+- RED: `npm test -- --run src/mocks/handlers.test.ts` failed the consecutive-dot case on the prior regex: it reached `INVALID_CODE` instead of the controller-equivalent `INVALID_INPUT` validation result.
+- GREEN: the same focused command passed 1 file / 20 tests after the direct Zod 4.5.4 implementation.
+
+### Round 4 verification
+
+- Full `npm test`: passed 20 files / 79 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed (existing `punycode`, chunk-size, and vinext dynamic-route notices only).
+- `git diff --check`: passed before commit; staged diff check passed before commit.
+
+Round 4 self-review: normalization happens only through the same Zod schema/order as the backend before duplicate, challenge, or mutation paths. Existing username/password/code/invite checks are unchanged. No payment, admin, server, database, or secret files changed.
+
+Concerns: none.
