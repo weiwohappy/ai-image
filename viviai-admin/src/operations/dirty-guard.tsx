@@ -1,23 +1,28 @@
-import { useEffect, useId, useSyncExternalStore } from 'react';
+import { useEffect, useId, useRef, useSyncExternalStore } from 'react';
 
 type Blocker = { dirty: boolean; pending: boolean; discard: () => void };
-const blockers = new Map<string, Blocker>();
+const blockers = new Map<string, { current: Blocker }>();
 const listeners = new Set<() => void>();
+let revision = 0;
 
 function notify() {
+  revision += 1;
   listeners.forEach((listener) => listener());
 }
 
 export function useDirtyRegistration(blocker: Blocker) {
   const id = useId();
+  const current = useRef(blocker);
+  current.current = blocker;
   useEffect(() => {
-    blockers.set(id, blocker);
+    blockers.set(id, current);
     notify();
     return () => {
       blockers.delete(id);
       notify();
     };
-  }, [blocker.dirty, blocker.pending, blocker.discard, id]);
+  }, [id]);
+  useEffect(notify, [blocker.dirty, blocker.pending]);
 }
 
 function subscribe(listener: () => void) {
@@ -26,18 +31,18 @@ function subscribe(listener: () => void) {
 }
 
 function snapshot() {
-  const entries = [...blockers.values()];
-  return `${entries.some((entry) => entry.dirty)}:${entries.some((entry) => entry.pending)}:${entries.length}`;
+  const entries = [...blockers.values()].map((entry) => entry.current);
+  return `${revision}:${entries.some((entry) => entry.dirty)}:${entries.some((entry) => entry.pending)}:${entries.length}`;
 }
 
 export function useDirtyGuard() {
   useSyncExternalStore(subscribe, snapshot, snapshot);
-  const entries = [...blockers.values()];
+  const entries = [...blockers.values()].map((entry) => entry.current);
   return {
     dirty: entries.some((entry) => entry.dirty),
     pending: entries.some((entry) => entry.pending),
     discard() {
-      entries.forEach((entry) => entry.discard());
+      [...blockers.values()].forEach((entry) => entry.current.discard());
     },
   };
 }

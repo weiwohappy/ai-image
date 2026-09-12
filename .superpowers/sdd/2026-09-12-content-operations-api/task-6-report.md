@@ -23,6 +23,14 @@ Status: complete
 - Added approved content/media updated-time filters and code/claim/referral campaign/user/status/time filters. Filter changes clear cursors; local datetime values are converted to offset-safe ISO instants, invalid ranges are rejected in place, and UUID filters are validated before transmission. The referral screen uses the approved backend's single `userId` filter, which matches inviter or invitee.
 - Tool structured JSON now requires a plain top-level object before any property access. Lifecycle reason validation remains inside the active confirmation, marks the textarea invalid, and focuses it.
 
+## Fix round 2
+
+- Command-attempt identity now covers HTTP method, admin path, action, target, and a canonical payload. Reentrant calls share the same in-flight promise and return a discriminated result, so close/clear/refresh work runs only after an authoritative success. An uncertain outcome retains its exact key and command; every content, reorder, media, campaign, lifecycle, code-disable, and code-generation surface blocks other work and offers same-request retry or a separate Base UI confirmation before abandonment.
+- Media upload identity includes a Web Crypto SHA-256 digest of the actual file bytes together with name, size, MIME type, and reason. File hashing is itself a guarded pending state, and selecting another file synchronously invalidates the previous digest before the browser can submit.
+- Content conflict recovery now keeps the latest full record snapshot. Server lifecycle and immutable external identity are synchronized independently of editable field choices, status changes are shown as non-overridable facts, permissions/actions are recomputed from the latest status, archived records become read-only, and replacement payloads use the snapshot status. Campaign conflict recovery applies the same latest-record/status rule.
+- Added campaign date-range, redemption-code keyword, and claim code-ID filters. Every supported filter setter and code/claim view switch clears a nonempty cursor before the next request.
+- Dirty-state registration now reads the current discard callback and carries a monotonic revision, avoiding stale callbacks when blocker cardinality does not change. Global code-batch discard calls the plaintext-destroy path before close, and content/campaign/code lifecycle reasons participate in hash-navigation and `beforeunload` protection.
+
 ## Design decisions
 
 - Followed the existing console language rather than introducing a new brand: the established blue/gray/red palette, system Chinese typography, dense operational tables, right-side editors, restrained thumbnails, and explicit lifecycle confirmation.
@@ -39,19 +47,19 @@ Initial RED:
 
 Focused GREEN:
 
-- Content, marketing, navigation, and HTTP boundary: 4 files / 37 tests passed before the final campaign-conflict and published-permission extensions.
-- Final content and marketing fix-round run: 2 files / 24 tests passed. The round began at 8 expected failures / 13 passes, then added two filter/dirty RED cases before implementation.
+- Round 1 content and marketing run: 2 files / 24 tests passed.
+- Round 2 command-attempt, dirty registry, content, and marketing run: 4 files / 38 tests passed. The RED run reproduced undefined reentrant results, stale discard callbacks, missing media-byte hashing, stale lifecycle conflict state, missing filters/cursor resets, plaintext discard, and lifecycle dirty-state gaps before implementation.
 
 ## Final verification
 
-- Full admin test suite, run without competing build load: 19 files / 155 tests passed.
+- Full admin test suite: 21 files / 169 tests passed.
 - `npm run typecheck`: passed.
 - `npm run build`: passed.
 - `npm run lint`: passed with no warnings.
-- Changed admin source-file `oxfmt --check`: passed on 13 files.
+- Changed admin source/test `oxfmt --check`: passed on 12 files.
 - `git diff --check`: passed.
 
-One resource-saturated run executed tests alongside typecheck and the production build; one pre-existing invitation test exceeded its five-second timeout. The same file passed 13/13 or 2/2 when isolated as applicable, and the final full suite passed 145/145 without concurrent build pressure.
+The first round-2 full run had one transient existing `AdminApp` enabled-state timing failure (167/168); that file passed 13/13 in isolation and the complete bounded rerun passed 169/169.
 
 ## Scope and residual notes
 

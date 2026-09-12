@@ -12,6 +12,7 @@ import {
 import { AdminClient, errorText } from '../http';
 import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
 import { useCommandAttempt } from '../operations/useCommandAttempt';
+import { UncertainCommandActions } from '../operations/UncertainCommandActions';
 import type { GeneratedBatch } from './contracts';
 
 export function CodeBatchDialog({
@@ -35,7 +36,7 @@ export function CodeBatchDialog({
   const locked = saving || attempt.uncertain;
   const dirty = Boolean(campaignId || reason || result);
   useBeforeUnloadGuard(dirty || locked);
-  useDirtyRegistration({ dirty, pending: locked, discard: onClose });
+  useDirtyRegistration({ dirty, pending: locked, discard: destroy });
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (saving) return;
@@ -52,12 +53,21 @@ export function CodeBatchDialog({
       return setError('原因中不得包含密钥、提示词或图片内容');
     const body = { campaignId, campaignVersion, quantity, maxUses, reason: reason.trim() };
     try {
-      const batch = await attempt.run(body, (key) =>
-        client.command<GeneratedBatch>('POST', '/redemption-codes', body, key),
+      const path = '/redemption-codes';
+      const outcome = await attempt.run(
+        {
+          method: 'POST',
+          path,
+          action: 'redemptions.code.generate',
+          target: campaignId,
+        },
+        body,
+        (key) => client.command<GeneratedBatch>('POST', path, body, key),
       );
-      if (!batch) return;
-      setResult(batch);
-      onChanged();
+      if (outcome.kind === 'success') {
+        setResult(outcome.value);
+        onChanged();
+      }
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -146,17 +156,12 @@ export function CodeBatchDialog({
                 </p>
               )}
               {attempt.uncertain && (
-                <div className="notices" role="status">
-                  网络结果尚未确认。请使用同一请求检查结果，避免重复发码。
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={saving}
-                    onClick={() => void submit()}
-                  >
-                    检查结果/重试同请求
-                  </Button>
-                </div>
+                <UncertainCommandActions
+                  pending={saving}
+                  message="网络结果尚未确认。请使用同一请求检查结果，避免重复发码。"
+                  onRetry={() => void submit()}
+                  onAbandon={() => attempt.abandon()}
+                />
               )}
               <div className="team-form-actions">
                 <Button type="button" variant="outline" disabled={locked} onClick={destroy}>

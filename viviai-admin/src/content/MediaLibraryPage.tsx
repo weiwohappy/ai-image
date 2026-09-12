@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { ImageUp, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,12 +9,23 @@ import { useAdminQuery } from '../useQuery';
 import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
 import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
 import { useCommandAttempt } from '../operations/useCommandAttempt';
+import { UncertainCommandActions } from '../operations/UncertainCommandActions';
 import type { ContentMediaPage, ContentMediaRecord, Lifecycle } from './contracts';
 
 function safePreview(row: ContentMediaRecord): string | undefined {
   return row.previewUrl === `/api/admin/content/media/${row.id}/content`
     ? row.previewUrl
     : undefined;
+}
+
+function readFileBytes(file: File): Promise<ArrayBuffer> {
+  if (typeof file.arrayBuffer === 'function') return file.arrayBuffer();
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => resolve(reader.result as ArrayBuffer);
+    reader.readAsArrayBuffer(file);
+  });
 }
 
 export function MediaLibraryPage({
@@ -33,6 +44,8 @@ export function MediaLibraryPage({
   const [updatedTo, setUpdatedTo] = useState('');
   const [cursor, setCursor] = useState('');
   const [file, setFile] = useState<File>();
+  const [fileDigest, setFileDigest] = useState('');
+  const [digesting, setDigesting] = useState(false);
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [changing, setChanging] = useState<{ row: ContentMediaRecord; status: Lifecycle }>();
@@ -42,12 +55,13 @@ export function MediaLibraryPage({
   const canWrite = writeEnabled && actor.permissions.includes('content.media.write');
   const uploadAttempt = useCommandAttempt();
   const transitionAttempt = useCommandAttempt();
-  const pending = uploadAttempt.pending || transitionAttempt.pending;
+  const pending = uploadAttempt.pending || transitionAttempt.pending || digesting;
+  const locked = pending || uploadAttempt.uncertain || transitionAttempt.uncertain;
   const dirty = Boolean(file || reason || changing || changeReason);
-  useBeforeUnloadGuard(dirty || pending);
+  useBeforeUnloadGuard(dirty || locked);
   useDirtyRegistration({
     dirty,
-    pending,
+    pending: locked,
     discard: () => {
       setFile(undefined);
       setReason('');
@@ -55,6 +69,32 @@ export function MediaLibraryPage({
       setChangeReason('');
     },
   });
+  useEffect(() => {
+    let active = true;
+    setFileDigest('');
+    if (!file) {
+      setDigesting(false);
+      return () => {
+        active = false;
+      };
+    }
+    setDigesting(true);
+    void readFileBytes(file)
+      .then((bytes) => crypto.subtle.digest('SHA-256', bytes))
+      .then((digest) => {
+        if (active)
+          setFileDigest(
+            Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(
+              '',
+            ),
+          );
+      })
+      .catch(() => active && setError('无法校验文件内容，请重新选择'))
+      .finally(() => active && setDigesting(false));
+    return () => {
+      active = false;
+    };
+  }, [file]);
   const params = new URLSearchParams({ limit: '30' });
   const timeFilterInvalid = Boolean(
     updatedFrom && updatedTo && Date.parse(updatedFrom) >= Date.parse(updatedTo),
@@ -71,11 +111,26 @@ export function MediaLibraryPage({
     setRevision((value) => value + 1);
   };
 
-  async function upload(event: FormEvent) {
-    event.preventDefault();
+  async function upload(event?: FormEvent, retry = false) {
+    event?.preventDefault();
     if (pending) return;
     setError('');
-    if (!file) return setError('请选择要上传的图片');
+    if (!retry && !file) return setError('请选择要上传的图片');
+    if (!retry && !fileDigest) return setError('文件内容尚未完成校验');
+    if (retry) {
+      try {
+        const result = await uploadAttempt.retry();
+        if (result.kind === 'success') {
+          setFile(undefined);
+          setReason('');
+          refresh();
+        }
+      } catch (failure) {
+        setError(errorText(failure));
+      }
+      return;
+    }
+    if (!file) return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type))
       return setError('仅支持 PNG、JPEG 或 WebP');
     if (reason.trim().length < 5 || reason.trim().length > 500)
@@ -86,19 +141,34 @@ export function MediaLibraryPage({
     body.set('file', file);
     body.set('reason', reason.trim());
     try {
-      await uploadAttempt.run(
-        { name: file.name, size: file.size, type: file.type, reason: reason.trim() },
+      const path = '/content/media';
+      const result = await uploadAttempt.run(
+        {
+          method: 'POST',
+          path,
+          action: 'content.media.upload',
+          target: fileDigest,
+        },
+        {
+          sha256: fileDigest,
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          reason: reason.trim(),
+        },
         (key) => client.upload('/content/media', body, key),
       );
-      setFile(undefined);
-      setReason('');
-      refresh();
+      if (result.kind === 'success') {
+        setFile(undefined);
+        setReason('');
+        refresh();
+      }
     } catch (failure) {
       setError(errorText(failure));
     }
   }
 
-  async function transition() {
+  async function transition(retry = false) {
     if (!changing) return;
     if (changeReason.trim().length < 5) {
       setChangeError('状态变更原因至少 5 个字符');
@@ -122,10 +192,23 @@ export function MediaLibraryPage({
         changing.status === 'archived'
           ? { version: changing.row.version, reason: changeReason.trim() }
           : { version: changing.row.version, reason: changeReason.trim(), status: changing.status };
-      await transitionAttempt.run(body, (key) => client.command('POST', path, body, key));
-      setChanging(undefined);
-      setChangeReason('');
-      refresh();
+      const result = retry
+        ? await transitionAttempt.retry()
+        : await transitionAttempt.run(
+            {
+              method: 'POST',
+              path,
+              action: `content.media.${changing.status}`,
+              target: changing.row.id,
+            },
+            body,
+            (key) => client.command('POST', path, body, key),
+          );
+      if (result.kind === 'success') {
+        setChanging(undefined);
+        setChangeReason('');
+        refresh();
+      }
     } catch (failure) {
       setChangeError(errorText(failure));
       changeReasonRef.current?.focus();
@@ -145,21 +228,35 @@ export function MediaLibraryPage({
             <Input
               type="file"
               accept="image/png,image/jpeg,image/webp"
-              onChange={(e) => setFile(e.target.files?.[0])}
+              disabled={locked}
+              onChange={(e) => {
+                const selected = e.target.files?.[0];
+                setFileDigest('');
+                setDigesting(Boolean(selected));
+                setFile(selected);
+              }}
             />
           </label>
           <label className="field">
             上传原因
             <Textarea
               value={reason}
+              disabled={locked}
               onChange={(e) => setReason(e.target.value)}
               placeholder="说明版权来源与用途，不要粘贴图片内容"
             />
           </label>
-          <Button type="submit" disabled={pending}>
+          <Button type="submit" disabled={locked || !fileDigest}>
             <ImageUp size={15} />
-            上传媒体
+            {digesting ? '正在校验文件…' : '上传媒体'}
           </Button>
+          {uploadAttempt.uncertain && (
+            <UncertainCommandActions
+              pending={uploadAttempt.pending}
+              onRetry={() => void upload(undefined, true)}
+              onAbandon={() => uploadAttempt.abandon()}
+            />
+          )}
         </form>
       )}
       <div className="operation-toolbar">
@@ -260,7 +357,7 @@ export function MediaLibraryPage({
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={pending}
+                    disabled={locked}
                     onClick={() => {
                       setChangeError('');
                       setChanging({
@@ -275,6 +372,7 @@ export function MediaLibraryPage({
                     <Button
                       size="sm"
                       variant="ghost"
+                      disabled={locked}
                       onClick={() => {
                         setChangeError('');
                         setChanging({ row, status: 'archived' });
@@ -301,9 +399,12 @@ export function MediaLibraryPage({
         <OperationDialog
           title={`确认${changing.status === 'published' ? '发布' : changing.status === 'offline' ? '下线' : '归档'}媒体`}
           description="媒体状态会影响公开内容是否可用，请填写可审计原因。"
-          pending={pending}
+          pending={locked}
           initialFocus={changeReasonRef}
-          onClose={() => setChanging(undefined)}
+          onClose={() => {
+            setChanging(undefined);
+            setChangeReason('');
+          }}
         >
           <label htmlFor="media-transition-reason">状态变更原因</label>
           <Textarea
@@ -323,11 +424,21 @@ export function MediaLibraryPage({
             </p>
           )}
           <OperationDialogActions
-            pending={pending}
-            onCancel={() => setChanging(undefined)}
+            pending={locked}
+            onCancel={() => {
+              setChanging(undefined);
+              setChangeReason('');
+            }}
             confirmLabel="确认变更"
             onConfirm={() => void transition()}
           />
+          {transitionAttempt.uncertain && (
+            <UncertainCommandActions
+              pending={transitionAttempt.pending}
+              onRetry={() => void transition(true)}
+              onAbandon={() => transitionAttempt.abandon()}
+            />
+          )}
         </OperationDialog>
       )}
     </section>

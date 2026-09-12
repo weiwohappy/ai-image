@@ -10,6 +10,7 @@ import { CodeBatchDialog } from './CodeBatchDialog';
 import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
 import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
 import { useCommandAttempt } from '../operations/useCommandAttempt';
+import { UncertainCommandActions } from '../operations/UncertainCommandActions';
 import type { Campaign, MarketingPage, RedemptionCode, Referral } from './contracts';
 
 type View = 'campaigns' | 'codes' | 'referrals';
@@ -59,6 +60,7 @@ export function CampaignPage({
   const [queryText, setQueryText] = useState('');
   const [filterCampaignId, setFilterCampaignId] = useState('');
   const [filterUserId, setFilterUserId] = useState('');
+  const [filterCodeId, setFilterCodeId] = useState('');
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo] = useState('');
   const [editing, setEditing] = useState<Campaign | 'new'>();
@@ -75,19 +77,25 @@ export function CampaignPage({
     row: Campaign;
     draft: CampaignDraft;
     unresolved: Array<keyof CampaignDraft>;
+    statusChanged: boolean;
   }>();
   const [codeDialog, setCodeDialog] = useState(false);
   const [codeLifecycle, setCodeLifecycle] = useState<RedemptionCode>();
   const [claims, setClaims] = useState(false);
   const commandAttempt = useCommandAttempt();
   const pending = commandAttempt.pending;
+  const locked = pending || commandAttempt.uncertain;
+  const [lastCommand, setLastCommand] = useState<
+    'save' | 'campaign-lifecycle' | 'code-lifecycle'
+  >();
   const dirty = Boolean(
-    editing && (JSON.stringify(draft) !== JSON.stringify(originalDraft) || reason.length),
+    (editing && (JSON.stringify(draft) !== JSON.stringify(originalDraft) || reason.length)) ||
+    ((lifecycle || codeLifecycle) && reason.length),
   );
-  useBeforeUnloadGuard(dirty || pending);
+  useBeforeUnloadGuard(dirty || locked);
   useDirtyRegistration({
     dirty,
-    pending,
+    pending: locked,
     discard: () => {
       setEditing(undefined);
       setLifecycle(undefined);
@@ -107,6 +115,7 @@ export function CampaignPage({
   const params = new URLSearchParams({ limit: '30' });
   const campaignFilterInvalid = Boolean(filterCampaignId && !uuidPattern.test(filterCampaignId));
   const userFilterInvalid = Boolean(filterUserId && !uuidPattern.test(filterUserId));
+  const codeFilterInvalid = Boolean(filterCodeId && !uuidPattern.test(filterCodeId));
   const timeFilterInvalid = Boolean(
     filterFrom && filterTo && Date.parse(filterFrom) >= Date.parse(filterTo),
   );
@@ -117,10 +126,9 @@ export function CampaignPage({
     params.set('campaignId', filterCampaignId);
   if (filterUserId && !userFilterInvalid && (claims || view === 'referrals'))
     params.set('userId', filterUserId);
-  if (filterFrom && !timeFilterInvalid && view !== 'campaigns')
-    params.set('from', new Date(filterFrom).toISOString());
-  if (filterTo && !timeFilterInvalid && view !== 'campaigns')
-    params.set('to', new Date(filterTo).toISOString());
+  if (filterCodeId && !codeFilterInvalid && claims) params.set('codeId', filterCodeId);
+  if (filterFrom && !timeFilterInvalid) params.set('from', new Date(filterFrom).toISOString());
+  if (filterTo && !timeFilterInvalid) params.set('to', new Date(filterTo).toISOString());
   if (cursor) params.set('cursor', cursor);
   const result = useAdminQuery<MarketingPage<Record<string, unknown>>>(
     client,
@@ -161,9 +169,9 @@ export function CampaignPage({
     return true;
   }
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    if (pending || !editing || !safeReason(reason)) return;
+  async function save(event?: FormEvent, retry = false) {
+    event?.preventDefault();
+    if (pending || !editing || (!retry && !safeReason(reason))) return;
     if (
       !draft.name.trim() ||
       !draft.startsAt ||
@@ -179,16 +187,27 @@ export function CampaignPage({
       reason: reason.trim(),
     };
     try {
-      await commandAttempt.run(body, (key) =>
-        client.command(
-          editing === 'new' ? 'POST' : 'PATCH',
-          editing === 'new' ? '/redemption-campaigns' : `/redemption-campaigns/${editing.id}`,
-          body,
-          key,
-        ),
-      );
-      setEditing(undefined);
-      refresh();
+      const method = editing === 'new' ? 'POST' : 'PATCH';
+      const path =
+        editing === 'new' ? '/redemption-campaigns' : `/redemption-campaigns/${editing.id}`;
+      setLastCommand('save');
+      const result = retry
+        ? await commandAttempt.retry()
+        : await commandAttempt.run(
+            {
+              method,
+              path,
+              action: `redemptions.campaign.${editing === 'new' ? 'create' : 'update'}`,
+              target: editing === 'new' ? draft.name.trim() : editing.id,
+            },
+            body,
+            (key) => client.command(method, path, body, key),
+          );
+      if (result.kind === 'success') {
+        setLastCommand(undefined);
+        setEditing(undefined);
+        refresh();
+      }
     } catch (failure) {
       if (failure instanceof AdminError && failure.status === 409 && editing !== 'new') {
         setCampaignConflict(true);
@@ -207,10 +226,12 @@ export function CampaignPage({
     try {
       const latest = await client.get<Campaign>(`/redemption-campaigns/${editing.id}`);
       const nextDraft = campaignDraft(latest);
+      const statusChanged = editing.status !== latest.status;
+      setEditing(latest);
       const unresolved = (Object.keys(draft) as Array<keyof CampaignDraft>).filter(
         (field) => JSON.stringify(draft[field]) !== JSON.stringify(nextDraft[field]),
       );
-      setLatestConflict({ row: latest, draft: nextDraft, unresolved });
+      setLatestConflict({ row: latest, draft: nextDraft, unresolved, statusChanged });
       setCampaignConflict(false);
       if (!unresolved.length) {
         setEditing(latest);
@@ -222,36 +243,59 @@ export function CampaignPage({
     }
   }
 
-  async function changeLifecycle() {
-    if (pending || !lifecycle || !safeReason(reason)) return;
+  async function changeLifecycle(retry = false) {
+    if (pending || !lifecycle || (!retry && !safeReason(reason))) return;
     try {
       const body = { version: lifecycle.row.version, reason: reason.trim() };
-      await commandAttempt.run(body, (key) =>
-        client.command(
-          'POST',
-          `/redemption-campaigns/${lifecycle.row.id}/${lifecycle.action}`,
-          body,
-          key,
-        ),
-      );
-      setLifecycle(undefined);
-      setReason('');
-      refresh();
+      const path = `/redemption-campaigns/${lifecycle.row.id}/${lifecycle.action}`;
+      setLastCommand('campaign-lifecycle');
+      const result = retry
+        ? await commandAttempt.retry()
+        : await commandAttempt.run(
+            {
+              method: 'POST',
+              path,
+              action: `redemptions.campaign.${lifecycle.action}`,
+              target: lifecycle.row.id,
+            },
+            body,
+            (key) => client.command('POST', path, body, key),
+          );
+      if (result.kind === 'success') {
+        setLastCommand(undefined);
+        setLifecycle(undefined);
+        setReason('');
+        refresh();
+      }
     } catch (failure) {
       setError(errorText(failure));
     }
   }
 
-  async function disableCode() {
-    if (pending || !codeLifecycle || !safeReason(reason)) return;
+  async function disableCode(retry = false) {
+    if (pending || !codeLifecycle || (!retry && !safeReason(reason))) return;
     try {
       const body = { version: codeLifecycle.version, reason: reason.trim() };
-      await commandAttempt.run(body, (key) =>
-        client.command('POST', `/redemption-codes/${codeLifecycle.id}/disable`, body, key),
-      );
-      setCodeLifecycle(undefined);
-      setReason('');
-      refresh();
+      const path = `/redemption-codes/${codeLifecycle.id}/disable`;
+      setLastCommand('code-lifecycle');
+      const result = retry
+        ? await commandAttempt.retry()
+        : await commandAttempt.run(
+            {
+              method: 'POST',
+              path,
+              action: 'redemptions.code.disable',
+              target: codeLifecycle.id,
+            },
+            body,
+            (key) => client.command('POST', path, body, key),
+          );
+      if (result.kind === 'success') {
+        setLastCommand(undefined);
+        setCodeLifecycle(undefined);
+        setReason('');
+        refresh();
+      }
     } catch (failure) {
       setError(errorText(failure));
     }
@@ -282,7 +326,7 @@ export function CampaignPage({
     }
   }
   function requestCloseEditor() {
-    if (pending) return;
+    if (locked) return;
     if (dirty) setConfirmDiscard(true);
     else setEditing(undefined);
   }
@@ -318,20 +362,49 @@ export function CampaignPage({
                 <option value="archived">已归档</option>
               </select>
             </label>
+            <label>
+              活动开始筛选
+              <Input
+                type="datetime-local"
+                value={filterFrom}
+                aria-invalid={timeFilterInvalid}
+                onChange={(event) => {
+                  setFilterFrom(event.target.value);
+                  setCursor('');
+                }}
+              />
+            </label>
+            <label>
+              活动结束筛选
+              <Input
+                type="datetime-local"
+                value={filterTo}
+                aria-invalid={timeFilterInvalid}
+                onChange={(event) => {
+                  setFilterTo(event.target.value);
+                  setCursor('');
+                }}
+              />
+            </label>
           </div>
           <div className="team-form-actions">
-            <Button variant="outline" onClick={refresh}>
+            <Button variant="outline" disabled={locked} onClick={refresh}>
               <RefreshCw size={15} />
               刷新
             </Button>
             {canWrite && (
-              <Button onClick={() => open()}>
+              <Button disabled={locked} onClick={() => open()}>
                 <Plus size={15} />
                 新建兑换活动
               </Button>
             )}
           </div>
         </div>
+        {timeFilterInvalid && (
+          <p className="field-error" role="alert">
+            开始时间必须早于结束时间
+          </p>
+        )}
         {error && !editing && !lifecycle && (
           <p className="error-banner" role="alert">
             {error}
@@ -383,6 +456,7 @@ export function CampaignPage({
                             <Button
                               size="sm"
                               variant="outline"
+                              disabled={locked}
                               aria-label={`编辑${row.name}`}
                               onClick={() => open(row)}
                             >
@@ -392,6 +466,7 @@ export function CampaignPage({
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={locked}
                                 aria-label={`停用${row.name}`}
                                 onClick={() => {
                                   setLifecycle({ row, action: 'disable' });
@@ -407,6 +482,7 @@ export function CampaignPage({
                               <Button
                                 size="sm"
                                 variant="ghost"
+                                disabled={locked}
                                 aria-label={`归档${row.name}`}
                                 onClick={() => {
                                   setLifecycle({ row, action: 'archive' });
@@ -446,12 +522,15 @@ export function CampaignPage({
           <OperationDialog
             title={editing === 'new' ? '新建兑换活动' : `编辑${editing.name}`}
             description="保存活动配置前请核对时间、容量和积分，并填写可审计原因。"
-            pending={pending}
+            pending={locked}
             className="operation-form"
             onClose={requestCloseEditor}
           >
             <form className="stack" onSubmit={(event) => void save(event)}>
-              <fieldset disabled={pending} className="stack">
+              <fieldset
+                disabled={locked || (editing !== 'new' && editing.status === 'archived')}
+                className="stack"
+              >
                 <label className="field">
                   活动名称
                   <Input
@@ -530,6 +609,16 @@ export function CampaignPage({
                   {error}
                 </p>
               )}
+              {commandAttempt.uncertain && lastCommand === 'save' && (
+                <UncertainCommandActions
+                  pending={pending}
+                  onRetry={() => void save(undefined, true)}
+                  onAbandon={() => {
+                    commandAttempt.abandon();
+                    setLastCommand(undefined);
+                  }}
+                />
+              )}
               {campaignConflict && !latestConflict && (
                 <Button type="button" variant="outline" onClick={() => void reloadCampaign()}>
                   加载最新版本
@@ -539,12 +628,19 @@ export function CampaignPage({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={pending}
+                  disabled={locked}
                   onClick={requestCloseEditor}
                 >
                   取消
                 </Button>
-                <Button type="submit" disabled={pending || Boolean(latestConflict)}>
+                <Button
+                  type="submit"
+                  disabled={
+                    locked ||
+                    Boolean(latestConflict) ||
+                    (editing !== 'new' && editing.status === 'archived')
+                  }
+                >
                   保存活动
                 </Button>
               </div>
@@ -555,9 +651,12 @@ export function CampaignPage({
           <OperationDialog
             title={`确认${lifecycle.action === 'disable' ? '停用' : '归档'}活动`}
             description={`将以 v${lifecycle.row.version} 执行状态变更。`}
-            pending={pending}
+            pending={locked}
             initialFocus={reasonRef}
-            onClose={() => setLifecycle(undefined)}
+            onClose={() => {
+              setLifecycle(undefined);
+              setReason('');
+            }}
           >
             <label className="field">
               {lifecycle.action === 'disable' ? '停用原因' : '归档原因'}
@@ -577,11 +676,24 @@ export function CampaignPage({
               </p>
             )}
             <OperationDialogActions
-              pending={pending}
-              onCancel={() => setLifecycle(undefined)}
+              pending={locked}
+              onCancel={() => {
+                setLifecycle(undefined);
+                setReason('');
+              }}
               confirmLabel={`确认${lifecycle.action === 'disable' ? '停用' : '归档'}`}
               onConfirm={() => void changeLifecycle()}
             />
+            {commandAttempt.uncertain && lastCommand === 'campaign-lifecycle' && (
+              <UncertainCommandActions
+                pending={pending}
+                onRetry={() => void changeLifecycle(true)}
+                onAbandon={() => {
+                  commandAttempt.abandon();
+                  setLastCommand(undefined);
+                }}
+              />
+            )}
           </OperationDialog>
         )}
         {latestConflict && (
@@ -591,6 +703,11 @@ export function CampaignPage({
             onClose={() => undefined}
           >
             <div className="stack conflict-fields">
+              {latestConflict.statusChanged && (
+                <p className="notices">
+                  服务端状态已变为 {latestConflict.row.status}，不能由字段合并覆盖
+                </p>
+              )}
               {latestConflict.unresolved.map((field) => (
                 <div className="notices" key={field}>
                   <strong>{conflictLabels[field]}</strong>
@@ -650,6 +767,7 @@ export function CampaignPage({
           <div className="segmented">
             <Button
               variant={!claims ? 'default' : 'outline'}
+              disabled={locked}
               onClick={() => {
                 setClaims(false);
                 setCursor('');
@@ -659,6 +777,7 @@ export function CampaignPage({
             </Button>
             <Button
               variant={claims ? 'default' : 'outline'}
+              disabled={locked}
               onClick={() => {
                 setClaims(true);
                 setCursor('');
@@ -668,13 +787,25 @@ export function CampaignPage({
             </Button>
           </div>
           {canWrite && !claims && (
-            <Button onClick={() => setCodeDialog(true)}>
+            <Button disabled={locked} onClick={() => setCodeDialog(true)}>
               <Plus size={15} />
               生成兑换码
             </Button>
           )}
         </div>
         <div className="operation-filters panel panel-padding">
+          {!claims && (
+            <label>
+              兑换码关键词
+              <Input
+                value={queryText}
+                onChange={(event) => {
+                  setQueryText(event.target.value);
+                  setCursor('');
+                }}
+              />
+            </label>
+          )}
           <label>
             活动 ID 筛选
             <Input
@@ -688,18 +819,32 @@ export function CampaignPage({
             />
           </label>
           {claims ? (
-            <label>
-              用户 ID 筛选
-              <Input
-                value={filterUserId}
-                pattern="[0-9a-fA-F-]{36}"
-                aria-invalid={userFilterInvalid}
-                onChange={(event) => {
-                  setFilterUserId(event.target.value.trim());
-                  setCursor('');
-                }}
-              />
-            </label>
+            <>
+              <label>
+                用户 ID 筛选
+                <Input
+                  value={filterUserId}
+                  pattern="[0-9a-fA-F-]{36}"
+                  aria-invalid={userFilterInvalid}
+                  onChange={(event) => {
+                    setFilterUserId(event.target.value.trim());
+                    setCursor('');
+                  }}
+                />
+              </label>
+              <label>
+                兑换码 ID 筛选
+                <Input
+                  value={filterCodeId}
+                  pattern="[0-9a-fA-F-]{36}"
+                  aria-invalid={codeFilterInvalid}
+                  onChange={(event) => {
+                    setFilterCodeId(event.target.value.trim());
+                    setCursor('');
+                  }}
+                />
+              </label>
+            </>
           ) : (
             <label>
               兑换码状态
@@ -741,7 +886,7 @@ export function CampaignPage({
             />
           </label>
         </div>
-        {(campaignFilterInvalid || userFilterInvalid || timeFilterInvalid) && (
+        {(campaignFilterInvalid || userFilterInvalid || codeFilterInvalid || timeFilterInvalid) && (
           <p className="field-error" role="alert">
             {timeFilterInvalid ? '开始时间必须早于结束时间' : '筛选 ID 必须是有效 UUID'}
           </p>
@@ -839,9 +984,12 @@ export function CampaignPage({
           <OperationDialog
             title="确认停用兑换码"
             description={`${codeLifecycle.displayMask} 停用后将无法继续兑换。`}
-            pending={pending}
+            pending={locked}
             initialFocus={reasonRef}
-            onClose={() => setCodeLifecycle(undefined)}
+            onClose={() => {
+              setCodeLifecycle(undefined);
+              setReason('');
+            }}
           >
             <label className="field">
               停用原因
@@ -861,11 +1009,24 @@ export function CampaignPage({
               </p>
             )}
             <OperationDialogActions
-              pending={pending}
-              onCancel={() => setCodeLifecycle(undefined)}
+              pending={locked}
+              onCancel={() => {
+                setCodeLifecycle(undefined);
+                setReason('');
+              }}
               confirmLabel="确认停用"
               onConfirm={() => void disableCode()}
             />
+            {commandAttempt.uncertain && lastCommand === 'code-lifecycle' && (
+              <UncertainCommandActions
+                pending={pending}
+                onRetry={() => void disableCode(true)}
+                onAbandon={() => {
+                  commandAttempt.abandon();
+                  setLastCommand(undefined);
+                }}
+              />
+            )}
           </OperationDialog>
         )}
       </section>

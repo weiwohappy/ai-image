@@ -15,6 +15,7 @@ import { FieldErrorsProvider, FormField, type FieldErrors } from '../team/FormFi
 import { OperationDialog, OperationDialogActions } from '../operations/OperationDialog';
 import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
 import { useCommandAttempt } from '../operations/useCommandAttempt';
+import { UncertainCommandActions } from '../operations/UncertainCommandActions';
 import type { ContentKind, ContentRecord, Lifecycle } from './contracts';
 
 type Props = {
@@ -144,6 +145,7 @@ function formField(field: string): string {
 }
 
 export function ContentEditor(props: Props) {
+  const [recordSnapshot, setRecordSnapshot] = useState(props.record);
   const [values, setValues] = useState(() => initialValues(props.kind, props.record));
   const original = useMemo(
     () => JSON.stringify(initialValues(props.kind, props.record)),
@@ -161,20 +163,27 @@ export function ContentEditor(props: Props) {
     record: ContentRecord;
     values: ReturnType<typeof initialValues>;
     unresolved: string[];
+    statusChanged: boolean;
   }>();
   const transitionReasonRef = useRef<HTMLTextAreaElement>(null);
   const [transitionReasonError, setTransitionReasonError] = useState('');
   const commandAttempt = useCommandAttempt();
   const saving = commandAttempt.pending;
+  const locked = saving || commandAttempt.uncertain;
+  const [lastCommand, setLastCommand] = useState<'save' | 'transition'>();
   const family = props.kind === 'remix-templates' ? 'templates' : props.kind;
   const hasWrite =
     props.writeEnabled && props.actor.permissions.includes(`content.${family}.write`);
   const hasPublish = props.actor.permissions.includes(`content.${family}.publish`);
-  const canWrite = hasWrite && (props.record?.status !== 'published' || hasPublish);
+  const canWrite =
+    hasWrite &&
+    recordSnapshot?.status !== 'archived' &&
+    (recordSnapshot?.status !== 'published' || hasPublish);
   const canPublish = hasWrite && hasPublish;
-  const dirty = JSON.stringify(values) !== original || reason.length > 0;
-  useBeforeUnloadGuard(dirty || saving);
-  useDirtyRegistration({ dirty, pending: saving, discard: props.onClose });
+  const dirty =
+    JSON.stringify(values) !== original || reason.length > 0 || transitionReason.length > 0;
+  useBeforeUnloadGuard(dirty || locked);
+  useDirtyRegistration({ dirty, pending: locked, discard: props.onClose });
 
   const update = (name: keyof typeof values, value: string | number) =>
     setValues((current) => ({ ...current, [name]: value }));
@@ -191,7 +200,7 @@ export function ContentEditor(props: Props) {
       defaultModelId: values.defaultModelId.trim(),
       defaultOutputSpecId: values.defaultOutputSpecId.trim(),
       coverMediaExternalId: values.coverMediaExternalId.trim(),
-      status: props.record?.status ?? 'draft',
+      status: recordSnapshot?.status ?? 'draft',
       sortOrder: Number(values.sortOrder),
     };
     if (props.kind === 'inspirations')
@@ -276,29 +285,42 @@ export function ContentEditor(props: Props) {
     return Object.keys(next).length === 0;
   }
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    if (!canWrite || saving || !validate(reason)) return;
-    const content = payload();
-    if (!content) return;
+  async function save(event?: FormEvent, retry = false) {
+    event?.preventDefault();
+    if (!canWrite || saving || (!retry && !validate(reason))) return;
+    const content = retry ? undefined : payload();
+    if (!retry && !content) return;
     setMessage('');
     setConflict(false);
     try {
-      const path = props.record
-        ? `/content/${props.kind}/${props.record.id}`
+      const path = recordSnapshot
+        ? `/content/${props.kind}/${recordSnapshot.id}`
         : `/content/${props.kind}`;
       const body = {
         ...content,
-        ...(props.record ? { version } : {}),
+        ...(recordSnapshot ? { version } : {}),
         reason: reason.trim(),
       };
-      await commandAttempt.run(body, (key) =>
-        props.client.command(props.record ? 'PATCH' : 'POST', path, body, key),
-      );
-      props.onChanged();
-      props.onClose();
+      setLastCommand('save');
+      const result = retry
+        ? await commandAttempt.retry()
+        : await commandAttempt.run(
+            {
+              method: recordSnapshot ? 'PATCH' : 'POST',
+              path,
+              action: `content.${family}.${recordSnapshot ? 'update' : 'create'}`,
+              target: recordSnapshot?.id ?? values.externalId.trim(),
+            },
+            body,
+            (key) => props.client.command(recordSnapshot ? 'PATCH' : 'POST', path, body, key),
+          );
+      if (result.kind === 'success') {
+        setLastCommand(undefined);
+        props.onChanged();
+        props.onClose();
+      }
     } catch (failure) {
-      if (failure instanceof AdminError && failure.status === 409 && props.record) {
+      if (failure instanceof AdminError && failure.status === 409 && recordSnapshot) {
         setConflict(true);
         setMessage('记录已被其他同事修改');
       } else if (failure instanceof AdminError && failure.field) {
@@ -311,18 +333,27 @@ export function ContentEditor(props: Props) {
   }
 
   async function reload() {
-    if (!props.record) return;
+    if (!recordSnapshot) return;
     try {
       const latest = await props.client.get<ContentRecord>(
-        `/content/${props.kind}/${props.record.id}`,
+        `/content/${props.kind}/${recordSnapshot.id}`,
       );
       const latestValues = initialValues(props.kind, latest);
+      const previousStatus = recordSnapshot.status;
+      setRecordSnapshot(latest);
+      setValues((current) => ({ ...current, externalId: latestValues.externalId }));
       const unresolved = Object.keys(values).filter(
         (field) =>
+          field !== 'externalId' &&
           JSON.stringify(values[field as keyof typeof values]) !==
-          JSON.stringify(latestValues[field as keyof typeof latestValues]),
+            JSON.stringify(latestValues[field as keyof typeof latestValues]),
       );
-      setLatestConflict({ record: latest, values: latestValues, unresolved });
+      setLatestConflict({
+        record: latest,
+        values: latestValues,
+        unresolved,
+        statusChanged: previousStatus !== latest.status,
+      });
       setConflict(false);
       if (!unresolved.length) {
         setVersion(latest.version);
@@ -334,14 +365,14 @@ export function ContentEditor(props: Props) {
     }
   }
 
-  async function confirmTransition() {
-    if (!props.record || !transition) return;
+  async function confirmTransition(retry = false) {
+    if (!recordSnapshot || !transition) return;
     const trimmed = transitionReason.trim();
     let nextError = '';
     if (trimmed.length < 5 || trimmed.length > 500) nextError = '操作原因需为 5–500 个字符';
     if (/api[ _-]?key|\bsk-[a-z0-9]|data:image|base64|prompt|\u63d0\u793a\u8bcd/i.test(trimmed))
       nextError = '原因中不得包含 API 密钥、提示词或图片内容';
-    if (nextError) {
+    if (!retry && nextError) {
       setTransitionReasonError(nextError);
       transitionReasonRef.current?.focus();
       return;
@@ -351,15 +382,30 @@ export function ContentEditor(props: Props) {
     try {
       const path =
         transition === 'archived'
-          ? `/content/${props.kind}/${props.record.id}/archive`
-          : `/content/${props.kind}/${props.record.id}/transition`;
+          ? `/content/${props.kind}/${recordSnapshot.id}/archive`
+          : `/content/${props.kind}/${recordSnapshot.id}/transition`;
       const body =
         transition === 'archived'
           ? { version, reason: transitionReason.trim() }
           : { version, reason: transitionReason.trim(), status: transition };
-      await commandAttempt.run(body, (key) => props.client.command('POST', path, body, key));
-      props.onChanged();
-      props.onClose();
+      setLastCommand('transition');
+      const result = retry
+        ? await commandAttempt.retry()
+        : await commandAttempt.run(
+            {
+              method: 'POST',
+              path,
+              action: `content.${family}.${transition}`,
+              target: recordSnapshot.id,
+            },
+            body,
+            (key) => props.client.command('POST', path, body, key),
+          );
+      if (result.kind === 'success') {
+        setLastCommand(undefined);
+        props.onChanged();
+        props.onClose();
+      }
     } catch (failure) {
       if (failure instanceof AdminError && failure.field)
         setErrors({ [formField(failure.field)]: fieldMessage(failure.field) });
@@ -368,7 +414,10 @@ export function ContentEditor(props: Props) {
           ? '请检查下方标记的发布字段'
           : errorText(failure),
       );
-      setTransition(undefined);
+      if (failure instanceof AdminError && failure.status < 500) {
+        setTransition(undefined);
+        setTransitionReason('');
+      }
     } finally {
       // The shared command-attempt hook releases the pending guard.
     }
@@ -392,17 +441,17 @@ export function ContentEditor(props: Props) {
   }
 
   const close = () => (dirty ? setConfirmClose(true) : props.onClose());
-  const status = props.record?.status ?? 'draft';
+  const status = recordSnapshot?.status ?? 'draft';
   return (
     <Sheet
       open
-      disablePointerDismissal={saving}
-      onOpenChange={(open) => !open && !saving && close()}
+      disablePointerDismissal={locked}
+      onOpenChange={(open) => !open && !locked && close()}
     >
       <SheetContent className="team-sheet operation-sheet" showCloseButton={false}>
         <SheetHeader>
           <SheetTitle>
-            {props.record ? `编辑${labels[props.kind]}` : `新建${labels[props.kind]}`}
+            {recordSnapshot ? `编辑${labels[props.kind]}` : `新建${labels[props.kind]}`}
           </SheetTitle>
           <SheetDescription>
             先保存草稿，发布前将再次校验媒体、模型、规格和提示词。
@@ -411,12 +460,12 @@ export function ContentEditor(props: Props) {
         <div className="team-sheet-body">
           <form className="stack" onSubmit={save} noValidate>
             <FieldErrorsProvider value={errors}>
-              <fieldset className="team-fields" disabled={!canWrite || saving}>
+              <fieldset className="team-fields" disabled={!canWrite || locked}>
                 <div className="operation-grid">
                   <FormField name="externalId" label="公开标识">
                     <Input
                       value={values.externalId}
-                      disabled={Boolean(props.record)}
+                      disabled={Boolean(recordSnapshot)}
                       onChange={(e) => update('externalId', e.target.value)}
                     />
                   </FormField>
@@ -566,31 +615,47 @@ export function ContentEditor(props: Props) {
                 {message}
               </p>
             )}
+            {commandAttempt.uncertain && lastCommand === 'save' && (
+              <UncertainCommandActions
+                pending={saving}
+                onRetry={() => void save(undefined, true)}
+                onAbandon={() => {
+                  commandAttempt.abandon();
+                  setLastCommand(undefined);
+                }}
+              />
+            )}
             {conflict && !latestConflict && (
               <Button type="button" variant="outline" onClick={() => void reload()}>
                 加载最新版本
               </Button>
             )}
             <div className="team-form-actions">
-              <Button type="button" variant="outline" disabled={saving} onClick={close}>
+              <Button type="button" variant="outline" disabled={locked} onClick={close}>
                 取消编辑
               </Button>
-              {props.record && canPublish && status !== 'archived' && (
+              {recordSnapshot && canPublish && status !== 'archived' && (
                 <Button
                   type="button"
                   variant="outline"
+                  disabled={locked}
                   onClick={() => setTransition(status === 'published' ? 'offline' : 'published')}
                 >
                   {status === 'published' ? '下线内容' : '发布内容'}
                 </Button>
               )}
-              {props.record && canWrite && (status === 'draft' || status === 'offline') && (
-                <Button type="button" variant="ghost" onClick={() => setTransition('archived')}>
+              {recordSnapshot && canWrite && (status === 'draft' || status === 'offline') && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  disabled={locked}
+                  onClick={() => setTransition('archived')}
+                >
                   归档内容
                 </Button>
               )}
-              <Button type="submit" disabled={!canWrite || saving || Boolean(latestConflict)}>
-                {props.record ? '保存修改' : '保存草稿'}
+              <Button type="submit" disabled={!canWrite || locked || Boolean(latestConflict)}>
+                {recordSnapshot ? '保存修改' : '保存草稿'}
               </Button>
             </div>
           </form>
@@ -615,10 +680,11 @@ export function ContentEditor(props: Props) {
             <OperationDialog
               title={`确认${transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}内容`}
               description="此操作会改变内容生命周期，请填写原因。"
-              pending={saving}
+              pending={locked}
               initialFocus={transitionReasonRef}
               onClose={() => {
                 setTransition(undefined);
+                setTransitionReason('');
                 setTransitionReasonError('');
               }}
             >
@@ -648,11 +714,24 @@ export function ContentEditor(props: Props) {
                 </p>
               )}
               <OperationDialogActions
-                pending={saving}
-                onCancel={() => setTransition(undefined)}
+                pending={locked}
+                onCancel={() => {
+                  setTransition(undefined);
+                  setTransitionReason('');
+                }}
                 confirmLabel={`确认${transition === 'published' ? '发布' : transition === 'offline' ? '下线' : '归档'}`}
                 onConfirm={() => void confirmTransition()}
               />
+              {commandAttempt.uncertain && lastCommand === 'transition' && (
+                <UncertainCommandActions
+                  pending={saving}
+                  onRetry={() => void confirmTransition(true)}
+                  onAbandon={() => {
+                    commandAttempt.abandon();
+                    setLastCommand(undefined);
+                  }}
+                />
+              )}
             </OperationDialog>
           )}
           {latestConflict && (
@@ -662,6 +741,11 @@ export function ContentEditor(props: Props) {
               onClose={() => undefined}
             >
               <div className="stack conflict-fields">
+                {latestConflict.statusChanged && (
+                  <p className="notices">
+                    服务端状态已变为 {latestConflict.record.status}，不能由字段合并覆盖
+                  </p>
+                )}
                 {latestConflict.unresolved.map((field) => {
                   const label =
                     field === 'title'

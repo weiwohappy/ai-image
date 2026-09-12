@@ -10,6 +10,7 @@ import type { ContentKind, ContentPage, ContentRecord, ToolRecord } from './cont
 import { ToolDefinitionEditor } from './ToolDefinitionEditor';
 import { useBeforeUnloadGuard, useDirtyRegistration } from '../operations/dirty-guard';
 import { useCommandAttempt } from '../operations/useCommandAttempt';
+import { UncertainCommandActions } from '../operations/UncertainCommandActions';
 
 const copy = {
   inspirations: { title: '灵感库', create: '新建灵感', singular: '灵感' },
@@ -38,8 +39,9 @@ export function ContentListPage({
   const [editor, setEditor] = useState<ContentRecord | 'new'>();
   const [commandError, setCommandError] = useState('');
   const reorderAttempt = useCommandAttempt();
-  useBeforeUnloadGuard(reorderAttempt.pending);
-  useDirtyRegistration({ dirty: false, pending: reorderAttempt.pending, discard: () => undefined });
+  const reorderLocked = reorderAttempt.pending || reorderAttempt.uncertain;
+  useBeforeUnloadGuard(reorderLocked);
+  useDirtyRegistration({ dirty: false, pending: reorderLocked, discard: () => undefined });
   const params = new URLSearchParams({ limit: '30' });
   const timeFilterInvalid = Boolean(
     updatedFrom && updatedTo && Date.parse(updatedFrom) >= Date.parse(updatedTo),
@@ -72,10 +74,23 @@ export function ContentListPage({
           { id: row.id, version: row.version, sortOrder: Math.max(0, row.sortOrder + offset) },
         ],
       };
-      await reorderAttempt.run(body, (key) =>
-        client.command('POST', `/content/${kind}/reorder`, body, key),
+      const path = `/content/${kind}/reorder`;
+      const result = await reorderAttempt.run(
+        { method: 'POST', path, action: `content.${family}.reorder`, target: kind },
+        body,
+        (key) => client.command('POST', path, body, key),
       );
-      refresh();
+      if (result.kind === 'success') refresh();
+    } catch (failure) {
+      setCommandError(errorText(failure));
+    }
+  }
+
+  async function retryMove() {
+    setCommandError('');
+    try {
+      const result = await reorderAttempt.retry();
+      if (result.kind === 'success') refresh();
     } catch (failure) {
       setCommandError(errorText(failure));
     }
@@ -160,7 +175,7 @@ export function ContentListPage({
             刷新
           </Button>
           {canWrite && (
-            <Button onClick={() => setEditor('new')}>
+            <Button disabled={reorderLocked} onClick={() => setEditor('new')}>
               <Plus size={15} />
               {copy[kind].create}
             </Button>
@@ -171,6 +186,13 @@ export function ContentListPage({
         <p className="error-banner" role="alert">
           {commandError}
         </p>
+      )}
+      {reorderAttempt.uncertain && (
+        <UncertainCommandActions
+          pending={reorderAttempt.pending}
+          onRetry={() => void retryMove()}
+          onAbandon={() => reorderAttempt.abandon()}
+        />
       )}
       {result.loading ? (
         <div className="panel loading-state" role="status">
@@ -225,7 +247,7 @@ export function ContentListPage({
                           <Button
                             size="sm"
                             variant="ghost"
-                            disabled={reorderAttempt.pending}
+                            disabled={reorderLocked}
                             aria-label={`上移${row.externalId}`}
                             onClick={() => void move(row, -10)}
                           >
@@ -234,7 +256,7 @@ export function ContentListPage({
                           <Button
                             size="sm"
                             variant="ghost"
-                            disabled={reorderAttempt.pending}
+                            disabled={reorderLocked}
                             aria-label={`下移${row.externalId}`}
                             onClick={() => void move(row, 10)}
                           >

@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { expect, it, vi } from 'vitest';
 import type { AdminActor } from '../contracts';
 import { AdminClient } from '../http';
+import { useDirtyGuard } from '../operations/dirty-guard';
 import { json } from '../test/fixtures';
 import { CampaignPage } from './CampaignPage';
 import { CodeBatchDialog } from './CodeBatchDialog';
@@ -107,6 +108,29 @@ it('requires explicit campaign field choices before resubmitting with the latest
   });
 });
 
+it('synchronizes an archived campaign conflict and prevents a stale editor from saving', async () => {
+  const archived = { ...campaign, status: 'archived' as const, version: 8 };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(json({ rows: [campaign], nextCursor: null }))
+    .mockResolvedValueOnce(json(null, 409))
+    .mockResolvedValueOnce(json(archived));
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <CampaignPage view="campaigns" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: '编辑十月邀请礼' }));
+  fireEvent.change(screen.getByLabelText('活动名称'), { target: { value: '我的活动名称' } });
+  fireEvent.change(screen.getByLabelText('操作原因'), { target: { value: '处理活动并发编辑' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存活动' }));
+  fireEvent.click(await screen.findByRole('button', { name: '加载最新版本' }));
+  expect(
+    await screen.findByText('服务端状态已变为 archived，不能由字段合并覆盖'),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '保留我的 活动名称' }));
+  expect(screen.getByRole('button', { name: '保存活动' })).toBeDisabled();
+});
+
 it('keeps a dirty campaign editor open until discard is explicitly confirmed', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [campaign], nextCursor: null })));
   render(
@@ -204,6 +228,39 @@ it('destroys one-time plaintext codes when the result closes and never restores 
   fireEvent.click(screen.getByRole('button', { name: '生成兑换码' }));
   expect(screen.queryByText(secret)).not.toBeInTheDocument();
   expect(screen.getByLabelText('活动 ID')).toHaveValue('');
+});
+
+it('destroys plaintext before a global dirty discard callback closes the code sheet', async () => {
+  const secret = 'VIVIAI-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  vi.stubGlobal(
+    'fetch',
+    vi.fn().mockResolvedValue(
+      json({
+        resourceId: campaign.id,
+        campaignId: campaign.id,
+        campaignVersion: 8,
+        generated: 1,
+        codes: [{ id: crypto.randomUUID(), campaignId: campaign.id, code: secret }],
+      }),
+    ),
+  );
+  function Discard() {
+    const guard = useDirtyGuard();
+    return <button onClick={guard.discard}>全局放弃</button>;
+  }
+  render(
+    <>
+      <CodeBatchDialog client={new AdminClient()} onClose={vi.fn()} onChanged={vi.fn()} />
+      <Discard />
+    </>,
+  );
+  fireEvent.change(screen.getByLabelText('活动 ID'), { target: { value: campaign.id } });
+  fireEvent.change(screen.getByLabelText('活动版本'), { target: { value: '7' } });
+  fireEvent.change(screen.getByLabelText('生成原因'), { target: { value: '生成一次性营销批次' } });
+  fireEvent.click(screen.getByRole('button', { name: '确认生成' }));
+  expect(await screen.findByText(secret)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '全局放弃', hidden: true }));
+  expect(screen.queryByText(secret)).not.toBeInTheDocument();
 });
 
 it('keeps one code-generation attempt locked to its payload and idempotency key until resolved', async () => {
@@ -341,4 +398,72 @@ it('applies backend code, claim, and referral filters with strict identifiers an
     expect(url.searchParams.get('userId')).toBe('33333333-3333-4333-8333-333333333333');
     expect(url.searchParams.get('status')).toBe('rewarded');
   });
+});
+
+it('applies every campaign/code/claim filter and drops a nonempty cursor on each change', async () => {
+  const fetcher = vi
+    .fn()
+    .mockImplementation(() => Promise.resolve(json({ rows: [], nextCursor: 'opaque-next' })));
+  vi.stubGlobal('fetch', fetcher);
+  const page = render(
+    <CampaignPage view="campaigns" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: '下一页' }));
+  await waitFor(() =>
+    expect(
+      new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://test').searchParams.get('cursor'),
+    ).toBe('opaque-next'),
+  );
+  fireEvent.change(screen.getByLabelText('活动开始筛选'), {
+    target: { value: '2026-10-01T09:00' },
+  });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://test');
+    expect(url.searchParams.get('from')).toBe(new Date('2026-10-01T09:00').toISOString());
+    expect(url.searchParams.has('cursor')).toBe(false);
+  });
+  page.unmount();
+
+  const codes = render(
+    <CampaignPage view="codes" actor={marketer} client={new AdminClient()} writeEnabled />,
+  );
+  fireEvent.click(await screen.findByRole('button', { name: '下一页' }));
+  fireEvent.change(screen.getByLabelText('兑换码关键词'), { target: { value: 'CDEF' } });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://test');
+    expect(url.searchParams.get('q')).toBe('CDEF');
+    expect(url.searchParams.has('cursor')).toBe(false);
+  });
+  fireEvent.click(screen.getByRole('button', { name: '兑换记录' }));
+  fireEvent.click(await screen.findByRole('button', { name: '下一页' }));
+  const codeId = '44444444-4444-4444-8444-444444444444';
+  fireEvent.change(screen.getByLabelText('兑换码 ID 筛选'), { target: { value: codeId } });
+  await waitFor(() => {
+    const url = new URL(String(fetcher.mock.calls.at(-1)?.[0]), 'http://test');
+    expect(url.searchParams.get('codeId')).toBe(codeId);
+    expect(url.searchParams.has('cursor')).toBe(false);
+  });
+  codes.unmount();
+});
+
+it('counts campaign and code lifecycle reasons as dirty navigation state', async () => {
+  const code = {
+    resourceId: 'a10c2d5f-20ad-4b5a-aa19-c750726d8676',
+    id: 'a10c2d5f-20ad-4b5a-aa19-c750726d8676',
+    campaignId: campaign.id,
+    displayMask: 'VIVIAI-****-CDEF',
+    status: 'active',
+    maxUses: 1,
+    usedCount: 0,
+    version: 4,
+    createdAt: campaign.createdAt,
+    updatedAt: campaign.updatedAt,
+  } as const;
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [code], nextCursor: null })));
+  render(<CampaignPage view="codes" actor={marketer} client={new AdminClient()} writeEnabled />);
+  fireEvent.click(await screen.findByRole('button', { name: '停用VIVIAI-****-CDEF' }));
+  fireEvent.change(screen.getByLabelText('停用原因'), { target: { value: '尚未提交的停用原因' } });
+  const unload = new Event('beforeunload', { cancelable: true });
+  act(() => window.dispatchEvent(unload));
+  expect(unload.defaultPrevented).toBe(true);
 });

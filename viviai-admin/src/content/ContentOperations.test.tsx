@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { expect, it, vi } from 'vitest';
 import type { AdminActor } from '../contracts';
 import { AdminClient } from '../http';
@@ -177,6 +177,44 @@ it('creates an inspiration as a draft with a reason, version-safe key, and no mo
   });
 });
 
+it('keeps a content editor open on an uncertain save and only closes after the same-key retry succeeds', async () => {
+  const fetcher = vi
+    .fn()
+    .mockRejectedValueOnce(new TypeError('network outcome unknown'))
+    .mockResolvedValueOnce(json({ ...inspiration, version: 2 }));
+  vi.stubGlobal('fetch', fetcher);
+  const onClose = vi.fn();
+  const onChanged = vi.fn();
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={onClose}
+      onChanged={onChanged}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('操作原因'), {
+    target: { value: '保存已审核的内容修改' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  expect(await screen.findByRole('button', { name: '检查结果/重试同请求' })).toBeInTheDocument();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('标题')).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: '检查结果/重试同请求' }));
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  expect(onChanged).toHaveBeenCalledTimes(1);
+  const firstKey = ((fetcher.mock.calls[0]![1] as RequestInit).headers as Record<string, string>)[
+    'Idempotency-Key'
+  ];
+  const secondKey = ((fetcher.mock.calls[1]![1] as RequestInit).headers as Record<string, string>)[
+    'Idempotency-Key'
+  ];
+  expect(secondKey).toBe(firstKey);
+});
+
 it('warns before discarding a dirty content draft', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [], nextCursor: null })));
   render(
@@ -337,6 +375,72 @@ it('requires an explicit field merge before resubmitting a content conflict with
   });
 });
 
+it('treats a newer archived status as an immutable server fact and blocks further editing', async () => {
+  const archived = { ...inspiration, status: 'archived' as const, version: 2 };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(json(null, 409))
+    .mockResolvedValueOnce(json(archived));
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('标题'), { target: { value: '我的并发草稿' } });
+  fireEvent.change(screen.getByLabelText('操作原因'), { target: { value: '保存并发编辑内容' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  fireEvent.click(await screen.findByRole('button', { name: '加载最新版本' }));
+  expect(
+    await screen.findByText('服务端状态已变为 archived，不能由字段合并覆盖'),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '保留我的 标题' }));
+  expect(screen.getByRole('button', { name: '保存修改' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: '发布内容' })).not.toBeInTheDocument();
+});
+
+it('submits the latest server lifecycle status after resolving a content conflict', async () => {
+  const published = { ...inspiration, status: 'published' as const, version: 2 };
+  const fetcher = vi
+    .fn()
+    .mockResolvedValueOnce(json(null, 409))
+    .mockResolvedValueOnce(json(published))
+    .mockResolvedValueOnce(json({ ...published, title: '保留本地标题', version: 3 }));
+  vi.stubGlobal('fetch', fetcher);
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.change(screen.getByLabelText('标题'), { target: { value: '保留本地标题' } });
+  fireEvent.change(screen.getByLabelText('操作原因'), { target: { value: '合并服务端最新状态' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  fireEvent.click(await screen.findByRole('button', { name: '加载最新版本' }));
+  expect(
+    await screen.findByText('服务端状态已变为 published，不能由字段合并覆盖'),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '保留我的 标题' }));
+  expect(screen.getByRole('button', { name: '下线内容' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: '保存修改' }));
+  await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
+  expect(JSON.parse(String((fetcher.mock.calls[2]![1] as RequestInit).body))).toMatchObject({
+    version: 2,
+    status: 'published',
+  });
+});
+
 it('uploads content media as FormData and requires confirmation for lifecycle changes', async () => {
   const fetcher = vi
     .fn()
@@ -351,11 +455,81 @@ it('uploads content media as FormData and requires confirmation for lifecycle ch
   fireEvent.change(screen.getByLabelText('上传原因'), {
     target: { value: '上传已授权的运营封面' },
   });
-  fireEvent.click(screen.getByRole('button', { name: '上传媒体' }));
+  fireEvent.click(await screen.findByRole('button', { name: '上传媒体' }));
   await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(3));
   const upload = fetcher.mock.calls[1]![1] as RequestInit;
   expect(upload.body).toBeInstanceOf(FormData);
   expect(upload.headers).not.toHaveProperty('Content-Type');
+});
+
+it('hashes the real media bytes before enabling upload', async () => {
+  const bytes = new Uint8Array([9, 8, 7, 6]);
+  const file = new File([bytes], 'same.png', { type: 'image/png' });
+  Object.defineProperty(file, 'arrayBuffer', { value: vi.fn(async () => bytes.buffer) });
+  const digest = vi.spyOn(crypto.subtle, 'digest');
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ rows: [], nextCursor: null })));
+  render(<MediaLibraryPage actor={contentActor} client={new AdminClient()} writeEnabled />);
+  fireEvent.change(await screen.findByLabelText('选择图片'), { target: { files: [file] } });
+  expect(screen.getByRole('button', { name: '正在校验文件…' })).toBeDisabled();
+  await waitFor(() => expect(digest).toHaveBeenCalled());
+  const [, actual] = digest.mock.calls[0]!;
+  expect(Array.from(new Uint8Array(actual as ArrayBuffer))).toEqual(Array.from(bytes));
+  expect(screen.getByRole('button', { name: '上传媒体' })).toBeEnabled();
+});
+
+it('counts a lifecycle reason as dirty for beforeunload protection', () => {
+  vi.stubGlobal('fetch', vi.fn());
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={vi.fn()}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: '发布内容' }));
+  fireEvent.change(screen.getByLabelText('发布原因'), { target: { value: '尚未提交的发布原因' } });
+  const unload = new Event('beforeunload', { cancelable: true });
+  act(() => window.dispatchEvent(unload));
+  expect(unload.defaultPrevented).toBe(true);
+});
+
+it('keeps lifecycle confirmation locked and retries an uncertain transition with the same key', async () => {
+  const fetcher = vi
+    .fn()
+    .mockRejectedValueOnce(new TypeError('network outcome unknown'))
+    .mockResolvedValueOnce(json({ ...inspiration, status: 'published', version: 2 }));
+  vi.stubGlobal('fetch', fetcher);
+  const onClose = vi.fn();
+  render(
+    <ContentEditor
+      kind="inspirations"
+      record={inspiration}
+      actor={contentActor}
+      client={new AdminClient()}
+      writeEnabled
+      onClose={onClose}
+      onChanged={vi.fn()}
+    />,
+  );
+  fireEvent.click(screen.getByRole('button', { name: '发布内容' }));
+  fireEvent.change(screen.getByLabelText('发布原因'), {
+    target: { value: '内容和媒体均已完成审核' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: '确认发布' }));
+  const retry = await screen.findByRole('button', { name: '检查结果/重试同请求' });
+  expect(screen.getByRole('dialog')).toHaveAccessibleName('确认发布内容');
+  fireEvent.keyDown(document, { key: 'Escape' });
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+  fireEvent.click(retry);
+  await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+  const keys = fetcher.mock.calls.map(
+    ([, init]) => ((init as RequestInit).headers as Record<string, string>)['Idempotency-Key'],
+  );
+  expect(keys[1]).toBe(keys[0]);
 });
 
 it.each([
