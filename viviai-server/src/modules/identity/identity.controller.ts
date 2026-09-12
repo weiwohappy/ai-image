@@ -42,13 +42,12 @@ export class IdentityController {
   @Post('auth/send-code')
   async sendCode(@Body() body: unknown, @Req() req: Request) {
     const input = parseInput(
-      z
-        .object({
-          email,
-          purpose: z
-            .enum(['register', 'reset-password', 'change-email', 'change-password'])
-            .default('register'),
-        }),
+      z.object({
+        email,
+        purpose: z
+          .enum(['register', 'reset-password', 'change-email', 'change-password'])
+          .default('register'),
+      }),
       body,
     );
     await this.identity.rateLimit('send-code', input.email, req.ip ?? 'unknown');
@@ -70,6 +69,12 @@ export class IdentityController {
           .trim()
           .toLowerCase()
           .regex(/^[a-z0-9_]{3,32}$/),
+        inviteCode: z
+          .string()
+          .trim()
+          .toUpperCase()
+          .regex(/^[A-Z0-9-]{4,64}$/)
+          .optional(),
       }),
       body,
     );

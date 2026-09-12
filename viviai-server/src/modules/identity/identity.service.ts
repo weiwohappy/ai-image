@@ -5,6 +5,7 @@ import { DatabaseService } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
 import { lockUserAuth } from '../../shared/database/locks.js';
 import { EmailChallengeService, type ChallengePurpose } from './challenge.service.js';
+import { ReferralService } from '../engagement/referral.service.js';
 
 const derive = promisify(scrypt);
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -51,6 +52,7 @@ export class IdentityService {
   constructor(
     @Inject(DatabaseService) private readonly db: DatabaseService,
     @Inject(EmailChallengeService) private readonly challenges: EmailChallengeService,
+    @Inject(ReferralService) private readonly referrals: ReferralService,
   ) {}
 
   async rateLimit(operation: string, credential: string, ip: string): Promise<void> {
@@ -86,11 +88,12 @@ export class IdentityService {
     username: string;
     password: string;
     code: string;
+    inviteCode?: string | undefined;
   }): Promise<PublicAccount> {
     const passwordHash = await hashPassword(input.password);
     try {
-      return await this.challenges.consume(input.email, 'register', input.code, (tx) =>
-        tx.user.create({
+      return await this.challenges.consume(input.email, 'register', input.code, async (tx) => {
+        const user = await tx.user.create({
           data: { email: input.email, username: input.username, passwordHash },
           select: {
             id: true,
@@ -100,8 +103,44 @@ export class IdentityService {
             inviteCode: true,
             authVersion: true,
           },
-        }),
-      );
+        });
+        let assigned = user;
+        for (let attempt = 0; attempt < 32; attempt++) {
+          const inviteCode = createHash('sha256')
+            .update(`${user.id}:${attempt}`)
+            .digest('hex')
+            .slice(0, 8)
+            .toUpperCase();
+          try {
+            assigned = await tx.user.update({
+              where: { id: user.id },
+              data: { inviteCode },
+              select: {
+                id: true,
+                email: true,
+                username: true,
+                avatarAssetId: true,
+                inviteCode: true,
+                authVersion: true,
+              },
+            });
+            break;
+          } catch (error) {
+            if (
+              !(
+                typeof error === 'object' &&
+                error !== null &&
+                'code' in error &&
+                error.code === 'P2002'
+              ) ||
+              attempt === 31
+            )
+              throw error;
+          }
+        }
+        await this.referrals.bindAtRegistration(tx, assigned.id, input.inviteCode);
+        return assigned;
+      });
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002')
         throw new AppError(409, 'ACCOUNT_EXISTS', 'Email or username is already registered');
@@ -132,8 +171,7 @@ export class IdentityService {
     const passwordHash = await hashPassword(password);
     await this.challenges.consume(email, 'reset-password', code, async (tx) => {
       const user = await tx.user.findUnique({ where: { email } });
-      if (!user)
-        throw new AppError(400, 'INVALID_CODE', 'Verification code is invalid or expired');
+      if (!user) throw new AppError(400, 'INVALID_CODE', 'Verification code is invalid or expired');
       await lockUserAuth(tx, user.id);
       await tx.user.update({
         where: { id: user.id },
@@ -147,7 +185,10 @@ export class IdentityService {
     const token = randomBytes(32).toString('base64url');
     await this.db.transaction(async (tx) => {
       await lockUserAuth(tx, userId);
-      const user = await tx.user.findUnique({ where: { id: userId }, select: { authVersion: true } });
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { authVersion: true },
+      });
       if (!user || user.authVersion !== expectedAuthVersion)
         throw new AppError(401, 'INVALID_CREDENTIALS', 'Account or password is incorrect');
       await tx.session.create({
