@@ -34,9 +34,11 @@ export function AccountPage() {
   const [passwordCode, setPasswordCode] = useState('');
   const [password, setPassword] = useState('');
   const [refreshingRedemptionBaseline, setRefreshingRedemptionBaseline] = useState(false);
+  const [submittingRedemption, setSubmittingRedemption] = useState(false);
   const redeemAttempt = useRef<RedemptionAttempt | undefined>(undefined);
   const abandonedUncertainRedemption = useRef(false);
   const refreshingRedemptionBaselineRef = useRef(false);
+  const submittingRedemptionRef = useRef(false);
 
   useEffect(() => {
     if (!me.data) return;
@@ -53,6 +55,10 @@ export function AccountPage() {
     setMessageKind(kind);
   };
   const syncUser = (user: User) => queryClient.setQueryData(queryKeys.me, user.avatarUrl ? { ...user, avatarUrl: apiResourceUrl(user.avatarUrl) } : user);
+  const releaseRedemptionSubmission = () => {
+    submittingRedemptionRef.current = false;
+    setSubmittingRedemption(false);
+  };
   const profile = useMutation({
     mutationFn: async () => {
       const saved = await api.updateProfile({ username });
@@ -112,11 +118,13 @@ export function AccountPage() {
       notify(delta > 0 ? `兑换成功，${delta} 积分已到账。` : '兑换成功。', 'success');
       if (redeemAttempt.current?.key === attempt.key) redeemAttempt.current = undefined;
       setCode('');
+      releaseRedemptionSubmission();
     },
     onError: (error, attempt) => {
       if (isUncertainRedemptionError(error) && redeemAttempt.current?.key === attempt.key) redeemAttempt.current.uncertain = true;
       if (!isUncertainRedemptionError(error) && redeemAttempt.current?.key === attempt.key) redeemAttempt.current = undefined;
       notify(error.message, 'error');
+      releaseRedemptionSubmission();
     },
   });
   const logout = useMutation({ mutationFn: api.logout, onSuccess: () => { queryClient.clear(); navigate('/login'); } });
@@ -132,7 +140,9 @@ export function AccountPage() {
 
   async function redeemCredits() {
     const normalizedCode = code.trim().toUpperCase();
-    if (!normalizedCode || refreshingRedemptionBaselineRef.current) return;
+    if (!normalizedCode || refreshingRedemptionBaselineRef.current || submittingRedemptionRef.current) return;
+    submittingRedemptionRef.current = true;
+    setSubmittingRedemption(true);
     if (!redeemAttempt.current || redeemAttempt.current.normalizedCode !== normalizedCode) {
       let baselineCredits = me.data?.credits ?? 0;
       if (abandonedUncertainRedemption.current) {
@@ -146,6 +156,7 @@ export function AccountPage() {
           abandonedUncertainRedemption.current = false;
         } catch {
           notify('无法刷新积分余额，请重试。', 'error');
+          releaseRedemptionSubmission();
           return;
         } finally {
           refreshingRedemptionBaselineRef.current = false;
@@ -160,6 +171,7 @@ export function AccountPage() {
   if (!me.data) return <main className="p-8"><div className="h-64 animate-pulse rounded-[28px] bg-card" /></main>;
   const user = me.data;
   const avatarUrl = avatarPreviewUrl ?? (user.avatarUrl ? apiResourceUrl(user.avatarUrl) : undefined);
+  const redemptionLocked = submittingRedemption || redeem.isPending || refreshingRedemptionBaseline;
   return (
     <main className="mx-auto w-full max-w-[1380px] p-4 md:p-6 xl:p-8">
       <header><p className="flex items-center gap-2 text-sm font-medium text-primary"><UserRound className="size-4" />ACCOUNT</p><h1 className="mt-2 text-3xl font-semibold tracking-[-.04em] md:text-4xl">个人中心</h1></header>
@@ -179,7 +191,7 @@ export function AccountPage() {
             <h3 className="flex items-center gap-2 text-sm font-semibold"><KeyRound className="size-4 text-primary" />修改密码</h3><div className="mt-3 grid gap-2 sm:grid-cols-[auto_110px_1fr_auto]"><Button type="button" variant="outline" aria-label="发送密码验证码" disabled={sendPasswordCode.isPending} onClick={() => sendPasswordCode.mutate(user.email)}>{sendPasswordCode.isPending && <LoaderCircle className="animate-spin" />}发送验证码</Button><Input aria-label="密码验证码" className="h-10 bg-background" placeholder="验证码" value={passwordCode} onChange={(event) => setPasswordCode(event.target.value)} /><Input aria-label="新密码" type="password" className="h-10 bg-background" placeholder="至少 12 位" value={password} onChange={(event) => setPassword(event.target.value)} /><Button type="button" variant="secondary" disabled={passwordCode.length !== 6 || password.length < 12 || changePassword.isPending} onClick={() => changePassword.mutate()}>更新密码</Button></div>
             <p className="mt-3 text-xs text-muted-foreground">验证码为 6 位，发送后请查收对应邮箱。</p>
           </section>
-          <section className="rounded-[26px] border border-border bg-card p-6"><h2 className="flex items-center gap-2 text-lg font-semibold"><KeyRound className="size-5 text-primary" />兑换积分</h2><div className="mt-4 flex gap-2"><Input aria-label="兑换码" className="h-11 bg-background uppercase" value={code} onChange={(event) => { if (redeemAttempt.current?.uncertain) abandonedUncertainRedemption.current = true; redeemAttempt.current = undefined; setCode(event.target.value); }} placeholder="输入兑换码" /><Button type="button" className="h-11 shrink-0" disabled={!code.trim() || redeem.isPending || refreshingRedemptionBaseline} onClick={redeemCredits}>{(redeem.isPending || refreshingRedemptionBaseline) && <LoaderCircle className="animate-spin" />}兑换积分</Button></div>{message && <p role="status" className={`mt-3 text-sm ${messageKind === 'success' ? 'text-primary' : 'text-destructive'}`}>{message}</p>}</section>
+          <section className="rounded-[26px] border border-border bg-card p-6"><h2 className="flex items-center gap-2 text-lg font-semibold"><KeyRound className="size-5 text-primary" />兑换积分</h2><div className="mt-4 flex gap-2"><Input aria-label="兑换码" className="h-11 bg-background uppercase" value={code} disabled={redemptionLocked} onChange={(event) => { if (submittingRedemptionRef.current) return; if (redeemAttempt.current?.uncertain) abandonedUncertainRedemption.current = true; redeemAttempt.current = undefined; setCode(event.target.value); }} placeholder="输入兑换码" /><Button type="button" className="h-11 shrink-0" disabled={!code.trim() || redemptionLocked} onClick={redeemCredits}>{redemptionLocked && <LoaderCircle className="animate-spin" />}兑换积分</Button></div>{message && <p role="status" className={`mt-3 text-sm ${messageKind === 'success' ? 'text-primary' : 'text-destructive'}`}>{message}</p>}</section>
           <section className="rounded-[26px] border border-border bg-card p-6"><h2 className="text-lg font-semibold">邀请信息</h2><p className="mt-2 text-sm text-muted-foreground">每位好友注册后，双方获得奖励积分。</p><div className="mt-4 flex items-center justify-between rounded-xl bg-background p-3"><code className="text-sm text-primary">{user.inviteCode}</code><Button type="button" size="icon-sm" variant="ghost" aria-label="复制邀请码" onClick={() => navigator.clipboard?.writeText(user.inviteCode)}><Copy /></Button></div></section>
         </div>
         <section className="rounded-[26px] border border-border bg-card p-6"><div className="flex items-center justify-between"><div><h2 className="text-xl font-semibold">积分明细</h2><p className="mt-1 text-sm text-muted-foreground">冻结、消耗、退款和购买均可追溯。</p></div><span className="rounded-full bg-secondary px-3 py-1.5 text-xs text-muted-foreground">{ledger.data?.length ?? 0} 条</span></div><div className="mt-5"><PointLedger entries={ledger.data ?? []} /></div></section>

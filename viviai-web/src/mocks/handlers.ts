@@ -180,25 +180,42 @@ export const handlers = [
   }),
 
   http.post(`${api}/auth/register`, async ({ request }) => {
-    const input = (await request.json()) as { username: string; email: string; password: string; code: string; inviteCode?: string };
-    if (!input.username.trim() || !input.email.includes('@') || input.password.length < 12 || !/^\d{6}$/.test(input.code)) {
+    const input = (await request.json()) as Partial<{ username: string; email: string; password: string; code: string; inviteCode: string }>;
+    const username = typeof input.username === 'string' ? input.username.trim().toLocaleLowerCase() : '';
+    const email = typeof input.email === 'string' ? input.email.trim().toLocaleLowerCase() : '';
+    const password = typeof input.password === 'string' ? input.password : '';
+    const code = typeof input.code === 'string' ? input.code : '';
+    const inviter = input.inviteCode === undefined ? undefined : typeof input.inviteCode === 'string' ? input.inviteCode.trim().toUpperCase() : '';
+    if (!/^[a-z0-9_]{3,32}$/.test(username) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || password.length < 12 || password.length > 128 || !/^\d{6}$/.test(code) || (inviter !== undefined && !/^[A-Z0-9-]{4,64}$/.test(inviter))) {
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
-    const email = input.email.trim().toLocaleLowerCase();
-    const challenge = loadDb().challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === input.code && !item.used);
+    const current = loadDb();
+    if (current.user.email.trim().toLocaleLowerCase() === email || current.user.username.trim().toLocaleLowerCase() === username) {
+      return fail(409, 'ACCOUNT_EXISTS', 'Email or username is already registered');
+    }
+    const challenge = current.challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === code && !item.used);
     if (!challenge) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
-    const inviter = input.inviteCode?.trim().toUpperCase();
-    if (inviter && inviter !== loadDb().user.inviteCode) return fail(422, 'INVALID_INVITE_CODE', '邀请码无效。');
-    const passwordHash = await credentialHash(input.password);
+    if (inviter && inviter !== current.user.inviteCode) return fail(422, 'INVALID_INVITE_CODE', '邀请码无效。');
+    const passwordHash = await credentialHash(password);
     const userId = `user-${crypto.randomUUID()}`;
     const inviteCode = `VIVI-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
     let registered = false;
+    let accountExists = false;
+    let invalidInvite = false;
     const db = mutateDb((draft) => {
-      const activeChallenge = draft.challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === input.code && !item.used);
+      if (draft.user.email.trim().toLocaleLowerCase() === email || draft.user.username.trim().toLocaleLowerCase() === username) {
+        accountExists = true;
+        return;
+      }
+      const activeChallenge = draft.challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === code && !item.used);
       if (!activeChallenge) return;
+      if (inviter && inviter !== draft.user.inviteCode) {
+        invalidInvite = true;
+        return;
+      }
       activeChallenge.used = true;
       draft.user.id = userId;
-      draft.user.username = input.username.trim();
+      draft.user.username = username;
       draft.user.email = email;
       delete draft.user.avatarUrl;
       draft.user.planId = 'free';
@@ -237,6 +254,8 @@ export const handlers = [
       }
       registered = true;
     });
+    if (accountExists) return fail(409, 'ACCOUNT_EXISTS', 'Email or username is already registered');
+    if (invalidInvite) return fail(422, 'INVALID_INVITE_CODE', '邀请码无效。');
     if (!registered) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     setCredentialHash(passwordHash);
     return ok(db.user, '注册成功');

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { api } from '@/src/services/api';
 import type { GenerationInput, RemixInput, Workflow } from '@/src/types/domain';
-import { loadDb, mutateDb, resetDb, settleTask } from './db';
+import { getCredentialHash, loadDb, mutateDb, resetDb, settleTask } from './db';
 import { saveReferenceUpload } from './referenceUploads';
 import { server } from './server';
 
@@ -170,19 +170,52 @@ describe('Mock workflow and account boundaries', () => {
 
   it('binds a valid invitation reward and rejects an unknown invitation', async () => {
     await api.sendCode('invited@example.com', 'register');
-    await expect(api.register({ username: '邀请用户', email: 'invited@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
+    await expect(api.register({ username: 'invite_user', email: 'invited@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
     expect(loadDb().ledger).toContainEqual(expect.objectContaining({ type: 'invite', delta: 100 }));
     expect(loadDb().notifications).toContainEqual(expect.objectContaining({ type: 'credits', title: '邀请奖励到账', content: '100 积分已到账。', href: '/account', read: false }));
 
     resetDb();
     await api.sendCode('unknown@example.com', 'register');
-    await expect(api.register({ username: '未知邀请', email: 'unknown@example.com', password: 'registration-12', code: '123456', inviteCode: 'UNKNOWN-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
+    const beforeUnknownInvite = structuredClone(loadDb());
+    const credentialBeforeUnknownInvite = getCredentialHash();
+    await expect(api.register({ username: 'unknown_user', email: 'unknown@example.com', password: 'registration-12', code: '123456', inviteCode: 'UNKNOWN-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
+    expect(loadDb()).toEqual(beforeUnknownInvite);
+    expect(getCredentialHash()).toBe(credentialBeforeUnknownInvite);
   });
 
   it('keeps a registration code usable when an invalid invite is rejected', async () => {
     await api.sendCode('atomic@example.com', 'register');
-    await expect(api.register({ username: '原子邀请', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'INVALID-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
-    await expect(api.register({ username: '原子邀请', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
+    const beforeInvalidInvite = structuredClone(loadDb());
+    await expect(api.register({ username: 'atomic_user', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'INVALID-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
+    expect(loadDb()).toEqual(beforeInvalidInvite);
+    await expect(api.register({ username: 'atomic_user', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
+  });
+
+  it('rejects an existing account before consuming a challenge or changing any registration state', async () => {
+    mutateDb((draft) => { draft.user.username = 'seed_user'; });
+    await api.sendCode('demo@viviai.local', 'register');
+    const before = structuredClone(loadDb());
+    const credentialBefore = getCredentialHash();
+
+    await expect(api.register({ username: 'seed_user', email: 'demo@viviai.local', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).rejects.toEqual(expect.objectContaining({ code: 'ACCOUNT_EXISTS', status: 409 }));
+
+    expect(loadDb()).toEqual(before);
+    expect(getCredentialHash()).toBe(credentialBefore);
+    expect(loadDb().challenges.find((item) => item.email === 'demo@viviai.local' && item.purpose === 'register')).toMatchObject({ used: false });
+  });
+
+  it('validates registration schema and duplicate usernames before consuming the registration code', async () => {
+    mutateDb((draft) => { draft.user.username = 'seed_user'; });
+    await api.sendCode('new@example.com', 'register');
+    const beforeDuplicate = structuredClone(loadDb());
+    await expect(api.register({ username: 'seed_user', email: 'new@example.com', password: 'registration-12', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'ACCOUNT_EXISTS', status: 409 }));
+    expect(loadDb()).toEqual(beforeDuplicate);
+
+    await api.sendCode('schema@example.com', 'register');
+    const beforeSchema = structuredClone(loadDb());
+    await expect(api.register({ username: 'Invalid Name', email: 'schema@example.com', password: 'registration-12', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT', status: 400 }));
+    expect(loadDb()).toEqual(beforeSchema);
+    await expect(api.register({ username: 'valid_user', email: 'schema@example.com', password: 'registration-12', code: '123456' })).resolves.toMatchObject({ username: 'valid_user' });
   });
 
   it('isolates verification code purposes and consumes each code once', async () => {
@@ -218,9 +251,9 @@ describe('Mock workflow and account boundaries', () => {
       draft.templates[0].favorite = true;
     });
     await api.sendCode('new@example.com', 'register');
-    await api.register({ username: '新用户', email: 'new@example.com', password: 'initial-password-88', code: '123456' });
+    await api.register({ username: 'new_user', email: 'new@example.com', password: 'initial-password-88', code: '123456' });
     const registered = loadDb();
-    expect(registered.user).toMatchObject({ username: '新用户', email: 'new@example.com', planId: 'free', credits: 5 });
+    expect(registered.user).toMatchObject({ username: 'new_user', email: 'new@example.com', planId: 'free', credits: 5 });
     expect(registered.user.id).not.toBe(priorUserId);
     expect(registered.user.avatarUrl).toBeUndefined();
     expect(registered.user.inviteCode).not.toBe('OLD-CODE');
@@ -228,7 +261,7 @@ describe('Mock workflow and account boundaries', () => {
     expect(registered.templates.every((item) => !item.favorite)).toBe(true);
     expect(JSON.parse(window.localStorage.getItem('viviai-mock-db-v1') ?? '{}')).not.toHaveProperty('credentialHash');
     await api.logout();
-    await expect(api.login({ account: 'new@example.com', password: 'initial-password-88' })).resolves.toMatchObject({ username: '新用户' });
+    await expect(api.login({ account: 'new@example.com', password: 'initial-password-88' })).resolves.toMatchObject({ username: 'new_user' });
 
     await api.sendCode('changed@example.com', 'change-email');
     await api.changeEmail({ email: 'changed@example.com', code: '123456' });

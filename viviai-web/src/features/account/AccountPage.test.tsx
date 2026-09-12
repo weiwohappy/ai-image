@@ -191,6 +191,58 @@ describe('account page', () => {
     expect(redeemCode).toHaveBeenCalledTimes(1);
   });
 
+  it('locks the redemption input while an attempt is pending so the displayed code is the submitted code', async () => {
+    const initial = { id: 'user-demo', username: 'Mia Chen', email: 'demo@viviai.local', planId: 'plan-pro-month' as const, planName: '专业版月卡', credits: 1120, frozenCredits: 0, concurrency: 8, inviteCode: 'VIVI-MIA88' };
+    let resolveAttempt: (user: typeof initial) => void = () => undefined;
+    const pendingAttempt = new Promise<typeof initial>((resolve) => { resolveAttempt = resolve; });
+    const redeemCode = vi.spyOn(api, 'redeemCode').mockReturnValueOnce(pendingAttempt);
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
+    const input = await screen.findByLabelText('兑换码');
+    const submit = screen.getByRole('button', { name: '兑换积分' });
+    await user.type(input, 'A');
+    await user.click(submit);
+
+    await waitFor(() => expect(input).toBeDisabled());
+    expect(submit).toBeDisabled();
+    await user.type(input, 'B');
+    await user.click(submit);
+    expect(input).toHaveValue('A');
+    expect(redeemCode).toHaveBeenCalledTimes(1);
+    expect(redeemCode).toHaveBeenCalledWith('A', expect.any(String));
+
+    resolveAttempt({ ...initial, credits: 1220 });
+    expect(await screen.findByText('兑换成功，100 积分已到账。')).toBeVisible();
+  });
+
+  it('locks an edited code while refreshing its replacement baseline after an uncertain attempt', async () => {
+    const initial = { id: 'user-demo', username: 'Mia Chen', email: 'demo@viviai.local', planId: 'plan-pro-month' as const, planName: '专业版月卡', credits: 1120, frozenCredits: 0, concurrency: 8, inviteCode: 'VIVI-MIA88' };
+    let resolveBaseline: (user: typeof initial) => void = () => undefined;
+    const pendingBaseline = new Promise<typeof initial>((resolve) => { resolveBaseline = resolve; });
+    vi.spyOn(api, 'getMe').mockImplementationOnce(async () => initial).mockReturnValueOnce(pendingBaseline);
+    const redeemCode = vi.spyOn(api, 'redeemCode').mockRejectedValueOnce(new TypeError('response lost')).mockResolvedValueOnce({ ...initial, credits: 1320 });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
+    const input = await screen.findByLabelText('兑换码');
+    await user.type(input, 'A');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+    await screen.findByText('response lost');
+    await user.clear(input);
+    await user.type(input, 'B');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+
+    await waitFor(() => expect(input).toBeDisabled());
+    await user.type(input, 'C');
+    expect(input).toHaveValue('B');
+    expect(redeemCode).toHaveBeenCalledTimes(1);
+    resolveBaseline({ ...initial, credits: 1220 });
+
+    await waitFor(() => expect(redeemCode).toHaveBeenCalledTimes(2));
+    expect(redeemCode).toHaveBeenLastCalledWith('B', expect.any(String));
+  });
+
   it('refetches the unread count after a successful redemption', async () => {
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
