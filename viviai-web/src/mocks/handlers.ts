@@ -185,13 +185,18 @@ export const handlers = [
       return fail(400, 'INVALID_INPUT', '请完整填写有效的注册信息。');
     }
     const email = input.email.trim().toLocaleLowerCase();
-    if (!consumeChallenge(email, 'register', input.code)) return fail(400, 'INVALID_INPUT', '验证码无效或已使用。');
+    const challenge = loadDb().challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === input.code && !item.used);
+    if (!challenge) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     const inviter = input.inviteCode?.trim().toUpperCase();
     if (inviter && inviter !== loadDb().user.inviteCode) return fail(422, 'INVALID_INVITE_CODE', '邀请码无效。');
     const passwordHash = await credentialHash(input.password);
     const userId = `user-${crypto.randomUUID()}`;
     const inviteCode = `VIVI-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+    let registered = false;
     const db = mutateDb((draft) => {
+      const activeChallenge = draft.challenges.find((item) => item.email === email && item.purpose === 'register' && item.code === input.code && !item.used);
+      if (!activeChallenge) return;
+      activeChallenge.used = true;
       draft.user.id = userId;
       draft.user.username = input.username.trim();
       draft.user.email = email;
@@ -226,8 +231,13 @@ export const handlers = [
         balance: 5,
         createdAt: new Date().toISOString(),
       }];
-      if (inviter) draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'invite', description: '邀请码奖励', delta: 100, balance: 105, createdAt: new Date().toISOString() });
+      if (inviter) {
+        draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'invite', description: '邀请码奖励', delta: 100, balance: 105, createdAt: new Date().toISOString() });
+        draft.notifications.unshift({ id: `notice-${crypto.randomUUID()}`, type: 'credits', title: '邀请奖励到账', content: '100 积分已到账。', href: '/account', read: false, createdAt: new Date().toISOString() });
+      }
+      registered = true;
     });
+    if (!registered) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     setCredentialHash(passwordHash);
     return ok(db.user, '注册成功');
   }),
@@ -249,8 +259,8 @@ export const handlers = [
     if (!input.email.includes('@') || !/^\d{6}$/.test(input.code) || input.password.length < 12) {
       return fail(400, 'INVALID_INPUT', '邮箱、验证码或密码格式不正确。');
     }
-    if (input.email.trim().toLocaleLowerCase() !== loadDb().user.email.toLocaleLowerCase()) return fail(404, 'INVALID_INPUT', '没有找到该邮箱对应的账户。');
-    if (!consumeChallenge(input.email, 'reset-password', input.code)) return fail(400, 'INVALID_INPUT', '验证码无效或已使用。');
+    if (input.email.trim().toLocaleLowerCase() !== loadDb().user.email.toLocaleLowerCase()) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
+    if (!consumeChallenge(input.email, 'reset-password', input.code)) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     const passwordHash = await credentialHash(input.password);
     setCredentialHash(passwordHash);
     return ok({ success: true as const }, '密码已重置');
@@ -660,7 +670,8 @@ export const handlers = [
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { email: string; code: string };
-    if (!input.email.includes('@') || !consumeChallenge(input.email, 'change-email', input.code)) return fail(400, 'INVALID_INPUT', '邮箱或验证码不正确。');
+    if (!input.email.includes('@')) return fail(400, 'INVALID_INPUT', '邮箱格式不正确。');
+    if (!consumeChallenge(input.email, 'change-email', input.code)) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     const db = mutateDb((draft) => { draft.user.email = input.email.trim(); });
     return ok(db.user, '邮箱已更新');
   }),
@@ -668,7 +679,8 @@ export const handlers = [
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const input = (await request.json()) as { code: string; password: string };
-    if (input.password.length < 12 || !consumeChallenge(loadDb().user.email, 'change-password', input.code)) return fail(400, 'INVALID_INPUT', '验证码错误或密码少于 12 位。');
+    if (input.password.length < 12) return fail(400, 'INVALID_INPUT', '密码少于 12 位。');
+    if (!consumeChallenge(loadDb().user.email, 'change-password', input.code)) return fail(400, 'INVALID_CODE', 'Verification code is invalid or expired');
     const passwordHash = await credentialHash(input.password);
     setCredentialHash(passwordHash);
     return ok(loadDb().user, '密码已更新');
@@ -677,7 +689,7 @@ export const handlers = [
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const idempotencyKey = request.headers.get('Idempotency-Key');
-    if (!idempotencyKey || !/^[A-Za-z0-9-]{8,128}$/.test(idempotencyKey)) return fail(400, 'INVALID_INPUT', '缺少有效的幂等键。');
+    if (!idempotencyKey || !/^[A-Za-z0-9_-]{16,100}$/.test(idempotencyKey)) return fail(400, 'INVALID_INPUT', '缺少有效的幂等键。');
     const { code } = (await request.json()) as { code: string };
     const normalized = code.trim().toUpperCase();
     const prior = loadDb().redemptionAttempts.find((item) => item.key === idempotencyKey);
@@ -688,6 +700,7 @@ export const handlers = [
       draft.redeemedCodes.push(normalized);
       draft.user.credits += 100;
       draft.ledger.unshift({ id: `ledger-${crypto.randomUUID()}`, type: 'redeem', description: '兑换码奖励', delta: 100, balance: draft.user.credits, createdAt: new Date().toISOString() });
+      draft.notifications.unshift({ id: `notice-${crypto.randomUUID()}`, type: 'credits', title: '兑换积分到账', content: '100 积分已到账。', href: '/account', read: false, createdAt: new Date().toISOString() });
       draft.redemptionAttempts.push({ key: idempotencyKey, code: normalized, user: structuredClone(draft.user) });
     });
     return ok(db.user, '兑换成功');

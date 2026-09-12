@@ -172,17 +172,35 @@ describe('Mock workflow and account boundaries', () => {
     await api.sendCode('invited@example.com', 'register');
     await expect(api.register({ username: '邀请用户', email: 'invited@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
     expect(loadDb().ledger).toContainEqual(expect.objectContaining({ type: 'invite', delta: 100 }));
+    expect(loadDb().notifications).toContainEqual(expect.objectContaining({ type: 'credits', title: '邀请奖励到账', content: '100 积分已到账。', href: '/account', read: false }));
 
     resetDb();
     await api.sendCode('unknown@example.com', 'register');
     await expect(api.register({ username: '未知邀请', email: 'unknown@example.com', password: 'registration-12', code: '123456', inviteCode: 'UNKNOWN-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
   });
 
+  it('keeps a registration code usable when an invalid invite is rejected', async () => {
+    await api.sendCode('atomic@example.com', 'register');
+    await expect(api.register({ username: '原子邀请', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'INVALID-CODE' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INVITE_CODE', status: 422 }));
+    await expect(api.register({ username: '原子邀请', email: 'atomic@example.com', password: 'registration-12', code: '123456', inviteCode: 'VIVI-MIA88' })).resolves.toMatchObject({ credits: 105 });
+  });
+
   it('isolates verification code purposes and consumes each code once', async () => {
     await api.sendCode('next@example.com', 'change-email');
-    await expect(api.changePassword({ code: '123456', password: 'password-long-12' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.changePassword({ code: '123456', password: 'password-long-12' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CODE', status: 400 }));
     await expect(api.changeEmail({ email: 'next@example.com', code: '123456' })).resolves.toMatchObject({ email: 'next@example.com' });
-    await expect(api.changeEmail({ email: 'again@example.com', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT' }));
+    await expect(api.changeEmail({ email: 'again@example.com', code: '123456' })).rejects.toEqual(expect.objectContaining({ code: 'INVALID_CODE', status: 400 }));
+  });
+
+  it('enforces backend idempotency key bounds and replays its notification exactly once', async () => {
+    await expect(api.redeemCode('VIVIAI2026', '123456789012345')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT', status: 400 }));
+    const key = '0123456789abcde_';
+    await expect(api.redeemCode('VIVIAI2026', key)).resolves.toMatchObject({ credits: 1220 });
+    const afterFirst = await api.listNotifications();
+    expect(afterFirst.filter((item) => item.title === '兑换积分到账')).toEqual([expect.objectContaining({ type: 'credits', content: '100 积分已到账。', href: '/account', read: false })]);
+    await expect(api.redeemCode('VIVIAI2026', key)).resolves.toMatchObject({ credits: 1220 });
+    expect((await api.listNotifications()).filter((item) => item.title === '兑换积分到账')).toHaveLength(1);
+    await expect(api.redeemCode('VIVIAI2026', 'a'.repeat(101))).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT', status: 400 }));
   });
 
   it('requires a 12-character password without consuming a verification code first', async () => {

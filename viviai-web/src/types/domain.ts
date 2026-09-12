@@ -321,6 +321,7 @@ export interface InviteRelation {
 export type ApiErrorCode =
   | 'AUTH_REQUIRED'
   | 'INVALID_CREDENTIALS'
+  | 'INVALID_CODE'
   | 'INVALID_INPUT'
   | 'USERNAME_TAKEN'
   | 'EMAIL_TAKEN'

@@ -52,4 +52,24 @@ Commit: `a1452e8 feat(web): connect account and engagement APIs` (review fix rou
 
 Round 1 self-review: no auth values are logged or rendered. Relative and absolute avatar source handling is covered; retry state does not inherit a post-refresh balance. No payment, admin, backend, database, or secret changes were made.
 
+## Review fix round 2/5
+
+- An edited or replacement redemption after an uncertain outcome now blocks submission while it fetches an authoritative account balance. It uses that fresh balance as the new attempt baseline; a refresh failure leaves the replacement unsubmitted and reports a retryable error. Retrying the unchanged uncertain attempt still uses its original key and baseline.
+- Mock registration validates invite eligibility before consuming the registration challenge, then consumes the code, user state, rewards, and notifications together. It now exposes backend `INVALID_CODE` responses for invalid/used purpose-specific challenges.
+- Mock redemption now uses the backend idempotency-key expression `[A-Za-z0-9_-]{16,100}`, emits exactly one safe unread credits notification for a successful claim, and replays neither credits nor notification.
+
+### Round 2 RED / GREEN
+
+- RED: 6 focused failures proved the stale replacement baseline, refresh-failure submission, invitation code consumption, challenge error code, idempotency-key bounds, and redemption notification gaps.
+- GREEN: `npm test -- src/features/account/AccountPage.test.tsx src/mocks/handlers.test.ts --reporter=dot` passed 2 files / 29 tests. The account regression verifies `A → /me refresh → B` ordering and a `+100` result from `1120 → 1220 → 1320`; a failed refresh prevents B entirely.
+
+### Round 2 verification
+
+- Full `npm test -- --reporter=dot`: passed 20 files / 74 tests.
+- `npm run lint`: passed.
+- `npm run build`: passed (existing `punycode` deprecation and vinext dynamic-route notices only).
+- `git diff --check`: passed.
+
+Round 2 self-review: replacement attempts cannot race the baseline refresh; no stale cached balance is used after abandoning an uncertain attempt. Mock error/status and idempotency behavior were read directly against the server implementations. No admin, payment, backend, database, or secret files changed.
+
 Concerns: none. No payment or admin files changed, and no database or secrets were accessed.

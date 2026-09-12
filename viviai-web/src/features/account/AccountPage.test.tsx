@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,11 @@ import { mutateDb, resetDb } from '@/src/mocks/db';
 import { server } from '@/src/mocks/server';
 import { api, ApiError } from '@/src/services/api';
 import { AccountPage } from './AccountPage';
+
+function NotificationCount() {
+  const notices = useQuery({ queryKey: ['notifications'], queryFn: api.listNotifications });
+  return <span>未读 {notices.data?.filter((item) => !item.read).length ?? 0}</span>;
+}
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 beforeEach(() => resetDb());
@@ -142,5 +147,58 @@ describe('account page', () => {
     await waitFor(() => expect(redeemCode).toHaveBeenCalledTimes(3));
     expect(redeemCode.mock.calls[0][1]).not.toBe(redeemCode.mock.calls[1][1]);
     expect(redeemCode.mock.calls[1][1]).not.toBe(redeemCode.mock.calls[2][1]);
+  });
+
+  it('refreshes the baseline before submitting an edited code after an uncertain committed redemption', async () => {
+    const initial = { id: 'user-demo', username: 'Mia Chen', email: 'demo@viviai.local', planId: 'plan-pro-month' as const, planName: '专业版月卡', credits: 1120, frozenCredits: 0, concurrency: 8, inviteCode: 'VIVI-MIA88' };
+    const afterFirst = { ...initial, credits: 1220 };
+    const afterSecond = { ...initial, credits: 1320 };
+    const order: string[] = [];
+    vi.spyOn(api, 'getMe').mockImplementationOnce(async () => initial).mockImplementationOnce(async () => { order.push('refresh'); return afterFirst; }).mockResolvedValue(afterSecond);
+    const redeemCode = vi.spyOn(api, 'redeemCode').mockImplementationOnce(async () => { order.push('A'); throw new TypeError('response lost'); }).mockImplementationOnce(async () => { order.push('B'); return afterSecond; });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
+    const input = await screen.findByLabelText('兑换码');
+    await user.type(input, 'A');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+    await screen.findByText('response lost');
+    await user.clear(input);
+    await user.type(input, 'B');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+
+    expect(await screen.findByText('兑换成功，100 积分已到账。')).toBeVisible();
+    expect(order.slice(0, 3)).toEqual(['A', 'refresh', 'B']);
+    expect(redeemCode.mock.calls[0][1]).not.toBe(redeemCode.mock.calls[1][1]);
+  });
+
+  it('does not submit an edited code when the authoritative baseline refresh fails', async () => {
+    const initial = { id: 'user-demo', username: 'Mia Chen', email: 'demo@viviai.local', planId: 'plan-pro-month' as const, planName: '专业版月卡', credits: 1120, frozenCredits: 0, concurrency: 8, inviteCode: 'VIVI-MIA88' };
+    vi.spyOn(api, 'getMe').mockImplementationOnce(async () => initial).mockRejectedValueOnce(new Error('refresh unavailable'));
+    const redeemCode = vi.spyOn(api, 'redeemCode').mockRejectedValueOnce(new TypeError('response lost')).mockResolvedValue({ ...initial, credits: 1320 });
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
+    const input = await screen.findByLabelText('兑换码');
+    await user.type(input, 'A');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+    await screen.findByText('response lost');
+    await user.clear(input);
+    await user.type(input, 'B');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+
+    expect(await screen.findByText('无法刷新积分余额，请重试。')).toBeVisible();
+    expect(redeemCode).toHaveBeenCalledTimes(1);
+  });
+
+  it('refetches the unread count after a successful redemption', async () => {
+    const user = userEvent.setup();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /><NotificationCount /></MemoryRouter></QueryClientProvider>);
+    expect(await screen.findByText('未读 1')).toBeVisible();
+    await user.type(screen.getByLabelText('兑换码'), 'VIVIAI2026');
+    await user.click(screen.getByRole('button', { name: '兑换积分' }));
+
+    expect(await screen.findByText('未读 2')).toBeVisible();
   });
 });
