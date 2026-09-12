@@ -38,6 +38,8 @@ model User {
   invitedReferrals Referral[]        @relation("ReferralInviter")
   receivedReferral Referral?         @relation("ReferralInvitee")
   redemptionClaims RedemptionClaim[]
+  inspirationLikes InspirationLike[]
+  remixTemplateFavorites RemixTemplateFavorite[]
 
   @@map("users")
 }
@@ -432,6 +434,169 @@ model ProviderQuota {
   unknown  Int    @default(0)
 }
 
+model ContentMedia {
+  id                      String           @id @default(uuid()) @db.Uuid
+  externalId              String           @unique @map("external_id")
+  objectKey               String           @unique @map("object_key")
+  sha256                  String
+  contentType             String           @map("content_type")
+  width                   Int
+  height                  Int
+  byteSize                Int              @map("byte_size")
+  status                  String           @default("draft")
+  version                 Int              @default(1)
+  publishedAt             DateTime?        @map("published_at") @db.Timestamptz(6)
+  createdByAdminId        String?          @map("created_by_admin_id") @db.Uuid
+  updatedByAdminId        String?          @map("updated_by_admin_id") @db.Uuid
+  createdAt               DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdByAdmin          AdminAccount?    @relation("ContentMediaCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedByAdmin          AdminAccount?    @relation("ContentMediaUpdatedByAdmin", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+  inspirationCovers       Inspiration[]    @relation("InspirationCoverMedia")
+  inspirationCaseImages   Inspiration[]    @relation("InspirationCaseMedia")
+  remixTemplateCovers     RemixTemplate[]  @relation("RemixTemplateCoverMedia")
+  remixTemplateReferences RemixTemplate[]  @relation("RemixTemplateReferenceMedia")
+  toolCovers              ToolDefinition[] @relation("ToolDefinitionCoverMedia")
+  toolIcons               ToolDefinition[] @relation("ToolDefinitionIconMedia")
+
+  @@index([status, createdAt, id])
+  @@map("content_media")
+}
+
+model Inspiration {
+  id                  String            @id @default(uuid()) @db.Uuid
+  externalId          String            @unique @map("external_id")
+  title               String
+  description         String
+  category            String
+  creatorName         String?           @map("creator_name")
+  sourceType          String?           @map("source_type")
+  sourceName          String?           @map("source_name")
+  sourceUrl           String?           @map("source_url")
+  tags                String[]          @default([])
+  defaultPrompt       String            @map("default_prompt")
+  defaultModelId      String            @map("default_model_id")
+  defaultOutputSpecId String            @map("default_output_spec_id")
+  coverMediaId        String?           @map("cover_media_id") @db.Uuid
+  caseMediaId         String?           @map("case_media_id") @db.Uuid
+  status              String            @default("draft")
+  version             Int               @default(1)
+  sortOrder           Int               @default(0) @map("sort_order")
+  publishedAt         DateTime?         @map("published_at") @db.Timestamptz(6)
+  createdByAdminId    String?           @map("created_by_admin_id") @db.Uuid
+  updatedByAdminId    String?           @map("updated_by_admin_id") @db.Uuid
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  coverMedia          ContentMedia?     @relation("InspirationCoverMedia", fields: [coverMediaId], references: [id], onDelete: Restrict)
+  caseMedia           ContentMedia?     @relation("InspirationCaseMedia", fields: [caseMediaId], references: [id], onDelete: Restrict)
+  createdByAdmin      AdminAccount?     @relation("InspirationCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedByAdmin      AdminAccount?     @relation("InspirationUpdatedByAdmin", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+  likes               InspirationLike[]
+
+  @@index([status, sortOrder, id])
+  @@map("inspirations")
+}
+
+model InspirationLike {
+  userId        String      @map("user_id") @db.Uuid
+  inspirationId String      @map("inspiration_id") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  user          User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  inspiration   Inspiration @relation(fields: [inspirationId], references: [id], onDelete: Restrict)
+
+  @@id([userId, inspirationId])
+  @@index([inspirationId, createdAt])
+  @@map("inspiration_likes")
+}
+
+model RemixTemplate {
+  id                  String                  @id @default(uuid()) @db.Uuid
+  externalId          String                  @unique @map("external_id")
+  title               String
+  description         String
+  category            String
+  platform            String
+  industry            String
+  style               String
+  creatorName         String?                 @map("creator_name")
+  sourceType          String?                 @map("source_type")
+  sourceName          String?                 @map("source_name")
+  sourceUrl           String?                 @map("source_url")
+  tags                String[]                @default([])
+  visualAnalysis      Json                    @map("visual_analysis")
+  defaultPrompt       String                  @map("default_prompt")
+  defaultParameters   Json                    @map("default_parameters")
+  defaultModelId      String                  @map("default_model_id")
+  defaultOutputSpecId String                  @map("default_output_spec_id")
+  coverMediaId        String?                 @map("cover_media_id") @db.Uuid
+  referenceMediaId    String?                 @map("reference_media_id") @db.Uuid
+  status              String                  @default("draft")
+  version             Int                     @default(1)
+  sortOrder           Int                     @default(0) @map("sort_order")
+  publishedAt         DateTime?               @map("published_at") @db.Timestamptz(6)
+  createdByAdminId    String?                 @map("created_by_admin_id") @db.Uuid
+  updatedByAdminId    String?                 @map("updated_by_admin_id") @db.Uuid
+  createdAt           DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  coverMedia          ContentMedia?           @relation("RemixTemplateCoverMedia", fields: [coverMediaId], references: [id], onDelete: Restrict)
+  referenceMedia      ContentMedia?           @relation("RemixTemplateReferenceMedia", fields: [referenceMediaId], references: [id], onDelete: Restrict)
+  createdByAdmin      AdminAccount?           @relation("RemixTemplateCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedByAdmin      AdminAccount?           @relation("RemixTemplateUpdatedByAdmin", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+  favorites           RemixTemplateFavorite[]
+
+  @@index([status, sortOrder, id])
+  @@map("remix_templates")
+}
+
+model RemixTemplateFavorite {
+  userId          String        @map("user_id") @db.Uuid
+  remixTemplateId String        @map("remix_template_id") @db.Uuid
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  user            User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  remixTemplate   RemixTemplate @relation(fields: [remixTemplateId], references: [id], onDelete: Restrict)
+
+  @@id([userId, remixTemplateId])
+  @@index([remixTemplateId, createdAt])
+  @@map("remix_template_favorites")
+}
+
+model ToolDefinition {
+  id                  String        @id @default(uuid()) @db.Uuid
+  externalId          String        @unique @map("external_id")
+  name                String
+  description         String
+  category            String
+  creatorName         String?       @map("creator_name")
+  sourceType          String?       @map("source_type")
+  sourceName          String?       @map("source_name")
+  sourceUrl           String?       @map("source_url")
+  fieldSchema         Json          @map("field_schema")
+  promptTemplate      String        @map("prompt_template")
+  defaults            Json
+  maxAssets           Int           @map("max_assets")
+  maxOutputCount      Int           @default(1) @map("max_output_count")
+  assetLabel          String        @map("asset_label")
+  defaultModelId      String        @map("default_model_id")
+  defaultOutputSpecId String        @map("default_output_spec_id")
+  coverMediaId        String?       @map("cover_media_id") @db.Uuid
+  iconMediaId         String?       @map("icon_media_id") @db.Uuid
+  status              String        @default("draft")
+  version             Int           @default(1)
+  sortOrder           Int           @default(0) @map("sort_order")
+  publishedAt         DateTime?     @map("published_at") @db.Timestamptz(6)
+  createdByAdminId    String?       @map("created_by_admin_id") @db.Uuid
+  updatedByAdminId    String?       @map("updated_by_admin_id") @db.Uuid
+  createdAt           DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  coverMedia          ContentMedia? @relation("ToolDefinitionCoverMedia", fields: [coverMediaId], references: [id], onDelete: Restrict)
+  iconMedia           ContentMedia? @relation("ToolDefinitionIconMedia", fields: [iconMediaId], references: [id], onDelete: Restrict)
+  createdByAdmin      AdminAccount? @relation("ToolDefinitionCreatedByAdmin", fields: [createdByAdminId], references: [id], onDelete: Restrict)
+  updatedByAdmin      AdminAccount? @relation("ToolDefinitionUpdatedByAdmin", fields: [updatedByAdminId], references: [id], onDelete: Restrict)
+
+  @@index([status, sortOrder, id])
+  @@map("tool_definitions")
+}
+
 model AdminAccount {
   id                 String               @id @default(uuid()) @db.Uuid
   email              String               @unique
@@ -449,6 +614,14 @@ model AdminAccount {
   lastTotpCounter    BigInt?
   authVersion        Int                  @default(1)
   createdAt          DateTime             @default(now()) @db.Timestamptz(6)
+  contentMediaCreated ContentMedia[]      @relation("ContentMediaCreatedByAdmin")
+  contentMediaUpdated ContentMedia[]      @relation("ContentMediaUpdatedByAdmin")
+  inspirationsCreated Inspiration[]       @relation("InspirationCreatedByAdmin")
+  inspirationsUpdated Inspiration[]       @relation("InspirationUpdatedByAdmin")
+  remixTemplatesCreated RemixTemplate[]   @relation("RemixTemplateCreatedByAdmin")
+  remixTemplatesUpdated RemixTemplate[]   @relation("RemixTemplateUpdatedByAdmin")
+  toolDefinitionsCreated ToolDefinition[] @relation("ToolDefinitionCreatedByAdmin")
+  toolDefinitionsUpdated ToolDefinition[] @relation("ToolDefinitionUpdatedByAdmin")
 }
 
 model ModelCreditPrice {
