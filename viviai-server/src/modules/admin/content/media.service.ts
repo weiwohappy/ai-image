@@ -359,6 +359,16 @@ export class AdminContentMediaService {
           },
         };
       },
+      input.status === 'published'
+        ? undefined
+        : async (tx) => {
+            await lockContentResources(tx, [`media:${id}`]);
+            const row = await tx.contentMedia.findUnique({ where: { id } });
+            if (!row) throw failure(404, 'CONTENT_MEDIA_NOT_FOUND', '内容媒体不存在');
+            return row.status === 'published'
+              ? `content.media.${input.status === 'offline' ? 'offline' : 'archive'}`
+              : null;
+          },
     );
   }
 

@@ -257,8 +257,6 @@ export class AdminContentService {
             },
           };
         }
-        if (before.status === 'published')
-          await this.commands.enforcePublishRateLimit(current, `content.${family}.update`);
         if (before.version >= 2_147_483_647)
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         const proposed = { ...before, ...data };
@@ -279,6 +277,16 @@ export class AdminContentService {
             afterVersion: row.version,
           },
         };
+      },
+      async (tx, current) => {
+        const client = this.client(tx, kind);
+        const mediaKeys = await this.mediaResourceKeys(tx, input);
+        await lockContentResources(tx, [`${kind}:${id}`, ...mediaKeys]);
+        const row = await client.findUnique({ where: { id } });
+        if (!row) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        if (row.status !== 'published') return null;
+        requirePermission(current.actor, `content.${family}.publish`);
+        return `content.${family}.update`;
       },
     );
   }
@@ -313,11 +321,6 @@ export class AdminContentService {
           throw failure(422, 'CONTENT_INVALID_TRANSITION', '无效内容状态转换');
         if (before.version >= 2_147_483_647)
           throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
-        if (before.status === 'published' && input.status !== 'published')
-          await this.commands.enforcePublishRateLimit(
-            current,
-            `content.${family}.${input.status === 'offline' ? 'offline' : 'archive'}`,
-          );
         if (input.status === 'published') await this.publishValidator.validate(tx, kind, before);
         const row = await client.update({
           where: { id },
@@ -343,6 +346,20 @@ export class AdminContentService {
           },
         };
       },
+      input.status === 'published'
+        ? undefined
+        : async (tx) => {
+            const client = this.client(tx, kind);
+            const observed = await client.findUnique({ where: { id } });
+            if (!observed) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+            const mediaKeys = this.rowMediaIds(kind, observed).map((mediaId) => `media:${mediaId}`);
+            await lockContentResources(tx, [`${kind}:${id}`, ...mediaKeys]);
+            const row = await client.findUnique({ where: { id } });
+            if (!row) throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+            return row.status === 'published'
+              ? `content.${family}.${input.status === 'offline' ? 'offline' : 'archive'}`
+              : null;
+          },
     );
   }
 
@@ -384,13 +401,6 @@ export class AdminContentService {
           if (Number(row.version) >= 2_147_483_647)
             throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容版本已达上限');
         }
-        if (
-          input.items.some((item) => {
-            const row = before.get(item.id)!;
-            return row.status === 'published' && row.sortOrder !== item.sortOrder;
-          })
-        )
-          await this.commands.enforcePublishRateLimit(current, `content.${family}.reorder`);
         const results = [];
         for (const item of input.items) {
           const row = before.get(item.id)!;
@@ -416,6 +426,27 @@ export class AdminContentService {
             itemCount: results.length,
           },
         };
+      },
+      async (tx, current) => {
+        await lockContentResources(
+          tx,
+          input.items.map((item) => `${kind}:${item.id}`),
+        );
+        const rows = await this.client(tx, kind).findMany({
+          where: { id: { in: input.items.map((item) => item.id) } },
+        });
+        if (rows.length !== input.items.length)
+          throw failure(404, 'CONTENT_NOT_FOUND', '内容不存在');
+        const before = new Map<string, RecordValue>(
+          rows.map((row: RecordValue) => [String(row.id), row]),
+        );
+        const impactsPublic = input.items.some((item) => {
+          const row = before.get(item.id)!;
+          return row.status === 'published' && row.sortOrder !== item.sortOrder;
+        });
+        if (!impactsPublic) return null;
+        requirePermission(current.actor, `content.${family}.publish`);
+        return `content.${family}.reorder`;
       },
     );
   }

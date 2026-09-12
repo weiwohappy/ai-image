@@ -1220,6 +1220,201 @@ describe('admin operational content commands', () => {
     expect(reorderStatuses).toEqual([201, 201, 201, 201, 201, 429]);
   });
 
+  it('durably rate-limits stale public update, reorder, offline and archive attempts', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const body = inspiration(`stale-dynamic-${randomUUID().slice(0, 8)}`, media.externalId);
+    const created = await call('post', operator.cookie, '/inspirations', body);
+    const published = await call(
+      'post',
+      operator.cookie,
+      `/inspirations/${created.body.data.id}/transition`,
+      { version: 1, reason, status: 'published' },
+    );
+    expect(published.status).toBe(201);
+
+    const attempts = [
+      () =>
+        call('patch', operator.cookie, `/inspirations/${created.body.data.id}`, {
+          ...body,
+          title: 'Stale published update',
+          status: 'published',
+          version: 1,
+        }),
+      () =>
+        call('post', operator.cookie, '/inspirations/reorder', {
+          reason,
+          items: [{ id: created.body.data.id, version: 1, sortOrder: 91 }],
+        }),
+      () =>
+        call('post', operator.cookie, `/inspirations/${created.body.data.id}/transition`, {
+          version: 1,
+          reason,
+          status: 'offline',
+        }),
+      () =>
+        call('post', operator.cookie, `/inspirations/${created.body.data.id}/archive`, {
+          version: 1,
+          reason,
+        }),
+    ];
+    for (const attempt of attempts) {
+      await db.database.client.authRateBucket.deleteMany({
+        where: { key: { startsWith: 'admin-content-publish:' } },
+      });
+      const statuses: number[] = [];
+      for (let index = 0; index < 6; index++) statuses.push((await attempt()).status);
+      expect(statuses).toEqual([409, 409, 409, 409, 409, 429]);
+    }
+    expect(
+      await db.database.client.inspiration.findUniqueOrThrow({
+        where: { id: created.body.data.id },
+      }),
+    ).toMatchObject({ status: 'published', version: 2, sortOrder: body.sortOrder });
+  });
+
+  it('does not starve the ten-connection pool under concurrent public updates', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const body = inspiration(`pool-dynamic-${randomUUID().slice(0, 8)}`, media.externalId);
+    const created = await call('post', operator.cookie, '/inspirations', body);
+    await call('post', operator.cookie, `/inspirations/${created.body.data.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const startedAt = Date.now();
+    const responses = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        call(
+          'patch',
+          operator.cookie,
+          `/inspirations/${created.body.data.id}`,
+          {
+            ...body,
+            title: `Concurrent published update ${index}`,
+            status: 'published',
+            version: 2,
+          },
+          randomUUID(),
+        ),
+      ),
+    );
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 409, 409, 409, 409, 429, 429, 429, 429, 429,
+    ]);
+    expect(responses.every((response) => response.body.code !== 'INTERNAL_ERROR')).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  }, 30_000);
+
+  it('charges after a draft becomes published between preflight and final execution', async () => {
+    await db.database.client.authRateBucket.deleteMany({
+      where: { key: { startsWith: 'admin-content-publish:' } },
+    });
+    const media = (await upload()).body.data;
+    await call('post', operator.cookie, `/media/${media.id}/transition`, {
+      version: 1,
+      reason,
+      status: 'published',
+    });
+    await db.database.client.modelCreditPrice.upsert({
+      where: { modelId_resolution: { modelId, resolution: '1K' } },
+      create: { modelId, resolution: '1K', unitCredits: 30, enabled: true },
+      update: { unitCredits: 30, enabled: true },
+    });
+    const body = inspiration(`preflight-race-${randomUUID().slice(0, 8)}`, media.externalId);
+    const created = await call('post', operator.cookie, '/inspirations', body);
+    const resourceBlocker = new pg.Client({ connectionString: db.url });
+    const actorBlocker = new pg.Client({ connectionString: db.url });
+    await resourceBlocker.connect();
+    await actorBlocker.connect();
+    await resourceBlocker.query('BEGIN');
+    await actorBlocker.query('BEGIN');
+    await resourceBlocker.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+      `content:resource:inspirations:${created.body.data.id}`,
+    ]);
+    let settled = false;
+    const pending = call(
+      'patch',
+      operator.cookie,
+      `/inspirations/${created.body.data.id}`,
+      {
+        ...body,
+        title: 'Published between phases',
+        status: 'published',
+        version: 1,
+      },
+      randomUUID(),
+    ).then((response) => {
+      settled = true;
+      return response;
+    });
+    try {
+      expect(await waitForExactAdvisoryWaiters(resourceBlocker, 1)).toBe(true);
+      const actorAcquired = actorBlocker.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [`admin:${operator.account.id}`],
+      );
+      await resourceBlocker.query('COMMIT');
+      await actorAcquired;
+      expect(settled).toBe(false);
+      await db.database.client.inspiration.update({
+        where: { id: created.body.data.id },
+        data: { status: 'published', publishedAt: new Date() },
+      });
+      await actorBlocker.query('COMMIT');
+      const response = await pending;
+      expect(response.status).toBe(200);
+      expect(response.body.data).toMatchObject({
+        title: 'Published between phases',
+        status: 'published',
+        version: 2,
+      });
+      expect(
+        await db.database.client.authRateBucket.findFirstOrThrow({
+          where: {
+            key: {
+              startsWith: `admin-content-publish:${operator.account.id}:content.inspirations.update`,
+            },
+          },
+        }),
+      ).toMatchObject({ count: 1 });
+    } finally {
+      await resourceBlocker.query('ROLLBACK').catch(() => undefined);
+      await actorBlocker.query('ROLLBACK').catch(() => undefined);
+      await resourceBlocker.end();
+      await actorBlocker.end();
+      await Promise.allSettled([pending]);
+    }
+  }, 30_000);
+
   it('returns safe input errors for every malformed mutation resource id', async () => {
     const body = inspiration(`bad-id-${randomUUID().slice(0, 8)}`, 'content-media-unused');
     const cases = [

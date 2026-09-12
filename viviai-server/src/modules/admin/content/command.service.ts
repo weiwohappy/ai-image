@@ -17,6 +17,17 @@ export interface ContentCommandResult {
   [key: string]: unknown;
 }
 
+export type ContentPublicImpactPreflight = (
+  tx: DbTransaction,
+  current: AdminContext,
+) => Promise<string | null>;
+
+class PublicImpactChangedSignal extends Error {
+  constructor(readonly action: string) {
+    super('Public impact changed after preflight');
+  }
+}
+
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
@@ -56,11 +67,12 @@ export class AdminContentCommands {
       tx: DbTransaction,
       current: AdminContext,
     ) => Promise<{ result: T; metadata?: AuditMetadata }>,
+    publicImpact?: ContentPublicImpactPreflight,
   ): Promise<T> {
     if (!z.uuid().safeParse(key).success)
       throw failure(400, 'ADMIN_INVALID_INPUT', '需要有效幂等键');
     return this.withReceiptLock(context, key, () =>
-      this.runWithReceiptLock(context, key, action, target, input, permissions, work),
+      this.runWithReceiptLock(context, key, action, target, input, permissions, work, publicImpact),
     );
   }
 
@@ -85,9 +97,11 @@ export class AdminContentCommands {
       tx: DbTransaction,
       current: AdminContext,
     ) => Promise<{ result: T; metadata?: AuditMetadata }>,
+    publicImpact?: ContentPublicImpactPreflight,
   ): Promise<T> {
     const requestDigest = contentCommandRequestDigest(action, target, input);
     try {
+      let chargedAction: string | null = null;
       if (action.endsWith('.publish')) {
         const replay = await this.db.transaction(async (tx) => {
           const checked = await this.authorizeAndReceipt(
@@ -103,42 +117,81 @@ export class AdminContentCommands {
         });
         if (replay) return replay;
         await this.enforcePublishRateLimit(context, action);
-      }
-      return await this.db.transaction(async (tx) => {
-        const { current, receipt } = await this.authorizeAndReceipt(
-          tx,
-          context,
-          key,
-          action,
-          target,
-          requestDigest,
-          permissions,
-        );
-        if (receipt) return receipt.result as unknown as T;
-        const { result, metadata } = await work(tx, current);
-        await this.audit.write(
-          tx,
-          action,
-          'allowed',
-          current.actor.id,
-          current.sessionId,
-          result.resourceId,
-          digest(input.reason),
-          metadata,
-        );
-        await tx.adminCommandReceipt.create({
-          data: {
-            accountId: current.actor.id,
-            sessionId: current.sessionId,
-            idempotencyKey: key,
+      } else if (publicImpact) {
+        const checked = await this.db.transaction(async (tx) => {
+          const authorized = await this.authorizeAndReceipt(
+            tx,
+            context,
+            key,
             action,
             target,
             requestDigest,
-            result: result as unknown as Prisma.InputJsonObject,
-          },
+            permissions,
+          );
+          if (authorized.receipt) return { receipt: authorized.receipt, impact: null };
+          return { receipt: null, impact: await publicImpact(tx, authorized.current) };
         });
-        return result;
-      });
+        if (checked.receipt) return checked.receipt.result as unknown as T;
+        chargedAction = checked.impact;
+        if (chargedAction) await this.enforcePublishRateLimit(context, chargedAction);
+      }
+      const execute = () =>
+        this.db.transaction(async (tx) => {
+          const { current, receipt } = await this.authorizeAndReceipt(
+            tx,
+            context,
+            key,
+            action,
+            target,
+            requestDigest,
+            permissions,
+          );
+          if (receipt) return receipt.result as unknown as T;
+          if (publicImpact) {
+            const finalImpact = await publicImpact(tx, current);
+            if (finalImpact && finalImpact !== chargedAction)
+              throw new PublicImpactChangedSignal(finalImpact);
+          }
+          const { result, metadata } = await work(tx, current);
+          await this.audit.write(
+            tx,
+            action,
+            'allowed',
+            current.actor.id,
+            current.sessionId,
+            result.resourceId,
+            digest(input.reason),
+            metadata,
+          );
+          await tx.adminCommandReceipt.create({
+            data: {
+              accountId: current.actor.id,
+              sessionId: current.sessionId,
+              idempotencyKey: key,
+              action,
+              target,
+              requestDigest,
+              result: result as unknown as Prisma.InputJsonObject,
+            },
+          });
+          return result;
+        });
+      try {
+        return await execute();
+      } catch (error) {
+        if (!(error instanceof PublicImpactChangedSignal)) throw error;
+        if (chargedAction)
+          throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容已更新，请重新加载后比较');
+        chargedAction = error.action;
+        await this.enforcePublishRateLimit(context, chargedAction);
+        try {
+          return await execute();
+        } catch (retryError) {
+          if (retryError instanceof PublicImpactChangedSignal)
+            throw failure(409, 'CONTENT_VERSION_CONFLICT', '内容已更新，请重新加载后比较');
+          throw retryError;
+        }
+      }
     } catch (error) {
       if (error instanceof AppError && [403, 409, 422, 429].includes(error.status)) {
         await this.db.transaction(async (tx) => {
