@@ -125,6 +125,12 @@ describe('operational content seed', () => {
     ).toBe(false);
   });
 
+  it('rejects an unbounded session-lock timeout before acquiring the seed lock', async () => {
+    await expect(
+      seedContent(database.database, storage.store, { lockTimeoutMs: 60_001 }),
+    ).rejects.toThrow('Content seed lock timeout must be an integer between 1 and 60000ms');
+  });
+
   it('serializes concurrent complete imports and reports created, updated, unchanged, and cleanup warnings', async () => {
     const fresh = structuredClone(contentSeedManifest);
     fresh.media[0]!.externalId = 'content-media-concurrent';

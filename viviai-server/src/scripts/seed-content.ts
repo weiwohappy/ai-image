@@ -212,6 +212,8 @@ export const contentSeedManifest: ContentSeedManifest = contentSeedManifestSchem
 export interface SeedContentOptions {
   manifest?: ContentSeedManifest;
   isModelSpecEnabled?: (modelId: string, outputSpecId: string) => boolean | Promise<boolean>;
+  // Bounded to protect the command from waiting indefinitely for another seed session.
+  lockTimeoutMs?: number;
   // Injectable only for owned test cleanup verification; production callers must not use it.
   beforeTransaction?: () => void | Promise<void>;
 }
@@ -262,7 +264,7 @@ export async function seedContent(
   const changedMediaExternalIds = new Set<string>();
   const cleanupWarnings: string[] = [];
   try {
-    await withSeedLock(db, async () => {
+    await withSeedLock(db, options.lockTimeoutMs, async () => {
       try {
         for (const media of preparedMedia) {
           const existing = await db.client.contentMedia.findUnique({
@@ -492,13 +494,17 @@ export class SeedCleanupError extends Error {
   }
 }
 
-async function withSeedLock<T>(db: DatabaseService, work: () => Promise<T>): Promise<T> {
+async function withSeedLock<T>(
+  db: DatabaseService,
+  requestedTimeoutMs: number | undefined,
+  work: () => Promise<T>,
+): Promise<T> {
   const url = new URL(db.url);
   url.searchParams.delete('schema');
   const client = new pg.Client({ connectionString: url.toString() });
   await client.connect();
   try {
-    await client.query("SET lock_timeout TO '30000ms'");
+    await client.query(`SET lock_timeout TO '${seedLockTimeoutMs(requestedTimeoutMs)}ms'`);
     await client.query("SELECT pg_advisory_lock(hashtextextended('content:seed', 0))");
     return await work();
   } finally {
@@ -507,6 +513,17 @@ async function withSeedLock<T>(db: DatabaseService, work: () => Promise<T>): Pro
       .catch(() => undefined);
     await client.end();
   }
+}
+
+function seedLockTimeoutMs(requestedTimeoutMs: number | undefined): number {
+  if (requestedTimeoutMs === undefined) return 30_000;
+  if (
+    !Number.isInteger(requestedTimeoutMs) ||
+    requestedTimeoutMs < 1 ||
+    requestedTimeoutMs > 60_000
+  )
+    throw new Error('Content seed lock timeout must be an integer between 1 and 60000ms');
+  return requestedTimeoutMs;
 }
 
 function validatePublishedTool(row: ContentSeedManifest['tools'][number]) {
