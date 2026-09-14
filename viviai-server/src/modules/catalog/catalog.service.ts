@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppConfig } from '../../config.js';
-import type { Prisma } from '../../generated/prisma/client.js';
+import type { GenerationQuote, Prisma } from '../../generated/prisma/client.js';
 import { APP_CONFIG } from '../../shared/infrastructure.module.js';
 import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
@@ -179,51 +179,62 @@ export class CatalogService {
   }
   async createQuote(userId: string, rawInput: unknown, origin?: QuoteOrigin) {
     const input = normalizeInput(rawInput);
-    const record = await this.db.transaction(async (tx) => {
-      const price =
-        input.modelId === PRODUCT_ID
-          ? undefined
-          : await activeCreditPrice(tx, input.modelId, input.resolution, 503);
-      const execution = this.execution(input);
-      const unitCredits = BigInt(price?.unitCredits ?? 30);
-      const images = await this.references(tx, userId, input);
-      const createdAt = new Date();
-      return tx.generationQuote.create({
-        data: {
-          userId,
-          input,
-          inputHash: quoteHash(input, images, origin),
-          productVersion: input.modelId,
-          ...(price ? { creditPriceSnapshot: price } : {}),
-          ...(execution
-            ? { execution: execution as unknown as Prisma.InputJsonValue }
-            : {}),
-          unitCredits,
-          totalCredits: BigInt(input.count) * unitCredits,
-          createdAt,
-          expiresAt: new Date(createdAt.getTime() + 300_000),
-          ...(origin
-            ? {
-                originType: origin.type,
-                originId: origin.id,
-                originVersion: origin.version,
-                originSnapshot: origin.snapshot,
-              }
-            : {}),
-        },
-      });
-    });
-    return {
-      id: record.id,
-      input,
-      inputHash: record.inputHash,
-      unitCredits: safeInteger(record.unitCredits),
-      totalCredits: safeInteger(record.totalCredits),
-      priceVersion: record.creditPriceSnapshot
-        ? (record.creditPriceSnapshot as { version: number }).version
-        : null,
-      createdAt: record.createdAt.toISOString(),
-      expiresAt: record.expiresAt.toISOString(),
-    };
+    return this.db.transaction((tx) => this.createQuoteIn(tx, userId, input, origin));
   }
+  /**
+   * Creates one generation quote inside a caller-owned transaction so aggregate
+   * products (workflow batches) can write every child quote atomically.
+   */
+  async createQuoteIn(
+    tx: DbTransaction,
+    userId: string,
+    input: GenerationInput,
+    origin?: QuoteOrigin,
+  ) {
+    const price =
+      input.modelId === PRODUCT_ID
+        ? undefined
+        : await activeCreditPrice(tx, input.modelId, input.resolution, 503);
+    const execution = this.execution(input);
+    const unitCredits = BigInt(price?.unitCredits ?? 30);
+    const images = await this.references(tx, userId, input);
+    const createdAt = new Date();
+    const record = await tx.generationQuote.create({
+      data: {
+        userId,
+        input,
+        inputHash: quoteHash(input, images, origin),
+        productVersion: input.modelId,
+        ...(price ? { creditPriceSnapshot: price } : {}),
+        ...(execution ? { execution: execution as unknown as Prisma.InputJsonValue } : {}),
+        unitCredits,
+        totalCredits: BigInt(input.count) * unitCredits,
+        createdAt,
+        expiresAt: new Date(createdAt.getTime() + 300_000),
+        ...(origin
+          ? {
+              originType: origin.type,
+              originId: origin.id,
+              originVersion: origin.version,
+              originSnapshot: origin.snapshot,
+            }
+          : {}),
+      },
+    });
+    return { ...presentQuote(record), input };
+  }
+}
+
+function presentQuote(record: GenerationQuote) {
+  return {
+    id: record.id,
+    inputHash: record.inputHash,
+    unitCredits: safeInteger(record.unitCredits),
+    totalCredits: safeInteger(record.totalCredits),
+    priceVersion: record.creditPriceSnapshot
+      ? (record.creditPriceSnapshot as { version: number }).version
+      : null,
+    createdAt: record.createdAt.toISOString(),
+    expiresAt: record.expiresAt.toISOString(),
+  };
 }

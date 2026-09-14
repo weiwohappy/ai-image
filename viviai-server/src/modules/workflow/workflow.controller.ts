@@ -1,11 +1,20 @@
 import { Body, Controller, Delete, Get, Inject, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { SessionGuard, type AuthenticatedRequest } from '../identity/session.guard.js';
+import { WorkflowQuoteService } from './workflow-quote.service.js';
 import { WorkflowService } from './workflow.service.js';
 
 @Controller()
 @UseGuards(SessionGuard)
 export class WorkflowController {
-  constructor(@Inject(WorkflowService) private readonly workflows: WorkflowService) {}
+  constructor(
+    @Inject(WorkflowService) private readonly workflows: WorkflowService,
+    @Inject(WorkflowQuoteService) private readonly quotes: WorkflowQuoteService,
+  ) {}
+
+  @Post('workflow-run-quotes')
+  quote(@Req() request: AuthenticatedRequest, @Body() body: unknown) {
+    return this.quotes.quote(request.userId, body);
+  }
 
   @Get('workflows')
   list(@Req() request: AuthenticatedRequest) {
