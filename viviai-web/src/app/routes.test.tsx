@@ -69,4 +69,13 @@ describe('application routes', () => {
     expect(await screen.findByRole('heading', { name: '工具中心' })).toBeVisible();
     expect(screen.queryByText('AI 工具暂未接入真实接口')).not.toBeInTheDocument();
   });
+
+  it('keeps the workflow studio available in real API mode', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    window.location.hash = '#/workflows';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '工作流' })).toBeVisible();
+    expect(screen.queryByText('工作流暂未接入真实接口')).not.toBeInTheDocument();
+  });
 });

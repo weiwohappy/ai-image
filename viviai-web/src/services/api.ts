@@ -1,5 +1,4 @@
 import type {
-  BatchTask,
   GenerationInput,
   GenerationTask,
   GenerationQuote,
@@ -17,6 +16,10 @@ import type {
   UploadedReference,
   ViralTemplate,
   Workflow,
+  WorkflowDefinition,
+  WorkflowQuoteRequest,
+  WorkflowRun,
+  WorkflowRunQuote,
 } from '@/src/types/domain';
 import { normalizeAssetDto, normalizeLedgerDtos, normalizeModelDto, normalizeTaskDto } from './normalizers';
 
@@ -157,10 +160,40 @@ export const api = {
   createToolRunQuote: (input: ToolQuoteInput) => request<ToolRunQuote>('/tool-run-quotes', { method: 'POST', body: JSON.stringify(input) }),
   runTool: async (quoteId: string, idempotencyKey: string) => normalizeTaskDto(await request<unknown>('/tool-runs', { method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: JSON.stringify({ quoteId }) })),
   listWorkflows: () => request<Workflow[]>('/workflows'),
-  getWorkflow: (id: string) => request<Workflow>(`/workflows/${id}`),
-  saveWorkflow: (workflow: Workflow) => request<Workflow>(`/workflows/${workflow.id}`, { method: 'PUT', body: JSON.stringify(workflow) }),
-  runWorkflow: (id: string, rowIds: string[]) => request<BatchTask>(`/workflows/${id}/run`, { method: 'POST', body: JSON.stringify({ rowIds }) }),
-  listBatches: () => request<BatchTask[]>('/batches'),
+  getWorkflow: (id: string) => request<Workflow>(`/workflows/${encodeURIComponent(id)}`),
+  createWorkflow: (definition: WorkflowDefinition) =>
+    request<Workflow>('/workflows', { method: 'POST', body: JSON.stringify(definition) }),
+  updateWorkflow: (id: string, update: WorkflowDefinition & { version: number }) =>
+    request<Workflow>(`/workflows/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(update),
+    }),
+  copyWorkflow: (id: string) =>
+    request<Workflow>(`/workflows/${encodeURIComponent(id)}/copy`, { method: 'POST' }),
+  archiveWorkflow: (id: string) =>
+    request<{ id: string }>(`/workflows/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  quoteWorkflowRun: (input: WorkflowQuoteRequest) =>
+    request<WorkflowRunQuote>('/workflow-run-quotes', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  submitWorkflowRun: (quoteId: string, idempotencyKey: string) =>
+    request<WorkflowRun>('/workflow-runs', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ quoteId }),
+    }),
+  retryWorkflowRun: (runId: string, quoteId: string, idempotencyKey: string) =>
+    request<WorkflowRun>(`/workflow-runs/${encodeURIComponent(runId)}/retry-failed`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ quoteId }),
+    }),
+  cancelWorkflowRun: (runId: string) =>
+    request<WorkflowRun>(`/workflow-runs/${encodeURIComponent(runId)}/cancel`, { method: 'POST' }),
+  listWorkflowRuns: () => request<WorkflowRun[]>('/workflow-runs'),
+  getWorkflowRun: (runId: string) =>
+    request<WorkflowRun>(`/workflow-runs/${encodeURIComponent(runId)}`),
   listPlans: () => request<Plan[]>('/plans'),
   createOrder: (input: { planId: string; channel: Order['channel'] }) => request<Order>('/orders', { method: 'POST', body: JSON.stringify(input) }),
   completeMockOrder: (id: string) => request<Order>(`/mock/orders/${id}/complete`, { method: 'POST' }),

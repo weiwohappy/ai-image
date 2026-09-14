@@ -1,4 +1,11 @@
-import type { GenerationTask, ImageAsset, NotificationItem, PointLedgerEntry } from '@/src/types/domain';
+import type {
+  GenerationTask,
+  ImageAsset,
+  NotificationItem,
+  PointLedgerEntry,
+  Workflow,
+  WorkflowRun,
+} from '@/src/types/domain';
 import { createSeedDb, getFixtureVisual, type MockDatabase } from './fixtures';
 import { resetReferenceUploads } from './referenceUploads';
 
@@ -35,8 +42,14 @@ export function loadDb(): MockDatabase {
   if (!memoryDb.toolQuotes) { memoryDb.toolQuotes = []; migrated = true; }
   if (!memoryDb.challenges) { memoryDb.challenges = []; migrated = true; }
   if (!memoryDb.redemptionAttempts) { memoryDb.redemptionAttempts = []; migrated = true; }
-  const legacyDb = memoryDb as MockDatabase & { credentialHash?: string };
+  if (!memoryDb.workflowRuns) { memoryDb.workflowRuns = []; migrated = true; }
+  if (!memoryDb.workflowRunQuotes) { memoryDb.workflowRunQuotes = []; migrated = true; }
+  if (!memoryDb.workflowRunKeys) { memoryDb.workflowRunKeys = []; migrated = true; }
+  // Pre-`rowKey` workflows and their batches are not addressable by the current API.
+  if (memoryDb.workflows?.some((workflow) => typeof workflow.version !== 'number')) { memoryDb.workflows = []; migrated = true; }
+  const legacyDb = memoryDb as MockDatabase & { credentialHash?: string; batches?: unknown; workflows?: Workflow[] };
   if ('credentialHash' in legacyDb) { delete legacyDb.credentialHash; migrated = true; }
+  if ('batches' in legacyDb) { delete legacyDb.batches; migrated = true; }
   if (reconcileDb(memoryDb) || migrated) {
     memoryDb = structuredClone(memoryDb);
     if (storageAvailable()) window.localStorage.setItem(STORAGE_KEY, JSON.stringify(memoryDb));
@@ -116,15 +129,8 @@ function settleTaskInDb(db: MockDatabase, task: GenerationTask, outcome: 'succes
 
   if (task.workflowId && task.workflowRowId && task.workflowColumnId) {
     const workflow = db.workflows.find((item) => item.id === task.workflowId);
-    const row = workflow?.rows.find((item) => item.id === task.workflowRowId);
+    const row = workflow?.rows.find((item) => item.rowKey === task.workflowRowId);
     if (row && task.resultAssetIds[0]) row.cells[task.workflowColumnId] = task.resultAssetIds[0];
-    if (row) {
-      const siblings = db.tasks.filter((item) => item.workflowId === task.workflowId && item.workflowRowId === task.workflowRowId && (task.batchId ? item.batchId === task.batchId : !item.batchId));
-      const active = siblings.some((item) => item.status === 'queued' || item.status === 'processing');
-      const failed = siblings.filter((item) => item.status === 'failed' || item.status === 'cancelled').length;
-      const partial = siblings.some((item) => item.status === 'partial');
-      row.status = active ? 'processing' : failed === siblings.length ? 'failed' : failed > 0 || partial ? 'partial' : 'succeeded';
-    }
   }
 
   const ledger: PointLedgerEntry = {
@@ -149,46 +155,64 @@ function settleTaskInDb(db: MockDatabase, task: GenerationTask, outcome: 'succes
   db.notifications.unshift(notification);
 }
 
-function reconcileBatch(db: MockDatabase, batchId: string): boolean {
-  const batch = db.batches.find((candidate) => candidate.id === batchId);
-  if (!batch) return false;
-  if (!batch.childTaskIds?.length) {
-    if (batch.status !== 'queued' && batch.status !== 'processing') return false;
-    Object.assign(batch, { completed: 0, processing: 0, failed: batch.total, status: 'failed' });
-    return true;
-  }
-  const children = batch.childTaskIds.map((id) => db.tasks.find((task) => task.id === id)).filter(Boolean) as GenerationTask[];
-  const completed = children.filter((task) => task.status === 'succeeded' || task.status === 'partial').length;
-  const processing = children.filter((task) => task.status === 'queued' || task.status === 'processing').length;
-  const failed = children.filter((task) => task.status === 'failed' || task.status === 'cancelled').length;
-  const hasPartial = children.some((task) => task.status === 'partial');
-  const status = processing > 0 ? 'processing' : failed === children.length ? 'failed' : failed > 0 || hasPartial ? 'partial' : 'succeeded';
-  if (batch.completed === completed && batch.processing === processing && batch.failed === failed && batch.status === status) return false;
-  Object.assign(batch, { completed, processing, failed, status });
-  return true;
+const RETRYABLE_FAILURES = ['PROVIDER_CONTENT_REJECTED', 'INVALID_PROVIDER_OUTPUT', 'MODEL_UNAVAILABLE', 'MODEL_SNAPSHOT_MISSING'];
+
+/** Projects the linked generation tasks onto one run, mirroring the server projection. */
+function reconcileRun(db: MockDatabase, run: WorkflowRun): boolean {
+  const before = JSON.stringify({ items: run.items, status: run.status, charged: run.chargedCredits });
+  run.items = run.items.flatMap((item) => {
+    const task = db.tasks.find((candidate) => candidate.id === item.generationJobId);
+    if (!task) return [];
+    return [
+      {
+        ...item,
+        status: task.status,
+        errorCode: task.errorCode ?? null,
+        retryable: !task.errorCode || !RETRYABLE_FAILURES.includes(task.errorCode),
+        resultAssetIds: task.resultAssetIds,
+      },
+    ];
+  });
+  run.succeededCount = run.items.filter((item) => item.status === 'succeeded').length;
+  run.failedCount = run.items.filter((item) => item.status === 'failed').length;
+  run.cancelledCount = run.items.filter((item) => item.status === 'cancelled').length;
+  run.totalCount = run.items.length;
+  run.chargedCredits = run.items.reduce((total, item) => {
+    const task = db.tasks.find((candidate) => candidate.id === item.generationJobId);
+    return total + (task?.chargedCredits ?? 0);
+  }, 0);
+  const settled = run.succeededCount + run.failedCount + run.cancelledCount;
+  run.status =
+    settled < run.totalCount
+      ? settled > 0 || run.cancelRequested
+        ? 'processing'
+        : 'queued'
+      : run.cancelledCount === run.totalCount
+        ? 'cancelled'
+        : run.succeededCount === run.totalCount
+          ? 'succeeded'
+          : run.succeededCount > 0
+            ? 'partial'
+            : 'failed';
+  run.updatedAt = new Date().toISOString();
+  return before !== JSON.stringify({ items: run.items, status: run.status, charged: run.chargedCredits });
 }
 
 function reconcileWorkflowRows(db: MockDatabase): boolean {
   let changed = false;
   for (const workflow of db.workflows) {
     for (const row of workflow.rows) {
-      const history = db.tasks.filter((task) => task.workflowId === workflow.id && task.workflowRowId === row.id);
-      if (!history.length) continue;
-      const newest = history[0];
-      const tasks = newest.batchId ? history.filter((task) => task.batchId === newest.batchId) : history.filter((task) => !task.batchId);
-      for (const task of tasks) {
-        if (task.workflowColumnId && task.resultAssetIds[0] && row.cells[task.workflowColumnId] !== task.resultAssetIds[0]) {
-          row.cells[task.workflowColumnId] = task.resultAssetIds[0];
-          changed = true;
+      const runs = db.workflowRuns.filter((run) => run.workflowId === workflow.id);
+      for (const run of runs) {
+        for (const item of run.items) {
+          if (item.rowKey !== row.rowKey) continue;
+          const task = db.tasks.find((candidate) => candidate.id === item.generationJobId);
+          const assetId = task?.resultAssetIds[0];
+          if (assetId && row.cells[item.columnKey] !== assetId) {
+            row.cells[item.columnKey] = assetId;
+            changed = true;
+          }
         }
-      }
-      const active = tasks.some((task) => task.status === 'queued' || task.status === 'processing');
-      const failed = tasks.filter((task) => task.status === 'failed' || task.status === 'cancelled').length;
-      const partial = tasks.some((task) => task.status === 'partial');
-      const status = active ? 'processing' : failed === tasks.length ? 'failed' : failed > 0 || partial ? 'partial' : 'succeeded';
-      if (row.status !== status) {
-        row.status = status;
-        changed = true;
       }
     }
   }
@@ -217,7 +241,7 @@ function reconcileDb(db: MockDatabase): boolean {
       changed = true;
     }
   }
-  for (const batch of db.batches) changed = reconcileBatch(db, batch.id) || changed;
+  for (const run of db.workflowRuns) changed = reconcileRun(db, run) || changed;
   changed = reconcileWorkflowRows(db) || changed;
   return changed;
 }

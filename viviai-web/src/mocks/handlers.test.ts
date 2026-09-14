@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { api } from '@/src/services/api';
-import type { GenerationInput, RemixInput, Workflow } from '@/src/types/domain';
+import type { GenerationInput, RemixInput, WorkflowDefinition } from '@/src/types/domain';
 import { getCredentialHash, loadDb, mutateDb, resetDb, settleTask } from './db';
 import { saveReferenceUpload } from './referenceUploads';
 import { server } from './server';
@@ -108,50 +108,92 @@ describe('User supplied remix reference', () => {
 });
 
 describe('Mock workflow and account boundaries', () => {
-  it('creates real workflow child tasks and derives batch totals from their outcomes', async () => {
-    const workflow: Workflow = {
-      id: 'workflow-test',
-      name: '批量主图',
-      version: 0,
-      saved: false,
-      updatedAt: new Date().toISOString(),
-      columns: [
-        { id: 'reference', name: '商品素材', type: 'reference' },
-        { id: 'style', name: '风格素材', type: 'reference' },
-        { id: 'output', name: '主图', type: 'generation', prompt: '商业主图', sourceColumnIds: ['reference', 'style'], modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1' },
-      ],
-      rows: [
-        { id: 'row-1', selected: true, status: 'idle', cells: { reference: 'asset-1', style: 'asset-2' } },
-        { id: 'row-2', selected: true, status: 'idle', cells: { reference: 'asset-3', style: 'asset-4' } },
-      ],
-    };
-    const saved = await api.saveWorkflow(workflow);
-    const batch = await api.runWorkflow(saved.id, ['row-1', 'row-2']);
+  const definition: WorkflowDefinition = {
+    name: '批量主图',
+    columns: [
+      { id: 'reference', name: '商品素材', type: 'reference' },
+      { id: 'style', name: '风格素材', type: 'reference' },
+      { id: 'output', name: '主图', type: 'generation', prompt: '商业主图', sourceColumnIds: ['reference', 'style'], modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1' },
+    ],
+    rows: [
+      { rowKey: 'row-1', cells: { reference: 'asset-1', style: 'asset-2' } },
+      { rowKey: 'row-2', cells: { reference: 'asset-3', style: 'asset-4' } },
+    ],
+  };
 
-    expect(batch).toMatchObject({ total: 2, processing: 2, estimatedCredits: 8 });
-    expect(batch.childTaskIds).toHaveLength(2);
+  it('prices a selection, then submits it into one child task per row and column', async () => {
+    const saved = await api.createWorkflow(definition);
+    const quote = await api.quoteWorkflowRun({ workflowId: saved.id, rowIds: ['row-1', 'row-2'] });
+
+    expect(quote).toMatchObject({ submittable: true, totalCredits: 8, workflowVersion: 1 });
+    expect(quote.items).toHaveLength(2);
+    expect(quote.items[0]).toMatchObject({ rowKey: 'row-1', columnId: 'output', status: 'ready', unitCredits: 4 });
+
+    const run = await api.submitWorkflowRun(quote.quoteId!, 'submit-key-0001');
+    expect(run).toMatchObject({ totalCount: 2, estimatedCredits: 8, status: 'queued' });
+    expect(run.childTaskIds).toHaveLength(2);
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1112, frozenCredits: 8 });
-    const tasks = await api.listGenerationTasks();
-    const children = tasks.filter((task) => batch.childTaskIds.includes(task.id));
+
+    const children = (await api.listGenerationTasks()).filter((task) => run.childTaskIds.includes(task.id));
     expect(children).toHaveLength(2);
-    expect(children[0]).toMatchObject({ workflowId: saved.id, workflowRowId: expect.any(String), workflowColumnId: 'output' });
+    expect(children[0]).toMatchObject({ workflowId: saved.id, batchId: run.id, workflowColumnId: 'output' });
     expect(children[0].input.referenceAssetIds).toHaveLength(2);
 
-    settleTask(batch.childTaskIds[0], 'success');
-    settleTask(batch.childTaskIds[1], 'failure');
-    expect((await api.listBatches())[0]).toMatchObject({ status: 'partial', completed: 1, processing: 0, failed: 1 });
+    settleTask(run.childTaskIds[0], 'success');
+    settleTask(run.childTaskIds[1], 'failure');
+    expect((await api.listWorkflowRuns())[0]).toMatchObject({ status: 'partial', succeededCount: 1, failedCount: 1, chargedCredits: 4 });
     expect((await api.listAssets()).some((asset) => asset.source === 'workflow')).toBe(true);
-    const completedWorkflow = await api.getWorkflow(saved.id);
-    expect(completedWorkflow.rows[0]).toMatchObject({ status: 'succeeded', cells: { output: expect.stringMatching(/^asset-task-/) } });
-    expect(completedWorkflow.rows[1]).toMatchObject({ status: 'failed' });
+    const completed = await api.getWorkflow(saved.id);
+    expect(completed.rows[0].cells.output).toMatch(/^asset-task-/);
+    expect(completed.rows[1].cells.output).toBeUndefined();
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 0 });
+  });
 
-    const rerun = await api.runWorkflow(saved.id, ['row-2']);
-    expect(rerun.childTaskIds).toHaveLength(1);
-    expect((await api.listGenerationTasks()).find((task) => task.id === rerun.childTaskIds[0])).toMatchObject({ batchId: rerun.id });
-    settleTask(rerun.childTaskIds[0], 'success');
-    const rerunWorkflow = await api.getWorkflow(saved.id);
-    expect(rerunWorkflow.rows[1]).toMatchObject({ status: 'succeeded', cells: { output: expect.stringMatching(/^asset-task-/) } });
+  it('refuses a selection whose reference cells are empty', async () => {
+    const saved = await api.createWorkflow({ ...definition, rows: [{ rowKey: 'row-1', cells: { reference: 'asset-1' } }] });
+    const quote = await api.quoteWorkflowRun({ workflowId: saved.id, rowIds: ['row-1'] });
+
+    expect(quote).toMatchObject({ quoteId: null, submittable: false, totalCredits: 0 });
+    expect(quote.items[0]).toMatchObject({ status: 'invalid', error: { code: 'MISSING_REFERENCE' } });
+    await expect(api.submitWorkflowRun('quote-missing', 'submit-key-0002')).rejects.toEqual(expect.objectContaining({ code: 'QUOTE_NOT_FOUND', status: 404 }));
+  });
+
+  it('replays a submission for the same idempotency key instead of charging twice', async () => {
+    const saved = await api.createWorkflow(definition);
+    const quote = await api.quoteWorkflowRun({ workflowId: saved.id, rowIds: ['row-1'] });
+    const first = await api.submitWorkflowRun(quote.quoteId!, 'submit-key-0003');
+    const replayed = await api.submitWorkflowRun(quote.quoteId!, 'submit-key-0003');
+
+    expect(replayed.id).toBe(first.id);
+    expect((await api.listWorkflowRuns())).toHaveLength(1);
+  });
+
+  it('rejects a stale quote once the workflow has been resaved', async () => {
+    const saved = await api.createWorkflow(definition);
+    const quote = await api.quoteWorkflowRun({ workflowId: saved.id, rowIds: ['row-1'] });
+    await api.updateWorkflow(saved.id, { ...definition, name: '批量主图 v2', version: saved.version });
+
+    await expect(api.submitWorkflowRun(quote.quoteId!, 'submit-key-0004')).rejects.toEqual(expect.objectContaining({ code: 'WORKFLOW_VERSION_CONFLICT', status: 409 }));
+  });
+
+  it('quotes only the failed items of a settled run, and refuses while it is still running', async () => {
+    const saved = await api.createWorkflow(definition);
+    const quote = await api.quoteWorkflowRun({ workflowId: saved.id, rowIds: ['row-1', 'row-2'] });
+    const run = await api.submitWorkflowRun(quote.quoteId!, 'submit-key-0005');
+
+    await expect(api.quoteWorkflowRun({ retryRunId: run.id })).rejects.toEqual(expect.objectContaining({ code: 'RUN_NOT_SETTLED', status: 409 }));
+
+    settleTask(run.childTaskIds[0], 'success');
+    settleTask(run.childTaskIds[1], 'failure');
+    const retryQuote = await api.quoteWorkflowRun({ retryRunId: run.id });
+    expect(retryQuote).toMatchObject({ submittable: true, totalCredits: 4 });
+    expect(retryQuote.items).toHaveLength(1);
+    expect(retryQuote.items[0]).toMatchObject({ rowKey: 'row-2', columnId: 'output' });
+
+    const retried = await api.retryWorkflowRun(run.id, retryQuote.quoteId!, 'retry-key-0001');
+    expect(retried).toMatchObject({ totalCount: 1, retryOfRunId: run.id });
+    settleTask(retried.childTaskIds[0], 'success');
+    expect((await api.listWorkflowRuns()).find((item) => item.id === run.id)?.retryRunIds).toEqual([retried.id]);
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1112, frozenCredits: 0 });
   });
 

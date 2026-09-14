@@ -254,47 +254,124 @@ export interface ToolRunQuote {
 
 export type WorkflowColumnType = 'reference' | 'generation' | 'tool';
 
-export interface WorkflowColumn {
+export interface WorkflowReferenceColumn {
   id: string;
   name: string;
-  type: WorkflowColumnType;
-  prompt?: string;
-  sourceColumnIds?: string[];
-  modelId?: string;
-  resolution?: Resolution;
-  ratio?: ImageRatio;
+  type: 'reference';
 }
 
-export interface WorkflowRow {
+export interface WorkflowGenerationColumn {
   id: string;
-  cells: Record<string, string | undefined>;
-  selected: boolean;
-  status: TaskStatus | 'idle';
+  name: string;
+  type: 'generation';
+  prompt: string;
+  sourceColumnIds: string[];
+  modelId: string;
+  resolution: Resolution;
+  ratio: ImageRatio;
+}
+
+export interface WorkflowToolColumn {
+  id: string;
+  name: string;
+  type: 'tool';
+  toolId: string;
+  toolVersion: number;
+  sourceColumnIds: string[];
+  values: Record<string, string>;
+}
+
+export type WorkflowColumn =
+  | WorkflowReferenceColumn
+  | WorkflowGenerationColumn
+  | WorkflowToolColumn;
+
+/** One grid row. `rowKey` is the stable identity the server quotes and reports on. */
+export interface WorkflowRow {
+  rowKey: string;
+  cells: Record<string, string>;
 }
 
 export interface Workflow {
   id: string;
   name: string;
   version: number;
-  saved: boolean;
   columns: WorkflowColumn[];
   rows: WorkflowRow[];
   updatedAt: string;
 }
 
-export interface BatchTask {
+export interface WorkflowDefinition {
+  name: string;
+  columns: WorkflowColumn[];
+  rows: WorkflowRow[];
+}
+
+/** One priced (or rejected) row/column pair of a batch quote. */
+export interface WorkflowQuoteItem {
+  rowKey: string;
+  columnId: string;
+  columnName: string | null;
+  status: 'ready' | 'invalid';
+  quoteId?: string;
+  modelId?: string;
+  resolution?: Resolution;
+  ratio?: ImageRatio;
+  count?: number;
+  unitCredits?: number;
+  totalCredits?: number;
+  createdAt?: string;
+  expiresAt?: string;
+  error?: { code: string; message: string };
+}
+
+export interface WorkflowRunQuote {
+  quoteId: string | null;
+  workflowId: string;
+  workflowVersion: number;
+  submittable: boolean;
+  totalCredits: number;
+  createdAt: string | null;
+  expiresAt: string | null;
+  items: WorkflowQuoteItem[];
+}
+
+export interface WorkflowRunItem {
+  id: string;
+  rowKey: string;
+  columnKey: string;
+  columnName: string | null;
+  status: TaskStatus;
+  errorCode: string | null;
+  retryable: boolean;
+  generationJobId: string;
+  resultAssetIds: string[];
+}
+
+export interface WorkflowRun {
   id: string;
   workflowId: string;
   workflowName: string;
-  total: number;
-  completed: number;
-  processing: number;
-  failed: number;
-  estimatedCredits: number;
+  workflowVersion: number;
   status: TaskStatus;
+  totalCount: number;
+  succeededCount: number;
+  failedCount: number;
+  cancelledCount: number;
+  cancelRequested: boolean;
+  retryOfRunId: string | null;
+  retryRunIds: string[];
+  estimatedCredits: number;
+  chargedCredits: number;
   createdAt: string;
+  updatedAt: string;
   childTaskIds: string[];
+  items: WorkflowRunItem[];
 }
+
+export type WorkflowQuoteRequest =
+  | { workflowId: string; rowIds: string[] }
+  | { retryRunId: string };
 
 export interface Plan {
   id: string;
@@ -365,7 +442,20 @@ export type ApiErrorCode =
   | 'INVALID_INVITE_CODE'
   | 'TASK_TIMEOUT'
   | 'INTERNAL_ERROR'
-  | 'PARAMETER_UNSUPPORTED';
+  | 'PARAMETER_UNSUPPORTED'
+  | 'WORKFLOW_NOT_FOUND'
+  | 'WORKFLOW_VERSION_CONFLICT'
+  | 'INVALID_WORKFLOW_GRAPH'
+  | 'INVALID_WORKFLOW_SELECTION'
+  | 'QUOTE_NOT_FOUND'
+  | 'QUOTE_EXPIRED'
+  | 'QUOTE_USED'
+  | 'RUN_NOT_FOUND'
+  | 'RUN_NOT_SETTLED'
+  | 'RUN_ALREADY_SETTLED'
+  | 'RETRY_MISMATCH'
+  | 'RETRY_UNAVAILABLE'
+  | 'ORIGIN_MISMATCH';
 
 export interface ApiErrorPayload {
   code: ApiErrorCode;

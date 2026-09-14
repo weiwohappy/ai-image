@@ -36,8 +36,8 @@ export function AppRoutes() {
         <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
         <Route path="/tools" element={<ProtectedRoute><ToolsPage /></ProtectedRoute>} />
         <Route path="/tools/:toolId" element={<ProtectedRoute><ToolRunPage /></ProtectedRoute>} />
-        <Route path="/workflows" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="工作流暂未接入真实接口" /> : <WorkflowsPage />}</ProtectedRoute>} />
-        <Route path="/workflows/:workflowId" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="工作流暂未接入真实接口" /> : <WorkflowEditorPage />}</ProtectedRoute>} />
+        <Route path="/workflows" element={<ProtectedRoute><WorkflowsPage /></ProtectedRoute>} />
+        <Route path="/workflows/:workflowId" element={<ProtectedRoute><WorkflowEditorPage /></ProtectedRoute>} />
         <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />
         <Route path="/pricing" element={<PricingPage />} />
         <Route path="/account" element={<ProtectedRoute><AccountPage /></ProtectedRoute>} />

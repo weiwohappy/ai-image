@@ -4,18 +4,25 @@ import { z } from 'zod';
 import { estimateCredits } from '@/src/lib/pricing';
 import type {
   ApiErrorCode,
-  BatchTask,
   GenerationInput,
   GenerationTask,
   ImageAsset,
   Order,
   RemixInput,
+  TaskStatus,
   ToolQuoteInput,
   User,
   Workflow,
+  WorkflowDefinition,
+  WorkflowGenerationColumn,
+  WorkflowQuoteItem,
+  WorkflowQuoteRequest,
+  WorkflowRow,
+  WorkflowRun,
+  WorkflowRunQuote,
 } from '@/src/types/domain';
-import type { MockToolQuote } from './fixtures';
-import { getCredentialHash, loadDb, mutateDb, resetDb, setCredentialHash, settleTask } from './db';
+import type { MockToolQuote, MockWorkflowRunQuote } from './fixtures';
+import { getCredentialHash, loadDb, mutateDb, resetDb, saveDb, setCredentialHash, settleTask } from './db';
 import { hasReferenceUpload, saveReferenceUpload } from './referenceUploads';
 
 const api = '*/api';
@@ -161,6 +168,231 @@ function textMatch(value: string, query: string): boolean {
   return value.toLocaleLowerCase().includes(query.toLocaleLowerCase());
 }
 
+const workflowKey = /^[a-z][a-z0-9_-]{1,63}$/;
+const terminalRunStatuses: TaskStatus[] = ['succeeded', 'partial', 'failed', 'cancelled'];
+
+function isTerminalRun(status: TaskStatus): boolean {
+  return terminalRunStatuses.includes(status);
+}
+
+/** Mirrors the server's version-1 graph rules: unique keys, and output columns fed by reference columns. */
+function workflowDefinitionError(definition: WorkflowDefinition): string | null {
+  if (!definition.name?.trim()) return '请填写工作流名称。';
+  if (!definition.columns?.length) return '工作流至少需要一列。';
+  const ids = new Set<string>();
+  for (const column of definition.columns) {
+    if (!workflowKey.test(column.id)) return '列标识需以小写字母开头，仅含小写字母、数字、下划线和连字符。';
+    if (ids.has(column.id)) return `列标识「${column.id}」重复。`;
+    ids.add(column.id);
+  }
+  if (!definition.columns.some((column) => column.type === 'reference')) return '工作流至少需要一个参考列。';
+  for (const column of definition.columns) {
+    if (column.type === 'reference') continue;
+    if (!column.sourceColumnIds.length) return `「${column.name}」还没有引用参考列。`;
+    for (const sourceId of column.sourceColumnIds) {
+      if (definition.columns.find((candidate) => candidate.id === sourceId)?.type !== 'reference') return '生成列只能引用参考列。';
+    }
+  }
+  for (const row of definition.rows ?? []) {
+    for (const cellKey of Object.keys(row.cells ?? {})) {
+      if (!ids.has(cellKey)) return `单元格引用了不存在的列「${cellKey}」。`;
+    }
+  }
+  return null;
+}
+
+function generationInputFor(row: WorkflowRow, column: WorkflowGenerationColumn): GenerationInput {
+  const referenceAssetIds = column.sourceColumnIds.map((id) => row.cells[id]).filter((id): id is string => Boolean(id));
+  return {
+    prompt: column.prompt.trim() || column.name,
+    modelId: column.modelId,
+    resolution: column.resolution,
+    ratio: column.ratio,
+    count: 1,
+    referenceAssetIds,
+    ...(referenceAssetIds[0] ? { referenceAssetId: referenceAssetIds[0] } : {}),
+    source: 'workflow',
+  };
+}
+
+/** Prices the requested row/column pairs, or reports every pair that cannot run. */
+function priceWorkflowRun(
+  workflow: Workflow,
+  targets: Array<{ rowKey: string; columnKey: string }>,
+  retryOfRunId: string | null,
+): MockWorkflowRunQuote {
+  const db = loadDb();
+  const rejected: WorkflowQuoteItem[] = [];
+  const priced: WorkflowQuoteItem[] = [];
+  let totalCredits = 0;
+  let expiresAtMs = 0;
+  for (const target of targets) {
+    const row = workflow.rows.find((candidate) => candidate.rowKey === target.rowKey);
+    const column = workflow.columns.find((candidate) => candidate.id === target.columnKey);
+    const reject = (code: string, message: string) =>
+      rejected.push({ rowKey: target.rowKey, columnId: target.columnKey, columnName: column?.name ?? null, status: 'invalid', error: { code, message } });
+    if (!row || column?.type !== 'generation') {
+      reject('INVALID_WORKFLOW_SELECTION', '这一行或列已不存在，请重新选择。');
+      continue;
+    }
+    const referenceAssetIds = column.sourceColumnIds.map((id) => row.cells[id]).filter(Boolean);
+    if (column.sourceColumnIds.length !== referenceAssetIds.length) {
+      reject('MISSING_REFERENCE', '该单元格还没有选择参考图。');
+      continue;
+    }
+    if (referenceAssetIds.some((id) => !db.assets.some((asset) => asset.id === id))) {
+      reject('INVALID_ASSET', '参考素材已失效，请重新选择。');
+      continue;
+    }
+    if (!db.models.some((model) => model.id === column.modelId && model.status === 'available')) {
+      reject('MODEL_UNAVAILABLE', '当前模型不可用，请更换模型。');
+      continue;
+    }
+    let unitCredits: number;
+    try {
+      unitCredits = estimateCredits({ modelId: column.modelId, resolution: column.resolution, count: 1 });
+    } catch {
+      reject('INVALID_GENERATION_INPUT', '当前模型不支持这组生成参数。');
+      continue;
+    }
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+    expiresAtMs = expiresAtMs === 0 ? expiresAt : Math.min(expiresAtMs, expiresAt);
+    totalCredits += unitCredits;
+    priced.push({
+      rowKey: row.rowKey,
+      columnId: column.id,
+      columnName: column.name,
+      status: 'ready',
+      quoteId: `quote-${crypto.randomUUID()}`,
+      modelId: column.modelId,
+      resolution: column.resolution,
+      ratio: column.ratio,
+      count: 1,
+      unitCredits,
+      totalCredits: unitCredits,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(expiresAt).toISOString(),
+    });
+  }
+
+  const submittable = rejected.length === 0 && priced.length > 0;
+  const quote: MockWorkflowRunQuote = {
+    quoteId: submittable ? `quote-${crypto.randomUUID()}` : null,
+    workflowId: workflow.id,
+    workflowVersion: workflow.version,
+    submittable,
+    totalCredits: submittable ? totalCredits : 0,
+    createdAt: submittable ? new Date().toISOString() : null,
+    expiresAt: submittable ? new Date(expiresAtMs).toISOString() : null,
+    items: submittable ? priced : rejected,
+    workflowName: workflow.name,
+    snapshot: { name: workflow.name, columns: workflow.columns, rows: workflow.rows },
+    retryOfRunId,
+    targets: submittable ? targets : [],
+    consumed: false,
+  };
+  if (submittable) {
+    mutateDb((draft) => {
+      draft.workflowRunQuotes.unshift(quote);
+    });
+  }
+  return quote;
+}
+
+/** Consumes a batch quote and creates one generation task — and one run item — per quoted pair. */
+function submitWorkflowRun(quoteId: string, idempotencyKey: string | null, retryOfRunId: string | null): WorkflowRun {
+  if (!idempotencyKey || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) throw new MockFailure(400, 'INVALID_INPUT', '缺少有效的幂等键。');
+  const db = loadDb();
+  const quote = db.workflowRunQuotes.find((item) => item.quoteId === quoteId);
+  if (!quote) throw new MockFailure(404, 'QUOTE_NOT_FOUND', '报价不存在，请重新报价。');
+  const replayed = db.workflowRunKeys.find((item) => item.id === idempotencyKey);
+  if (replayed) {
+    const run = db.workflowRuns.find((item) => item.id === replayed.runId);
+    if (run) return run;
+  }
+  if (quote.consumed) throw new MockFailure(409, 'QUOTE_USED', '该报价已被使用，请重新报价。');
+  if (quote.expiresAt && Date.parse(quote.expiresAt) <= Date.now()) throw new MockFailure(409, 'QUOTE_EXPIRED', '报价已过期，请重新报价。');
+  if (!quote.submittable || !quote.quoteId) throw new MockFailure(400, 'INVALID_INPUT', '该报价包含无法运行的行，请修正后重新报价。');
+  if (quote.retryOfRunId !== retryOfRunId) throw new MockFailure(409, 'ORIGIN_MISMATCH', '报价与这个批次不匹配，请重新报价。');
+  const workflow = db.workflows.find((item) => item.id === quote.workflowId);
+  if (!workflow) throw new MockFailure(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+  if (!quote.retryOfRunId && workflow.version !== quote.workflowVersion) throw new MockFailure(409, 'WORKFLOW_VERSION_CONFLICT', '工作流已被其他改动更新，请重新报价。');
+  if (db.user.credits < quote.totalCredits) throw new MockFailure(402, 'INSUFFICIENT_CREDITS', '积分不足，无法运行所选任务。');
+  if (activeTaskCount() + quote.targets.length > db.user.concurrency) throw new MockFailure(409, 'CONCURRENCY_LIMIT', '批量任务超过当前套餐并发上限。');
+
+  const jobs = quote.targets.map((target) => {
+    const row = quote.snapshot.rows.find((candidate) => candidate.rowKey === target.rowKey);
+    const column = quote.snapshot.columns.find((candidate) => candidate.id === target.columnKey);
+    if (!row || column?.type !== 'generation') throw new MockFailure(400, 'INVALID_WORKFLOW_SELECTION', '报价已失效，请重新报价。');
+    return { target, column, input: generationInputFor(row, column) };
+  });
+
+  const runId = `run-${crypto.randomUUID()}`;
+  const rollback = structuredClone(db);
+  let children: GenerationTask[];
+  try {
+    children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: quote.workflowId, batchId: runId, workflowRowId: job.target.rowKey, workflowColumnId: job.target.columnKey }));
+  } catch (error) {
+    saveDb(rollback);
+    if (error instanceof MockFailure) throw error;
+    throw new MockFailure(500, 'INTERNAL_ERROR', '批量任务创建失败，积分未扣除。');
+  }
+
+  const createdAt = new Date().toISOString();
+  const run: WorkflowRun = {
+    id: runId,
+    workflowId: quote.workflowId,
+    workflowName: quote.workflowName,
+    workflowVersion: quote.workflowVersion,
+    status: 'queued',
+    totalCount: children.length,
+    succeededCount: 0,
+    failedCount: 0,
+    cancelledCount: 0,
+    cancelRequested: false,
+    retryOfRunId: quote.retryOfRunId,
+    retryRunIds: [],
+    estimatedCredits: quote.totalCredits,
+    chargedCredits: 0,
+    createdAt,
+    updatedAt: createdAt,
+    childTaskIds: children.map((task) => task.id),
+    items: children.map((task, index) => ({
+      id: `run-item-${crypto.randomUUID()}`,
+      rowKey: jobs[index]!.target.rowKey,
+      columnKey: jobs[index]!.target.columnKey,
+      columnName: jobs[index]!.column.name,
+      status: 'queued' as TaskStatus,
+      errorCode: null,
+      retryable: true,
+      generationJobId: task.id,
+      resultAssetIds: [],
+    })),
+  };
+  mutateDb((draft) => {
+    draft.workflowRuns.unshift(run);
+    draft.workflowRunKeys.push({ id: idempotencyKey, runId });
+    const stored = draft.workflowRunQuotes.find((item) => item.quoteId === quoteId);
+    if (stored) stored.consumed = true;
+    const origin = quote.retryOfRunId ? draft.workflowRuns.find((item) => item.id === quote.retryOfRunId) : undefined;
+    if (origin) origin.retryRunIds.push(runId);
+  });
+  return run;
+}
+
+function runQuoteDto(quote: MockWorkflowRunQuote): WorkflowRunQuote {
+  return {
+    quoteId: quote.quoteId,
+    workflowId: quote.workflowId,
+    workflowVersion: quote.workflowVersion,
+    submittable: quote.submittable,
+    totalCredits: quote.totalCredits,
+    createdAt: quote.createdAt,
+    expiresAt: quote.expiresAt,
+    items: quote.items,
+  };
+}
+
 export const handlers = [
   http.get(`${api}/me`, () => ok(sessionUser())),
 
@@ -234,7 +466,9 @@ export const handlers = [
       draft.assets = [];
       draft.deletedAssets = [];
       draft.workflows = [];
-      draft.batches = [];
+      draft.workflowRuns = [];
+      draft.workflowRunQuotes = [];
+      draft.workflowRunKeys = [];
       draft.orders = [];
       draft.invites = [];
       draft.redeemedCodes = [];
@@ -572,99 +806,182 @@ export const handlers = [
     }
   }),
 
-  http.post(`${api}/workflows/:id/run`, async ({ params, request }) => {
+  http.post(`${api}/workflows`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
-    const { rowIds } = (await request.json()) as { rowIds: string[] };
-    const workflow = loadDb().workflows.find((item) => item.id === params.id);
-    if (!workflow || !workflow.saved) return fail(400, 'INVALID_INPUT', '请先保存工作流。');
-    const generationColumns = workflow.columns.filter((column) => column.type === 'generation' && column.modelId && column.resolution);
-    const rows = workflow.rows.filter((row) => rowIds.includes(row.id));
-    if (!rows.length || !generationColumns.length) return fail(400, 'INVALID_INPUT', '没有可运行的任务。');
-    if (rows.length !== rowIds.length) return fail(400, 'INVALID_INPUT', '包含无效的工作流行。');
-    const requiredReferenceIds = new Set(generationColumns.flatMap((column) => column.sourceColumnIds ?? []));
-    if (rows.some((row) => [...requiredReferenceIds].some((columnId) => !row.cells[columnId]))) return fail(400, 'ASSET_INVALID', '请为所选行补齐参考素材。');
-    const jobs = rows.flatMap((row) => generationColumns.map((column) => {
-      const referenceAssetIds = column.sourceColumnIds?.map((id) => row.cells[id]).filter(Boolean) as string[] | undefined;
-      const input: GenerationInput = {
-        prompt: `${column.prompt?.trim() || column.name}${row.cells.brief ? `，${row.cells.brief}` : ''}`,
-        modelId: column.modelId!,
-        resolution: column.resolution!,
-        ratio: column.ratio ?? '1:1',
-        count: 1,
-        referenceAssetId: referenceAssetIds?.[0],
-        referenceAssetIds,
-        source: 'workflow',
-      };
-      return { input, rowId: row.id, columnId: column.id };
-    }));
-    const inputs = jobs.map((job) => job.input);
-    const current = loadDb();
-    let estimatedCredits = 0;
-    try {
-      estimatedCredits = inputs.reduce((total, input) => total + estimateCredits(input), 0);
-    } catch {
-      return fail(400, 'PARAMETER_UNSUPPORTED', '工作流包含不支持的模型参数。');
-    }
-    if (inputs.some((input) => !current.models.some((model) => model.id === input.modelId && model.status === 'available'))) return fail(409, 'MODEL_UNAVAILABLE', '工作流包含不可用模型。');
-    if (inputs.some((input) => input.referenceAssetIds?.some((id) => !current.assets.some((asset) => asset.id === id)))) return fail(400, 'ASSET_INVALID', '工作流包含无效参考素材。');
-    if (current.user.credits < estimatedCredits) return fail(402, 'INSUFFICIENT_CREDITS', '积分不足，无法运行所选任务。');
-    if (activeTaskCount() + inputs.length > current.user.concurrency) return fail(409, 'CONCURRENCY_LIMIT', '批量任务超过当前套餐并发上限。');
-    const createdAt = new Date().toISOString();
-    const batchId = `batch-${crypto.randomUUID()}`;
-    const children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: workflow.id, batchId, workflowRowId: job.rowId, workflowColumnId: job.columnId }));
-    const batch: BatchTask = {
-      id: batchId,
-      workflowId: workflow.id,
-      workflowName: workflow.name,
-      total: rowIds.length * generationColumns.length,
-      completed: 0,
-      processing: rowIds.length * generationColumns.length,
-      failed: 0,
-      estimatedCredits,
-      status: 'processing',
-      createdAt,
-      childTaskIds: children.map((task) => task.id),
+    const definition = (await request.json()) as WorkflowDefinition;
+    const invalid = workflowDefinitionError(definition);
+    if (invalid) return fail(422, 'INVALID_WORKFLOW_GRAPH', invalid);
+    const workflow: Workflow = {
+      id: `workflow-${crypto.randomUUID()}`,
+      name: definition.name.trim(),
+      version: 1,
+      columns: definition.columns,
+      rows: definition.rows,
+      updatedAt: new Date().toISOString(),
     };
     mutateDb((draft) => {
-      draft.batches.unshift(batch);
-      const target = draft.workflows.find((item) => item.id === workflow.id);
-      for (const row of target?.rows ?? []) {
-        if (!rowIds.includes(row.id)) continue;
-        row.status = 'processing';
-        for (const column of generationColumns) delete row.cells[column.id];
-      }
+      draft.workflows.unshift(workflow);
     });
-    return ok(batch, '批量任务已创建');
+    return ok(workflow, '工作流已创建');
+  }),
+
+  http.get(`${api}/workflows`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().workflows);
   }),
 
   http.get(`${api}/workflows/:id`, ({ params }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const workflow = loadDb().workflows.find((item) => item.id === params.id);
-    return workflow ? ok(workflow) : fail(404, 'INVALID_INPUT', '工作流不存在。');
+    return workflow ? ok(workflow) : fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
   }),
 
   http.put(`${api}/workflows/:id`, async ({ params, request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
-    const incoming = (await request.json()) as Workflow;
-    const saved: Workflow = { ...incoming, id: String(params.id), saved: true, version: incoming.version + 1, updatedAt: new Date().toISOString() };
+    const incoming = (await request.json()) as WorkflowDefinition & { version: number };
+    const current = loadDb().workflows.find((item) => item.id === params.id);
+    if (!current) return fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+    if (current.version !== incoming.version) return fail(409, 'WORKFLOW_VERSION_CONFLICT', '工作流已被其他改动更新，请重新加载。');
+    const invalid = workflowDefinitionError(incoming);
+    if (invalid) return fail(422, 'INVALID_WORKFLOW_GRAPH', invalid);
+    const saved: Workflow = { ...current, name: incoming.name.trim(), columns: incoming.columns, rows: incoming.rows, version: current.version + 1, updatedAt: new Date().toISOString() };
     mutateDb((draft) => {
-      const index = draft.workflows.findIndex((item) => item.id === saved.id);
-      if (index >= 0) draft.workflows[index] = saved;
-      else draft.workflows.unshift(saved);
+      draft.workflows = draft.workflows.map((item) => (item.id === saved.id ? saved : item));
     });
     return ok(saved, '工作流已保存');
   }),
 
-  http.get(`${api}/workflows`, () => {
+  http.post(`${api}/workflows/:id/copy`, ({ params }) => {
     const unauthorized = authError();
-    return unauthorized ?? ok(loadDb().workflows.filter((item) => item.saved));
+    if (unauthorized) return unauthorized;
+    const source = loadDb().workflows.find((item) => item.id === params.id);
+    if (!source) return fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+    const copy: Workflow = {
+      ...source,
+      id: `workflow-${crypto.randomUUID()}`,
+      name: `${source.name}（副本）`,
+      version: 1,
+      rows: source.rows.map((row) => ({ rowKey: row.rowKey, cells: { ...row.cells } })),
+      updatedAt: new Date().toISOString(),
+    };
+    mutateDb((draft) => {
+      draft.workflows.unshift(copy);
+    });
+    return ok(copy, '工作流已复制');
   }),
+
+  http.delete(`${api}/workflows/:id`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    if (!loadDb().workflows.some((item) => item.id === params.id)) return fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+    mutateDb((draft) => {
+      draft.workflows = draft.workflows.filter((item) => item.id !== params.id);
+    });
+    return ok({ id: String(params.id) }, '工作流已归档');
+  }),
+
+  http.post(`${api}/workflow-run-quotes`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const input = (await request.json()) as WorkflowQuoteRequest;
+    if ('retryRunId' in input) {
+      const run = loadDb().workflowRuns.find((item) => item.id === input.retryRunId);
+      if (!run) return fail(404, 'RUN_NOT_FOUND', '批量任务不存在。');
+      if (!isTerminalRun(run.status)) return fail(409, 'RUN_NOT_SETTLED', '该批次还在运行，暂时无法重试。');
+      const workflow = loadDb().workflows.find((item) => item.id === run.workflowId);
+      if (!workflow) return fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+      const failedItems = run.items.filter((item) => item.status === 'failed');
+      if (!failedItems.length) return fail(409, 'RETRY_UNAVAILABLE', '该批次没有可重试的失败项。');
+      if (failedItems.some((item) => !item.retryable)) return fail(409, 'RETRY_MISMATCH', '该批次包含不可重试的失败项。');
+      return ok(runQuoteDto(priceWorkflowRun({ ...workflow, version: run.workflowVersion }, failedItems.map((item) => ({ rowKey: item.rowKey, columnKey: item.columnKey })), run.id)));
+    }
+    const workflow = loadDb().workflows.find((item) => item.id === input.workflowId);
+    if (!workflow) return fail(404, 'WORKFLOW_NOT_FOUND', '工作流不存在。');
+    const rowKeys = [...new Set(input.rowIds)];
+    if (!rowKeys.length || rowKeys.some((rowKey) => !workflow.rows.some((row) => row.rowKey === rowKey))) return fail(422, 'INVALID_WORKFLOW_SELECTION', '所选行不属于这个工作流。');
+    const targets = workflow.rows
+      .filter((row) => rowKeys.includes(row.rowKey))
+      .flatMap((row) => workflow.columns.filter((column): column is WorkflowGenerationColumn => column.type === 'generation').map((column) => ({ rowKey: row.rowKey, columnKey: column.id })));
+    if (!targets.length) return fail(422, 'INVALID_WORKFLOW_SELECTION', '工作流还没有可运行的生成列。');
+    return ok(runQuoteDto(priceWorkflowRun(workflow, targets, null)), '报价已生成');
+  }),
+
+  http.post(`${api}/workflow-runs`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const { quoteId } = (await request.json()) as { quoteId: string };
+    try {
+      return ok(submitWorkflowRun(quoteId, request.headers.get('Idempotency-Key'), null), '批量任务已创建');
+    } catch (error) {
+      if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
+      return fail(500, 'INTERNAL_ERROR', '批量任务创建失败。');
+    }
+  }),
+
+  http.post(`${api}/workflow-runs/:id/retry-failed`, async ({ params, request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const { quoteId } = (await request.json()) as { quoteId: string };
+    const run = loadDb().workflowRuns.find((item) => item.id === params.id);
+    if (!run) return fail(404, 'RUN_NOT_FOUND', '批量任务不存在。');
+    try {
+      return ok(submitWorkflowRun(quoteId, request.headers.get('Idempotency-Key'), run.id), '重试任务已创建');
+    } catch (error) {
+      if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
+      return fail(500, 'INTERNAL_ERROR', '重试任务创建失败。');
+    }
+  }),
+
+  http.post(`${api}/workflow-runs/:id/cancel`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const run = loadDb().workflowRuns.find((item) => item.id === params.id);
+    if (!run) return fail(404, 'RUN_NOT_FOUND', '批量任务不存在。');
+    if (isTerminalRun(run.status)) return fail(409, 'RUN_ALREADY_SETTLED', '该批次已经结束。');
+    const db = mutateDb((draft) => {
+      const target = draft.workflowRuns.find((item) => item.id === params.id);
+      if (!target) return;
+      target.cancelRequested = true;
+      for (const item of target.items) {
+        const task = draft.tasks.find((candidate) => candidate.id === item.generationJobId);
+        if (task && (task.status === 'queued' || task.status === 'processing')) {
+          task.status = 'cancelled';
+          task.progress = 100;
+          task.cancelRequested = true;
+          task.updatedAt = new Date().toISOString();
+          draft.user.frozenCredits = Math.max(0, draft.user.frozenCredits - task.estimatedCredits);
+          draft.user.credits += task.estimatedCredits;
+        }
+      }
+    });
+    return ok(db.workflowRuns.find((item) => item.id === params.id), '批次已取消');
+  }),
+
+  http.get(`${api}/workflow-runs`, () => {
+    const unauthorized = authError();
+    return unauthorized ?? ok(loadDb().workflowRuns);
+  }),
+
+  http.get(`${api}/workflow-runs/:id`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const run = loadDb().workflowRuns.find((item) => item.id === params.id);
+    return run ? ok(run) : fail(404, 'RUN_NOT_FOUND', '批量任务不存在。');
+  }),
+
   http.get(`${api}/batches`, () => {
     const unauthorized = authError();
-    return unauthorized ?? ok(loadDb().batches);
+    return unauthorized ?? ok(loadDb().workflowRuns);
+  }),
+
+  http.get(`${api}/batches/:id`, ({ params }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const run = loadDb().workflowRuns.find((item) => item.id === params.id);
+    return run ? ok(run) : fail(404, 'RUN_NOT_FOUND', '批量任务不存在。');
   }),
   http.get(`${api}/plans`, () => ok(loadDb().plans)),
 

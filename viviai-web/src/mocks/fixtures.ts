@@ -1,5 +1,4 @@
 import type {
-  BatchTask,
   GenerationTask,
   ImageAsset,
   Inspiration,
@@ -14,6 +13,9 @@ import type {
   User,
   ViralTemplate,
   Workflow,
+  WorkflowDefinition,
+  WorkflowRun,
+  WorkflowRunQuote,
 } from '@/src/types/domain';
 
 export interface MockDatabase {
@@ -28,7 +30,10 @@ export interface MockDatabase {
   tools: ToolTemplate[];
   toolQuotes: MockToolQuote[];
   workflows: Workflow[];
-  batches: BatchTask[];
+  workflowRuns: WorkflowRun[];
+  workflowRunQuotes: MockWorkflowRunQuote[];
+  /** Idempotency keys already spent on batch submission, mapping to the run they created. */
+  workflowRunKeys: Array<{ id: string; runId: string }>;
   plans: Plan[];
   orders: Order[];
   ledger: PointLedgerEntry[];
@@ -42,6 +47,15 @@ export interface MockDatabase {
 export interface MockToolQuote extends ToolRunQuote {
   assetIds: string[];
   values: Record<string, string>;
+  consumed: boolean;
+}
+
+/** A batch quote plus what it was priced against, so submission can run exactly what was quoted. */
+export interface MockWorkflowRunQuote extends WorkflowRunQuote {
+  workflowName: string;
+  snapshot: WorkflowDefinition;
+  retryOfRunId: string | null;
+  targets: Array<{ rowKey: string; columnKey: string }>;
   consumed: boolean;
 }
 
@@ -272,7 +286,9 @@ export function createSeedDb(): MockDatabase {
     tools,
     toolQuotes: [],
     workflows: [],
-    batches: [],
+    workflowRuns: [],
+    workflowRunQuotes: [],
+    workflowRunKeys: [],
     plans,
     orders: [],
     ledger: [

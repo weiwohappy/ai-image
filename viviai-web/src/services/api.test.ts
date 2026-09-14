@@ -200,4 +200,79 @@ describe('frontend API transport', () => {
     expect((init.headers as Headers).get('Idempotency-Key')).toBe('tool-attempt-12345678');
     expect(jsonBody(init)).toEqual({ quoteId: 'quote-1' });
   });
+
+  it('persists workflows through versioned server commands', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => jsonResponse({ data: { id: 'workflow-1', version: 2 }, message: 'ok', requestId: 'req-workflow' }));
+    const definition = {
+      name: '商品批量主图',
+      columns: [{ id: 'out', name: '主图', type: 'generation' as const, prompt: '商业主图', sourceColumnIds: [], modelId: 'nano-banana-2', resolution: '1K' as const, ratio: '1:1' as const }],
+      rows: [{ rowKey: 'row-1', cells: {} }],
+    };
+
+    await api.createWorkflow(definition);
+    await api.updateWorkflow('workflow-1', { ...definition, version: 1 });
+    await api.copyWorkflow('workflow-1');
+    await api.archiveWorkflow('workflow-1');
+
+    const calls = fetchMock.mock.calls as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => [url, init.method])).toEqual([
+      ['http://localhost:3001/api/workflows', 'POST'],
+      ['http://localhost:3001/api/workflows/workflow-1', 'PUT'],
+      ['http://localhost:3001/api/workflows/workflow-1/copy', 'POST'],
+      ['http://localhost:3001/api/workflows/workflow-1', 'DELETE'],
+    ]);
+    expect(jsonBody(calls[0]![1])).toEqual(definition);
+    // The optimistic-concurrency version travels with the update, never with a create.
+    expect(jsonBody(calls[1]![1])).toEqual({ ...definition, version: 1 });
+  });
+
+  it('quotes a workflow selection and submits it with the caller idempotency key', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith('/workflow-run-quotes')) {
+        return jsonResponse({ data: { quoteId: 'quote-1', submittable: true }, message: 'ok', requestId: 'req-quote' });
+      }
+      return jsonResponse({ data: { id: 'run-1', workflowId: 'workflow-1' }, message: 'ok', requestId: 'req-run' });
+    });
+
+    await api.quoteWorkflowRun({ workflowId: 'workflow-1', rowIds: ['row-1', 'row-2'] });
+    await api.submitWorkflowRun('quote-1', 'batch-attempt-12345678');
+    await api.retryWorkflowRun('run-1', 'quote-2', 'retry-attempt-12345678');
+    await api.cancelWorkflowRun('run-1');
+
+    const calls = fetchMock.mock.calls as Array<[string, RequestInit]>;
+    expect(calls.map(([url, init]) => [url, init.method])).toEqual([
+      ['http://localhost:3001/api/workflow-run-quotes', 'POST'],
+      ['http://localhost:3001/api/workflow-runs', 'POST'],
+      ['http://localhost:3001/api/workflow-runs/run-1/retry-failed', 'POST'],
+      ['http://localhost:3001/api/workflow-runs/run-1/cancel', 'POST'],
+    ]);
+    expect(jsonBody(calls[0]![1])).toEqual({ workflowId: 'workflow-1', rowIds: ['row-1', 'row-2'] });
+    // Only commands that consume a quote carry the key, so a replay cannot double-charge.
+    expect((calls[1]![1].headers as Headers).get('Idempotency-Key')).toBe('batch-attempt-12345678');
+    expect(jsonBody(calls[1]![1])).toEqual({ quoteId: 'quote-1' });
+    expect((calls[2]![1].headers as Headers).get('Idempotency-Key')).toBe('retry-attempt-12345678');
+    expect(jsonBody(calls[2]![1])).toEqual({ quoteId: 'quote-2' });
+    expect((calls[3]![1].headers as Headers).has('Idempotency-Key')).toBe(false);
+  });
+
+  it('quotes a retry of a settled batch by run id', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({ data: { quoteId: 'quote-2', submittable: true }, message: 'ok', requestId: 'req-retry-quote' }),
+    );
+
+    await api.quoteWorkflowRun({ retryRunId: 'run-1' });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://localhost:3001/api/workflow-run-quotes');
+    expect(jsonBody(init)).toEqual({ retryRunId: 'run-1' });
+  });
 });

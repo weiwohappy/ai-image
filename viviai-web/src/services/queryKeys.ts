@@ -7,7 +7,7 @@ export const queryKeys = {
   assets: ['assets'] as const,
   tools: ['tools'] as const,
   workflows: ['workflows'] as const,
-  batches: ['batches'] as const,
+  workflowRuns: ['workflow-runs'] as const,
   plans: ['plans'] as const,
   ledger: ['point-ledger'] as const,
   notifications: ['notifications'] as const,
