@@ -10,15 +10,30 @@ import type { CompletedResult, NormalizedImageRequest } from '../providers/contr
 import { TERMINAL } from './job-serializer.js';
 import { recordLifecycle } from '../admin/lifecycle.js';
 import { NotificationService } from '../engagement/notification.service.js';
+import { BatchProjectionService } from '../workflow/batch-projection.service.js';
 
 export class SettlementService {
   private readonly notifications: NotificationService;
+  private readonly batches: BatchProjectionService;
   constructor(
     private readonly db: DatabaseService,
     private readonly wallet: WalletService,
     private readonly store: ObjectStore,
   ) {
     this.notifications = new NotificationService(db);
+    this.batches = new BatchProjectionService(db);
+  }
+  /**
+   * Projects a terminal generation item onto the batch run that links it, in the
+   * same transaction, so run counts never drift and can never be counted twice.
+   */
+  private async projectBatch(tx: DbTransaction, jobId: string) {
+    const links = await tx.workflowRunItem.findMany({
+      where: { generationJobId: jobId },
+      select: { runId: true },
+    });
+    for (const link of new Set(links.map((entry) => entry.runId)))
+      await this.batches.reconcile(tx, link);
   }
   async fail(tx: DbTransaction, itemId: string, code: string, cancelled = false, now = new Date()) {
     const item = await tx.generationItem.findUniqueOrThrow({
@@ -39,6 +54,7 @@ export class SettlementService {
         fence: { increment: 1 },
       },
     });
+    await this.projectBatch(tx, item.job.id);
     await this.notifyIfTerminal(tx, item.job.userId, item.job.id);
   }
   private async notifyIfTerminal(tx: DbTransaction, userId: string, jobId: string) {
@@ -166,6 +182,7 @@ export class SettlementService {
           where: { id: attempt.id },
           data: { status: 'completed', stagedKey: objectKey },
         });
+        await this.projectBatch(tx, item.job.id);
         await this.notifyIfTerminal(tx, attempt.userId, item.job.id);
       });
     } catch {

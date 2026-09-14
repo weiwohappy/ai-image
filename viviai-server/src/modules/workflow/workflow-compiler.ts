@@ -66,6 +66,7 @@ export function compileWorkflowSelection(
   workflow: WorkflowCompileSource,
   rowKeys: string[],
   tools: ToolDefinitionRow[],
+  columnIds?: string[],
 ): WorkflowCompilation {
   const columns = workflowColumnArraySchema.safeParse(workflow.columns);
   if (!columns.success)
@@ -77,6 +78,8 @@ export function compileWorkflowSelection(
   if (selected.some((rowKey) => !rowsByKey.has(rowKey)))
     throw new AppError(422, 'INVALID_WORKFLOW_SELECTION', 'Selected rows are not part of this workflow');
   const selection = new Set(selected);
+  // Retrying a batch re-runs only the columns that failed, not whole rows.
+  const wantedColumns = columnIds ? new Set(columnIds) : undefined;
 
   const toolsByKey = new Map(tools.map((tool) => [toolKey(tool.externalId, tool.version), tool]));
   const items: CompiledWorkflowItem[] = [];
@@ -86,6 +89,7 @@ export function compileWorkflowSelection(
     if (!selection.has(row.rowKey)) continue;
     for (const column of columns.data) {
       if (column.type === 'reference') continue;
+      if (wantedColumns && !wantedColumns.has(column.id)) continue;
       const assets = sourceAssets(row, column.sourceColumnIds);
       if (typeof assets === 'string') {
         issues.push({ rowKey: row.rowKey, columnId: column.id, code: assets, message: assetMessage(assets) });

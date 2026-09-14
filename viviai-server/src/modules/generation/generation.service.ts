@@ -6,14 +6,32 @@ import { AppError } from '../../shared/http/errors.js';
 import type { DbTransaction } from '../../shared/database/database.service.js';
 import type { GenerationQuote } from '../../generated/prisma/client.js';
 import type { GenerationInput } from '../catalog/input-schema.js';
-import { CatalogService, originOf, quoteHash, type QuoteOriginIdentity } from '../catalog/catalog.service.js';
+import {
+  CatalogService,
+  originOf,
+  quoteHash,
+  type QuoteOriginIdentity,
+} from '../catalog/catalog.service.js';
 import { digest, normalizeInput, PRODUCT_ID } from '../catalog/input-schema.js';
 import { activeCreditPrice, creditPriceSchema } from '../catalog/credit-pricing.js';
+import { readRunSnapshotIdentity } from '../workflow/workflow-presenter.js';
 import { WalletService } from '../wallet/wallet.service.js';
-import { jobDto, jobInclude, TERMINAL } from './job-serializer.js';
+import { jobDto, jobInclude, TERMINAL, type JobRecord } from './job-serializer.js';
 
 const missing = () => new AppError(404, 'NOT_FOUND', 'Task not found');
 const submission = z.object({ quoteId: z.uuid(), input: z.unknown() }).strict();
+const KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+type ReferenceImages = Awaited<ReturnType<CatalogService['references']>>;
+
+/** One child of a workflow batch: the quote to consume and where to link the job. */
+export interface BatchQuoteSubmission {
+  quoteId: string;
+  operation: 'create' | 'remix';
+  idempotencyKey: string;
+  runId: string;
+  rowKey: string;
+  columnKey: string;
+}
 @Injectable()
 export class GenerationService {
   constructor(
@@ -138,12 +156,37 @@ export class GenerationService {
         );
       const previousInput = normalizeInput(previous.input);
       if (digest({ ...previousInput, count: input.count }) !== digest(input))
-        throw new AppError(
-          409,
-          'RETRY_INPUT_MISMATCH',
-          'Retry must preserve original parameters',
-        );
+        throw new AppError(409, 'RETRY_INPUT_MISMATCH', 'Retry must preserve original parameters');
     }
+    return this.writeJob(tx, userId, quote, {
+      key,
+      operation,
+      input,
+      requestHash,
+      images,
+      retryOfJobId,
+    });
+  }
+  /**
+   * Writes one already-validated quote into a job: items, credit freezes, ready
+   * events and the quote consumption. The caller owns the transaction so a
+   * workflow batch can commit every child job atomically.
+   */
+  private async writeJob(
+    tx: DbTransaction,
+    userId: string,
+    quote: GenerationQuote,
+    options: {
+      key: string;
+      operation: 'create' | 'remix';
+      input: GenerationInput;
+      requestHash: string;
+      images: ReferenceImages;
+      retryOfJobId?: string | undefined;
+    },
+  ) {
+    const { key, operation, input, requestHash, images, retryOfJobId } = options;
+    const origin = originOf(quote);
     const now = new Date();
     const created = await tx.generationJob.create({
       data: {
@@ -189,6 +232,101 @@ export class GenerationService {
     await tx.generationQuote.update({ where: { id: quote.id }, data: { consumedAt: now } });
     return created;
   }
+  /**
+   * Submits every item of one workflow batch. Each quote is validated before the
+   * first write, so a batch freezes all of its credits or none of them.
+   */
+  async createManyFromQuotes(
+    tx: DbTransaction,
+    userId: string,
+    entries: BatchQuoteSubmission[],
+  ) {
+    if (!entries.length) return [];
+    const runId = entries[0]!.runId;
+    if (entries.some((entry) => entry.runId !== runId))
+      throw new AppError(400, 'INVALID_INPUT', 'Batch items must belong to one run');
+    if (entries.some((entry) => !KEY_PATTERN.test(entry.idempotencyKey)))
+      throw new AppError(400, 'INVALID_INPUT', 'A valid Idempotency-Key is required');
+    await lockWallet(tx, userId);
+    const run = await tx.workflowRun.findFirst({ where: { id: runId, userId } });
+    if (!run) throw new AppError(404, 'RUN_NOT_FOUND', 'Batch run not found');
+    const snapshot = readRunSnapshotIdentity(run.workflowSnapshot);
+
+    const prepared: Array<{
+      entry: BatchQuoteSubmission;
+      quote: GenerationQuote;
+      input: GenerationInput;
+      requestHash: string;
+      images: ReferenceImages;
+    }> = [];
+    for (const entry of entries) {
+      const quote = await tx.generationQuote.findFirst({
+        where: { id: entry.quoteId, userId },
+      });
+      if (!quote) throw new AppError(404, 'QUOTE_NOT_FOUND', 'Quote not found');
+      const input = normalizeInput(quote.input);
+      if (input.source !== entry.operation)
+        throw new AppError(400, 'INVALID_INPUT', 'Batch mode and input differ');
+      if (
+        quote.originType !== 'workflow' ||
+        quote.originId !== snapshot.workflowId ||
+        quote.originVersion !== snapshot.workflowVersion
+      )
+        throw new AppError(409, 'ORIGIN_MISMATCH', 'Quote does not match this batch');
+      if (input.modelId !== PRODUCT_ID) {
+        const current = await activeCreditPrice(tx, input.modelId, input.resolution, 409);
+        const price = creditPriceSchema.safeParse(quote.creditPriceSnapshot);
+        if (
+          !price.success ||
+          digest(price.data) !== digest(current) ||
+          quote.unitCredits !== BigInt(price.data.unitCredits) ||
+          quote.totalCredits !== BigInt(input.count) * quote.unitCredits
+        )
+          throw new AppError(
+            409,
+            'PRICE_CHANGED',
+            'Model price changed; request and confirm a new quote',
+          );
+      }
+      const execution = this.catalog.execution(input);
+      if (digest(quote.execution ?? null) !== digest(execution ?? null))
+        throw new AppError(
+          409,
+          'MODEL_CONFIG_CHANGED',
+          'Model configuration changed; request a new quote',
+        );
+      if (quote.consumedAt) throw new AppError(409, 'QUOTE_USED', 'Quote has already been used');
+      if (quote.expiresAt.getTime() <= Date.now())
+        throw new AppError(409, 'QUOTE_EXPIRED', 'Please request a new quote');
+      const origin = originOf(quote);
+      const images = await this.catalog.references(tx, userId, input);
+      if (quote.inputHash !== quoteHash(input, images, origin))
+        throw new AppError(409, 'QUOTE_MISMATCH', 'Input differs from quoted parameters');
+      prepared.push({ entry, quote, input, requestHash: digest({ quoteId: quote.id, input }), images });
+    }
+
+    const created: Array<{ itemId: string; jobId: string }> = [];
+    for (const item of prepared) {
+      const job = await this.writeJob(tx, userId, item.quote, {
+        key: item.entry.idempotencyKey,
+        operation: item.entry.operation,
+        input: item.input,
+        requestHash: item.requestHash,
+        images: item.images,
+      });
+      const runItem = await tx.workflowRunItem.create({
+        data: {
+          runId,
+          rowKey: item.entry.rowKey,
+          columnKey: item.entry.columnKey,
+          status: 'queued',
+          generationJobId: job.id,
+        },
+      });
+      created.push({ itemId: runItem.id, jobId: job.id });
+    }
+    return created;
+  }
   async get(userId: string, id: string) {
     if (!z.uuid().safeParse(id).success) throw missing();
     const job = await this.db.client.generationJob.findFirst({
@@ -211,19 +349,25 @@ export class GenerationService {
   async cancel(userId: string, id: string) {
     if (!z.uuid().safeParse(id).success) throw missing();
     return this.db.transaction(async (tx) => {
-      await lockWallet(tx, userId);
       const job = await tx.generationJob.findFirst({ where: { id, userId }, include: jobInclude });
       if (!job) throw missing();
-      if (job.items.every((item) => TERMINAL.includes(item.status))) return jobDto(job);
-      await tx.generationJob.update({ where: { id }, data: { cancelRequested: true } });
-      for (const item of job.items.filter((item) => item.status === 'queued')) {
-        await this.wallet.settle(tx, item.id, 'release', new Date());
-        await tx.generationItem.update({ where: { id: item.id }, data: { status: 'cancelled' } });
-      }
-      return jobDto(
-        await tx.generationJob.findUniqueOrThrow({ where: { id }, include: jobInclude }),
-      );
+      return jobDto(await this.cancelIn(tx, userId, job));
     });
+  }
+  /**
+   * Cancels one job inside the caller's transaction: queued items are released
+   * and cancelled, running items only observe the request. A batch cancel calls
+   * this for every linked job so the whole run settles once.
+   */
+  async cancelIn(tx: DbTransaction, userId: string, job: JobRecord): Promise<JobRecord> {
+    if (job.items.every((item) => TERMINAL.includes(item.status))) return job;
+    await lockWallet(tx, userId);
+    await tx.generationJob.update({ where: { id: job.id }, data: { cancelRequested: true } });
+    for (const item of job.items.filter((entry) => entry.status === 'queued')) {
+      await this.wallet.settle(tx, item.id, 'release', new Date());
+      await tx.generationItem.update({ where: { id: item.id }, data: { status: 'cancelled' } });
+    }
+    return tx.generationJob.findUniqueOrThrow({ where: { id: job.id }, include: jobInclude });
   }
   async retry(userId: string, id: string, raw: unknown, key: string) {
     const previous = await this.get(userId, id);

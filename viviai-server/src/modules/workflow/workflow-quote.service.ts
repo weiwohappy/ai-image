@@ -5,12 +5,13 @@ import { AppError } from '../../shared/http/errors.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { digest, PRODUCT_ID } from '../catalog/input-schema.js';
 import type { ToolDefinitionRow } from '../tool-execution/tool-compiler.js';
+import { RUN_TERMINAL, isRetryable } from './batch-projection.service.js';
 import {
   compileWorkflowSelection,
   type CompiledWorkflowItem,
   type WorkflowItemIssue,
 } from './workflow-compiler.js';
-import { readStoredContent } from './workflow-presenter.js';
+import { readRunSnapshot, readStoredContent } from './workflow-presenter.js';
 
 const selectionSchema = z
   .object({
@@ -18,6 +19,8 @@ const selectionSchema = z
     rowIds: z.array(z.string().regex(/^[a-z][a-z0-9_-]{1,63}$/)).min(1).max(200),
   })
   .strict();
+
+const retrySchema = z.object({ retryRunId: z.uuid() }).strict();
 
 interface QuotedItem extends CompiledWorkflowItem {
   quoteId: string;
@@ -41,6 +44,9 @@ export class WorkflowQuoteService {
    * executable, so a batch is either fully quotable or fully rejected.
    */
   async quote(userId: string, raw: unknown) {
+    const retry = retrySchema.safeParse(raw);
+    if (retry.success) return this.quoteRetry(userId, retry.data.retryRunId);
+
     const parsed = selectionSchema.safeParse(raw);
     if (!parsed.success)
       throw new AppError(400, 'INVALID_INPUT', 'A workflow and selected rows are required');
@@ -69,6 +75,62 @@ export class WorkflowQuoteService {
 
     if (issues.length) return this.rejected(workflow.id, workflow.version, issues);
     return this.record(userId, workflow.id, workflow.version, usable);
+  }
+
+  /**
+   * Prices only the failed, retryable columns of a settled batch. The run's own
+   * workflow snapshot is used so a retry reproduces the quoted version, and a
+   * completed run with nothing left to retry yields an empty, unsubmittable quote.
+   */
+  private async quoteRetry(userId: string, runId: string) {
+    const run = await this.db.client.workflowRun.findFirst({
+      where: { id: runId, userId },
+      include: { items: true },
+    });
+    if (!run) throw new AppError(404, 'RUN_NOT_FOUND', 'Batch run not found');
+    if (!RUN_TERMINAL.includes(run.status))
+      throw new AppError(409, 'RUN_NOT_SETTLED', 'This batch is still running');
+    const snapshot = readRunSnapshot(run.workflowSnapshot);
+
+    const targets = run.items.filter((item) => item.status === 'failed' && isRetryable(item.errorCode));
+    if (!targets.length) return this.rejected(snapshot.workflowId, snapshot.workflowVersion, []);
+
+    const tools = await this.loadTools(snapshot.columns);
+    const { items, issues } = compileWorkflowSelection(
+      {
+        id: snapshot.workflowId,
+        version: snapshot.workflowVersion,
+        columns: snapshot.columns,
+        rows: snapshot.rows,
+      },
+      [...new Set(targets.map((item) => item.rowKey))],
+      tools,
+      targets.map((item) => item.columnKey),
+    );
+
+    const usable: CompiledWorkflowItem[] = [];
+    for (const item of items) {
+      const issue = await this.preflight(userId, item);
+      if (issue) issues.push(issue);
+      else usable.push(item);
+    }
+    // Rows can share column keys, so keep only the row/column pairs that failed.
+    const wanted = new Set(targets.map((item) => `${item.rowKey}:${item.columnKey}`));
+    const selected = usable.filter((item) => wanted.has(`${item.rowKey}:${item.columnId}`));
+    const missing = targets.filter(
+      (item) => !selected.some((entry) => entry.rowKey === item.rowKey && entry.columnId === item.columnKey),
+    );
+    for (const item of missing)
+      if (!issues.some((issue) => issue.rowKey === item.rowKey && issue.columnId === item.columnKey))
+        issues.push({
+          rowKey: item.rowKey,
+          columnId: item.columnKey,
+          code: 'RETRY_UNAVAILABLE',
+          message: 'This item can no longer be reproduced from the batch snapshot',
+        });
+
+    if (issues.length) return this.rejected(snapshot.workflowId, snapshot.workflowVersion, issues);
+    return this.record(userId, snapshot.workflowId, snapshot.workflowVersion, selected);
   }
 
   private async record(

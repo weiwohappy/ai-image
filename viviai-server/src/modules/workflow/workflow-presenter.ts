@@ -46,6 +46,31 @@ export function readStoredContent(row: {
   return { columns: columns.data, rows };
 }
 
+const runSnapshotSchema = z.object({
+  workflowId: z.uuid(),
+  workflowVersion: z.number().int().positive(),
+  name: z.string(),
+  columns: workflowColumnArraySchema,
+  rows: z.array(z.object({ rowKey: z.string(), cells: storedCellsSchema })),
+});
+
+export type WorkflowRunSnapshot = z.infer<typeof runSnapshotSchema>;
+
+/**
+ * Reads the workflow content frozen into a batch run when it was submitted, so
+ * retries reproduce the version that was quoted even after later edits.
+ */
+export function readRunSnapshot(value: unknown): WorkflowRunSnapshot {
+  const snapshot = runSnapshotSchema.safeParse(value);
+  if (!snapshot.success) throw invalidStored();
+  return snapshot.data;
+}
+
+export function readRunSnapshotIdentity(value: unknown) {
+  const { workflowId, workflowVersion } = readRunSnapshot(value);
+  return { workflowId, workflowVersion };
+}
+
 export function presentWorkflow(row: WorkflowProjection): WorkflowDto {
   const { columns, rows } = readStoredContent(row);
   return {
