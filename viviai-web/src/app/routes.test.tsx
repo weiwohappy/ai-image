@@ -60,4 +60,13 @@ describe('application routes', () => {
     expect(await screen.findByRole('heading', { name: /邀请朋友一起创作/ })).toBeVisible();
     expect(screen.getByRole('button', { name: /查看通知，未读 \d+/ })).toBeVisible();
   });
+
+  it('keeps the AI tool center available in real API mode', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    window.location.hash = '#/tools';
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: '工具中心' })).toBeVisible();
+    expect(screen.queryByText('AI 工具暂未接入真实接口')).not.toBeInTheDocument();
+  });
 });

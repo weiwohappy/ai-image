@@ -34,8 +34,8 @@ export function AppRoutes() {
         <Route path="/remix/templates" element={isRealApi() ? <RealApiUnavailablePage title="爆款模板库暂未接入真实接口" /> : <RemixLibraryPage />} />
         <Route path="/remix/:templateId" element={isRealApi() ? <RealApiUnavailablePage title="平台模板暂未接入真实接口" /> : <RemixPage />} />
         <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
-        <Route path="/tools" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="AI 工具暂未接入真实接口" /> : <ToolsPage />}</ProtectedRoute>} />
-        <Route path="/tools/:toolId" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="AI 工具暂未接入真实接口" /> : <ToolRunPage />}</ProtectedRoute>} />
+        <Route path="/tools" element={<ProtectedRoute><ToolsPage /></ProtectedRoute>} />
+        <Route path="/tools/:toolId" element={<ProtectedRoute><ToolRunPage /></ProtectedRoute>} />
         <Route path="/workflows" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="工作流暂未接入真实接口" /> : <WorkflowsPage />}</ProtectedRoute>} />
         <Route path="/workflows/:workflowId" element={<ProtectedRoute>{isRealApi() ? <RealApiUnavailablePage title="工作流暂未接入真实接口" /> : <WorkflowEditorPage />}</ProtectedRoute>} />
         <Route path="/tasks" element={<ProtectedRoute><TasksPage /></ProtectedRoute>} />

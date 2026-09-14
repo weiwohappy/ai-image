@@ -32,6 +32,7 @@ export function loadDb(): MockDatabase {
     }
   }
   if (!memoryDb.redeemedCodes) { memoryDb.redeemedCodes = []; migrated = true; }
+  if (!memoryDb.toolQuotes) { memoryDb.toolQuotes = []; migrated = true; }
   if (!memoryDb.challenges) { memoryDb.challenges = []; migrated = true; }
   if (!memoryDb.redemptionAttempts) { memoryDb.redemptionAttempts = []; migrated = true; }
   const legacyDb = memoryDb as MockDatabase & { credentialHash?: string };

@@ -10,9 +10,11 @@ import type {
   ImageAsset,
   Order,
   RemixInput,
+  ToolQuoteInput,
   User,
   Workflow,
 } from '@/src/types/domain';
+import type { MockToolQuote } from './fixtures';
 import { getCredentialHash, loadDb, mutateDb, resetDb, setCredentialHash, settleTask } from './db';
 import { hasReferenceUpload, saveReferenceUpload } from './referenceUploads';
 
@@ -484,18 +486,81 @@ export const handlers = [
 
   http.get(`${api}/tools`, () => ok(loadDb().tools)),
 
+  http.post(`${api}/tool-run-quotes`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    const input = (await request.json()) as ToolQuoteInput;
+    const tool = loadDb().tools.find((item) => item.id === input.toolId);
+    if (!tool) return fail(404, 'INVALID_INPUT', '工具不存在。');
+    if (input.toolVersion !== tool.version) return fail(409, 'TEMPLATE_UNAVAILABLE', '工具已更新，请重新报价。');
+    if (input.assetIds.length < 1 || input.assetIds.length > tool.maxAssets) return fail(400, 'ASSET_INVALID', `请选择 1–${tool.maxAssets} 张${tool.assetLabel}。`);
+    if (tool.fields.some((field) => field.required && !input.values[field.id])) return fail(400, 'INVALID_INPUT', '请完成所有必填项。');
+    let unitCredits: number;
+    let totalCredits: number;
+    try {
+      unitCredits = estimateCredits({ modelId: input.modelId, resolution: input.resolution, count: 1 });
+      totalCredits = estimateCredits({ modelId: input.modelId, resolution: input.resolution, count: input.count });
+    } catch {
+      return fail(400, 'PARAMETER_UNSUPPORTED', '当前模型不支持这组生成参数。');
+    }
+    const now = new Date();
+    const quote: MockToolQuote = {
+      quoteId: `quote-${crypto.randomUUID()}`,
+      toolId: tool.id,
+      toolVersion: tool.version,
+      modelId: input.modelId,
+      resolution: input.resolution,
+      ratio: input.ratio,
+      count: input.count,
+      unitCredits,
+      totalCredits,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + 10 * 60 * 1000).toISOString(),
+      assetIds: input.assetIds,
+      values: input.values,
+      consumed: false,
+    };
+    mutateDb((draft) => {
+      draft.toolQuotes.unshift(quote);
+    });
+    return ok(
+      {
+        quoteId: quote.quoteId,
+        toolId: quote.toolId,
+        toolVersion: quote.toolVersion,
+        modelId: quote.modelId,
+        resolution: quote.resolution,
+        ratio: quote.ratio,
+        count: quote.count,
+        unitCredits: quote.unitCredits,
+        totalCredits: quote.totalCredits,
+        createdAt: quote.createdAt,
+        expiresAt: quote.expiresAt,
+      },
+      '报价已生成',
+    );
+  }),
+
   http.post(`${api}/tool-runs`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
-    const input = (await request.json()) as { toolId: string; assetIds: string[]; values: Record<string, string> };
-    const tool = loadDb().tools.find((item) => item.id === input.toolId);
+    const idempotencyKey = request.headers.get('Idempotency-Key');
+    if (!idempotencyKey || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey)) return fail(400, 'INVALID_INPUT', '缺少有效的幂等键。');
+    const { quoteId } = (await request.json()) as { quoteId: string };
+    const quote = loadDb().toolQuotes.find((item) => item.quoteId === quoteId);
+    if (!quote) return fail(404, 'INVALID_INPUT', '报价不存在。');
+    if (quote.consumed) return fail(409, 'IDEMPOTENCY_CONFLICT', '报价已使用，请重新报价。');
+    if (new Date(quote.expiresAt).getTime() <= Date.now()) return fail(409, 'INVALID_INPUT', '报价已过期，请重新报价。');
+    const tool = loadDb().tools.find((item) => item.id === quote.toolId);
     if (!tool) return fail(404, 'INVALID_INPUT', '工具不存在。');
-    if (input.assetIds.length < 1 || input.assetIds.length > tool.maxAssets) return fail(400, 'ASSET_INVALID', `请选择 1–${tool.maxAssets} 张${tool.assetLabel}。`);
-    if (tool.fields.some((field) => field.required && !input.values[field.id])) return fail(400, 'INVALID_INPUT', '请完成所有必填项。');
     try {
+      mutateDb((draft) => {
+        const target = draft.toolQuotes.find((item) => item.quoteId === quoteId);
+        if (target) target.consumed = true;
+      });
       return ok(
         createTask(
-          { prompt: `${tool.name}：${Object.values(input.values).join('，')}`, ...tool.defaults, source: 'tool' },
+          { prompt: `${tool.name}：${Object.values(quote.values).join('，')}`, ...tool.defaults, source: 'tool' },
           'happy',
           { toolId: tool.id },
         ),

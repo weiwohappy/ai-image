@@ -9,6 +9,7 @@ import type {
   Order,
   Plan,
   PointLedgerEntry,
+  ToolRunQuote,
   ToolTemplate,
   User,
   ViralTemplate,
@@ -25,6 +26,7 @@ export interface MockDatabase {
   inspirations: Inspiration[];
   templates: ViralTemplate[];
   tools: ToolTemplate[];
+  toolQuotes: MockToolQuote[];
   workflows: Workflow[];
   batches: BatchTask[];
   plans: Plan[];
@@ -35,6 +37,12 @@ export interface MockDatabase {
   redeemedCodes: string[];
   challenges: Array<{ email: string; purpose: 'register' | 'reset-password' | 'change-email' | 'change-password'; code: string; used: boolean }>;
   redemptionAttempts: Array<{ key: string; code: string; user: User }>;
+}
+
+export interface MockToolQuote extends ToolRunQuote {
+  assetIds: string[];
+  values: Record<string, string>;
+  consumed: boolean;
 }
 
 const now = new Date('2026-09-05T00:00:00+08:00').toISOString();
@@ -176,6 +184,7 @@ export function createSeedDb(): MockDatabase {
       name: '产品精修',
       description: '优化材质、光线与商品轮廓，保持产品结构',
       category: '电商工具',
+      version: 1,
       isNew: true,
       coverUrl: visuals[1],
       maxAssets: 1,
@@ -197,6 +206,7 @@ export function createSeedDb(): MockDatabase {
       name: '一键老照片修复',
       description: '修复划痕与模糊细节，可选择彩色或黑白',
       category: '摄影写真',
+      version: 1,
       coverUrl: visuals[7],
       maxAssets: 1,
       assetLabel: '老照片',
@@ -219,6 +229,7 @@ export function createSeedDb(): MockDatabase {
       name: '电商白底图',
       description: '批量提取商品主体并生成规范白底图',
       category: '服装电商',
+      version: 1,
       coverUrl: visuals[4],
       maxAssets: 3,
       assetLabel: '产品图',
@@ -259,6 +270,7 @@ export function createSeedDb(): MockDatabase {
     inspirations,
     templates,
     tools,
+    toolQuotes: [],
     workflows: [],
     batches: [],
     plans,

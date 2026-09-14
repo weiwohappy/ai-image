@@ -218,12 +218,38 @@ export interface ToolTemplate {
   name: string;
   description: string;
   category: string;
+  version: number;
   isNew?: boolean;
   coverUrl: string;
   maxAssets: number;
   assetLabel: string;
   fields: ToolFieldSchema[];
   defaults: Pick<GenerationInput, 'modelId' | 'resolution' | 'ratio' | 'count'>;
+}
+
+export interface ToolQuoteInput {
+  toolId: string;
+  toolVersion: number;
+  assetIds: string[];
+  values: Record<string, string>;
+  modelId: string;
+  resolution: Resolution;
+  ratio: ImageRatio;
+  count: OutputCount;
+}
+
+export interface ToolRunQuote {
+  quoteId: string;
+  toolId: string;
+  toolVersion: number;
+  modelId: string;
+  resolution: Resolution;
+  ratio: ImageRatio;
+  count: OutputCount;
+  unitCredits: number;
+  totalCredits: number;
+  createdAt: string;
+  expiresAt: string;
 }
 
 export type WorkflowColumnType = 'reference' | 'generation' | 'tool';

@@ -143,4 +143,61 @@ describe('frontend API transport', () => {
     expect((redeemInit.headers as Headers).get('Idempotency-Key')).toBe('redeem-attempt-1234');
     expect(jsonBody(redeemInit)).toEqual({ code: 'VIVIAI-2026' });
   });
+
+  it('creates a tool quote with the exact server payload', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({
+        data: { quoteId: 'quote-1', toolId: 'product-polish', totalCredits: 4 },
+        message: 'ok',
+        requestId: 'req-tool-quote',
+      }),
+    );
+
+    await api.createToolRunQuote({
+      toolId: 'product-polish',
+      toolVersion: 1,
+      assetIds: ['asset-1'],
+      values: { productType: '护肤品' },
+      modelId: 'nano-banana-2',
+      resolution: '1K',
+      ratio: '1:1',
+      count: 1,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/tool-run-quotes$/);
+    expect(init.method).toBe('POST');
+    expect(jsonBody(init)).toEqual({
+      toolId: 'product-polish',
+      toolVersion: 1,
+      assetIds: ['asset-1'],
+      values: { productType: '护肤品' },
+      modelId: 'nano-banana-2',
+      resolution: '1K',
+      ratio: '1:1',
+      count: 1,
+    });
+  });
+
+  it('runs a tool from a quote with an idempotency key', async () => {
+    vi.stubEnv('VITE_API_MODE', 'real');
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      jsonResponse({
+        data: { id: 'task-1', input: { source: 'tool' } },
+        message: 'ok',
+        requestId: 'req-tool-run',
+      }),
+    );
+
+    await api.runTool('quote-1', 'tool-attempt-12345678');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toMatch(/\/api\/tool-runs$/);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('Idempotency-Key')).toBe('tool-attempt-12345678');
+    expect(jsonBody(init)).toEqual({ quoteId: 'quote-1' });
+  });
 });
