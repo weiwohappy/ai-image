@@ -110,6 +110,7 @@ export interface ToolDefinitionProjection {
   name: string;
   description: string;
   category: string;
+  version: number;
   isNew: boolean;
   fieldSchema: unknown;
   defaults: unknown;
@@ -143,6 +144,7 @@ export function presentToolDefinition(row: ToolDefinitionProjection) {
     name: row.name,
     description: row.description,
     category: row.category,
+    version: row.version,
     ...(row.isNew ? { isNew: true } : {}),
     coverUrl: mediaUrl(row.coverMedia),
     maxAssets: row.maxAssets,

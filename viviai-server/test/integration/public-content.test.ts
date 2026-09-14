@@ -494,6 +494,7 @@ describe('public operational content', () => {
           name: 'Tool main',
           description: 'Tool description',
           category: 'commerce',
+          version: 2,
           isNew: true,
           coverUrl: '/api/content-media/media-public/content',
           maxAssets: 2,
