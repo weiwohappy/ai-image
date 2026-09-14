@@ -195,6 +195,10 @@ model GenerationQuote {
   productVersion      String
   unitCredits         BigInt
   totalCredits        BigInt
+  originType          String?
+  originId            String?
+  originVersion       Int?
+  originSnapshot      Json?
   createdAt           DateTime       @default(now()) @db.Timestamptz(6)
   expiresAt           DateTime       @db.Timestamptz(6)
   consumedAt          DateTime?      @db.Timestamptz(6)
@@ -215,6 +219,10 @@ model GenerationJob {
   input               Json
   execution           Json?
   creditPriceSnapshot Json?
+  originType          String?
+  originId            String?
+  originVersion       Int?
+  originSnapshot      Json?
   cancelRequested     Boolean          @default(false)
   retryOfJobId        String?          @db.Uuid
   createdAt           DateTime         @default(now()) @db.Timestamptz(6)

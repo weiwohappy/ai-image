@@ -18,9 +18,16 @@ export function jobDto(job: JobRecord) {
     : job.items.every((item) => item.status === 'queued')
       ? 'queued'
       : 'processing';
+  const origin =
+    job.originType === 'tool'
+      ? { toolId: job.originId!, toolVersion: job.originVersion! }
+      : job.originType === 'workflow'
+        ? { workflowId: job.originId! }
+        : {};
   return {
     id: job.id,
     input: job.input,
+    ...origin,
     status,
     stage: allDone ? 'settled' : job.items.find((item) => !TERMINAL.includes(item.status))?.status,
     progress: Math.floor((done.length / job.items.length) * 100),
