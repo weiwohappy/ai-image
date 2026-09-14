@@ -55,7 +55,6 @@ describe('backend DTO normalizers', () => {
   });
 
   it('resolves relative private asset content URLs against the configured API', () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const asset = normalizeAssetDto({
       id: 'asset-1',

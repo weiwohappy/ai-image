@@ -1,4 +1,4 @@
-import { api, isRealApi } from '@/src/services/api';
+import { api } from '@/src/services/api';
 import { createGeneration } from '@/src/services/generationFlow';
 import type { GenerationInput, ImageRatio, OutputCount, Resolution } from '@/src/types/domain';
 
@@ -70,20 +70,5 @@ export function registerViviaiTools(): () => void {
       return { templateId: template.id, route: `/remix/${template.id}` };
     },
   });
-  if (!isRealApi()) {
-    register({
-      name: 'reset_demo_data',
-      title: '重置演示数据',
-      description: '将 VIVIAI 前端 Mock 数据恢复为初始演示状态。',
-      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      annotations: { readOnlyHint: false, untrustedContentHint: false },
-      async execute(raw) {
-        record(raw);
-        await api.resetDemoData();
-        window.dispatchEvent(new CustomEvent('viviai:data-reset'));
-        return { reset: true };
-      },
-    });
-  }
   return () => lifecycle.abort();
 }

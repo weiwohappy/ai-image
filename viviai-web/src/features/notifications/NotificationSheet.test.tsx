@@ -18,7 +18,6 @@ afterAll(() => server.close());
 
 describe('notification sheet', () => {
   it('loads real-mode notifications and marks every unread item as read', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const user = userEvent.setup();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><MemoryRouter><NotificationSheet open onClose={() => undefined} /></MemoryRouter></QueryClientProvider>);

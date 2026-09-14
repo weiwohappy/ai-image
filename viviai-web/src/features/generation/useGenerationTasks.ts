@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
-import { api, isRealApi } from '@/src/services/api';
+import { api } from '@/src/services/api';
 import { retryGeneration } from '@/src/services/generationFlow';
 import { queryKeys } from '@/src/services/queryKeys';
 import type { GenerationTask } from '@/src/types/domain';
@@ -21,11 +21,7 @@ export async function refreshActiveTaskDetails(
 export function useGenerationTasks() {
   const queryClient = useQueryClient();
   const { data: me } = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
-  const tasks = useQuery({ queryKey: queryKeys.tasks, queryFn: async () => {
-    const listed = await api.listGenerationTasks();
-    if (!isRealApi()) return listed;
-    return refreshActiveTaskDetails(listed);
-  }, enabled: Boolean(me), refetchInterval: (query) => query.state.data?.some((task) => task.status === 'queued' || task.status === 'processing') ? (isRealApi() ? 900 : 500) : false });
+  const tasks = useQuery({ queryKey: queryKeys.tasks, queryFn: async () => refreshActiveTaskDetails(await api.listGenerationTasks()), enabled: Boolean(me), refetchInterval: (query) => query.state.data?.some((task) => task.status === 'queued' || task.status === 'processing') ? 900 : false });
   const assets = useQuery({ queryKey: queryKeys.assets, queryFn: () => api.listAssets(), enabled: Boolean(me) });
   const resultAssetKey = tasks.data?.flatMap((task) => task.resultAssetIds).join(',') ?? '';
   useEffect(() => {

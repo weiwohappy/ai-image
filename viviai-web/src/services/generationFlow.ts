@@ -1,4 +1,4 @@
-import { api, isRealApi } from './api';
+import { api } from './api';
 import type { GenerationInput, GenerationQuote, GenerationTask, OutputCount, RemixInput } from '@/src/types/domain';
 
 export interface GenerationFlowResult {
@@ -53,25 +53,7 @@ function idempotencyKey(): string {
   return `web-${crypto.randomUUID()}`;
 }
 
-function mockQuote(input: GenerationInput | RemixInput, task: GenerationTask): GenerationQuote {
-  const now = new Date().toISOString();
-  return {
-    id: `mock-quote-${crypto.randomUUID()}`,
-    input,
-    inputHash: '',
-    unitCredits: task.estimatedCredits / task.input.count,
-    totalCredits: task.estimatedCredits,
-    priceVersion: null,
-    createdAt: now,
-    expiresAt: new Date(Date.now() + 300_000).toISOString(),
-  };
-}
-
 export async function createGeneration(input: GenerationInput): Promise<GenerationFlowResult> {
-  if (!isRealApi()) {
-    const task = await api.createGenerationTask(input);
-    return { task, quote: mockQuote(input, task) };
-  }
   const backendInput = backendCreateInput(input);
   const quote = await api.createGenerationQuote(backendInput);
   const task = await api.submitGenerationTask('generation', quote.id, backendInput, idempotencyKey());
@@ -79,10 +61,6 @@ export async function createGeneration(input: GenerationInput): Promise<Generati
 }
 
 export async function createRemix(input: RemixInput): Promise<GenerationFlowResult> {
-  if (!isRealApi()) {
-    const task = await api.createRemixTask(input);
-    return { task, quote: mockQuote(input, task) };
-  }
   const backendInput = backendRemixInput(input);
   const quote = await api.createGenerationQuote(backendInput);
   const task = await api.submitGenerationTask('remix', quote.id, backendInput, idempotencyKey());
@@ -90,7 +68,6 @@ export async function createRemix(input: RemixInput): Promise<GenerationFlowResu
 }
 
 export async function retryGeneration(id: string): Promise<GenerationTask> {
-  if (!isRealApi()) return api.retryGenerationTask(id);
   const previous = await api.getGenerationTask(id);
   const failedCount = previous.items?.filter((item) => item.status === 'failed').length ?? 0;
   if (failedCount < 1 || failedCount > 4) throw new Error('当前任务没有可重试的失败图片。');

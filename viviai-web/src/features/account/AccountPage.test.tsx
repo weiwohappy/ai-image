@@ -45,7 +45,6 @@ describe('account page', () => {
   });
 
   it('keeps account commands available when the real API is configured', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><MemoryRouter><AccountPage /></MemoryRouter></QueryClientProvider>);
 
@@ -56,7 +55,6 @@ describe('account page', () => {
   });
 
   it('renders authoritative relative avatar paths on the configured API origin', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'https://api.example.test/service');
     mutateDb((draft) => { draft.user.avatarUrl = '/api/assets/avatar-1/content'; });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

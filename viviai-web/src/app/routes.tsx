@@ -18,8 +18,6 @@ import { AccountPage } from '@/src/features/account/AccountPage';
 import { PricingPage } from '@/src/features/billing/PricingPage';
 import { InvitePage } from '@/src/features/invite/InvitePage';
 import { ProtectedRoute } from './ProtectedRoute';
-import { isRealApi } from '@/src/services/api';
-import { RealApiUnavailablePage } from '@/src/features/system/RealApiUnavailablePage';
 
 export function AppRoutes() {
   return (
@@ -29,10 +27,10 @@ export function AppRoutes() {
       <Route path="/forgot-password" element={<AuthPage mode="forgot" />} />
       <Route element={<AppShell />}>
         <Route path="/create" element={<CreatePage />} />
-        <Route path="/inspiration" element={isRealApi() ? <RealApiUnavailablePage title="灵感发现暂未接入真实接口" /> : <InspirationPage />} />
+        <Route path="/inspiration" element={<InspirationPage />} />
         <Route path="/remix" element={<RemixPage />} />
-        <Route path="/remix/templates" element={isRealApi() ? <RealApiUnavailablePage title="爆款模板库暂未接入真实接口" /> : <RemixLibraryPage />} />
-        <Route path="/remix/:templateId" element={isRealApi() ? <RealApiUnavailablePage title="平台模板暂未接入真实接口" /> : <RemixPage />} />
+        <Route path="/remix/templates" element={<RemixLibraryPage />} />
+        <Route path="/remix/:templateId" element={<RemixPage />} />
         <Route path="/assets" element={<ProtectedRoute><AssetsPage /></ProtectedRoute>} />
         <Route path="/tools" element={<ProtectedRoute><ToolsPage /></ProtectedRoute>} />
         <Route path="/tools/:toolId" element={<ProtectedRoute><ToolRunPage /></ProtectedRoute>} />

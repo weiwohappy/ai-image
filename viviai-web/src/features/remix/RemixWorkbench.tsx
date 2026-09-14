@@ -10,7 +10,7 @@ import { AssetPicker } from '@/src/features/assets/AssetPicker';
 import { GenerationCard } from '@/src/features/generation/GenerationCard';
 import { useGenerationTasks } from '@/src/features/generation/useGenerationTasks';
 import { estimateCredits } from '@/src/lib/pricing';
-import { api, isRealApi } from '@/src/services/api';
+import { api } from '@/src/services/api';
 import { createRemix } from '@/src/services/generationFlow';
 import { queryKeys } from '@/src/services/queryKeys';
 import { useSessionStore, type RemixDraft } from '@/src/stores/sessionStore';
@@ -45,12 +45,12 @@ export function RemixWorkbench({ templateId }: { templateId?: string }) {
   const [useTemplate, setUseTemplate] = useState(Boolean(templateId));
   const selectedTemplate = useTemplate && !reference ? template.data : undefined;
   const hasReference = Boolean(reference || selectedTemplate);
-  const model = isRealApi() ? models.data?.find((item) => !item.simulated) ?? models.data?.[0] : models.data?.[0];
+  const model = models.data?.find((item) => !item.simulated) ?? models.data?.[0];
   const modelId = model?.id ?? 'nano-banana-2';
   const modelSpecs = model?.specs ?? [];
   const modelResolutions = modelSpecs.length ? [...new Set(modelSpecs.map((item) => item.resolution))] : (model?.resolutions ?? ['1K', '2K', '4K']);
   const modelRatios = modelSpecs.length ? [...new Set(modelSpecs.filter((item) => item.resolution === resolution).map((item) => item.ratio))] : (model?.ratios ?? ['1:1', '3:4', '4:3', '9:16', '16:9']);
-  const canSubmit = hasReference && Boolean(adaptation.trim()) && !referenceBusy && !subjectBusy && !me.isPending && !models.isPending && (!isRealApi() || Boolean(model));
+  const canSubmit = hasReference && Boolean(adaptation.trim()) && !referenceBusy && !subjectBusy && !me.isPending && !models.isPending && Boolean(model);
   const selectedSpec = modelSpecs.find((spec) => spec.resolution === resolution && spec.ratio === ratio);
   const estimate = quoteCredits ?? (selectedSpec?.unitCredits !== undefined ? selectedSpec.unitCredits * count : model?.unitCredits !== undefined ? model.unitCredits * count : (() => { try { return estimateCredits({ modelId, resolution, count }); } catch { return 0; } })());
   const task = tasks.data?.find((item) => item.id === draft.lastTaskId);
@@ -138,7 +138,7 @@ export function RemixWorkbench({ templateId }: { templateId?: string }) {
         </div>
         <div className="mt-4 flex items-center justify-between rounded-xl bg-primary/6 px-3 py-2.5 text-sm"><span className="flex items-center gap-2 text-muted-foreground"><Coins className="size-4 text-primary" />预计消耗</span><strong className="text-primary">{estimate} 积分</strong></div>
         {error && <p role="alert" className="mt-3 rounded-xl bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>}
-        {isRealApi() && !models.isPending && !model && <p role="alert" className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-sm text-amber-200">当前没有可用图片模型，请先配置模型和分辨率积分。</p>}
+        {!models.isPending && !model && <p role="alert" className="mt-3 rounded-xl border border-amber-300/20 bg-amber-300/8 px-3 py-2 text-sm text-amber-200">当前没有可用图片模型，请先配置模型和分辨率积分。</p>}
         <Button type="button" className="mt-5 h-12 w-full rounded-2xl font-bold" disabled={!canSubmit || create.isPending} onClick={submit}>{create.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始复刻 <ArrowUp /></>}</Button>
         <p className="mt-3 text-center text-xs text-muted-foreground">{!hasReference ? '先上传参考图，再填写复刻要求' : '参考图 + 复刻要求，一起用于生成新图'}</p>
         {submitted && <p role="status" className="mt-3 text-sm text-primary">复刻任务已提交，进度和结果显示在下方。</p>}

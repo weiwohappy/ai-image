@@ -5,10 +5,10 @@ import { estimateCredits } from '@/src/lib/pricing';
 import type {
   ApiErrorCode,
   GenerationInput,
+  GenerationQuote,
   GenerationTask,
   ImageAsset,
   Order,
-  RemixInput,
   TaskStatus,
   ToolQuoteInput,
   User,
@@ -21,7 +21,7 @@ import type {
   WorkflowRun,
   WorkflowRunQuote,
 } from '@/src/types/domain';
-import type { MockToolQuote, MockWorkflowRunQuote } from './fixtures';
+import type { MockGenerationQuote, MockToolQuote, MockWorkflowRunQuote } from './fixtures';
 import { getCredentialHash, loadDb, mutateDb, resetDb, saveDb, setCredentialHash, settleTask } from './db';
 import { hasReferenceUpload, saveReferenceUpload } from './referenceUploads';
 
@@ -83,9 +83,7 @@ function activeTaskCount(): number {
   return loadDb().tasks.filter((task) => task.status === 'queued' || task.status === 'processing').length;
 }
 
-function scheduleTask(taskId: string, scenario: string): void {
-  const processingDelay = scenario === 'slow' ? 1200 : 220;
-  const completionDelay = scenario === 'slow' ? 3600 : 950;
+function scheduleTask(taskId: string): void {
   window.setTimeout(() => {
     mutateDb((db) => {
       const task = db.tasks.find((item) => item.id === taskId);
@@ -95,22 +93,157 @@ function scheduleTask(taskId: string, scenario: string): void {
         task.updatedAt = new Date().toISOString();
       }
     });
-  }, processingDelay);
-  window.setTimeout(() => {
-    settleTask(taskId, scenario === 'partial-success' ? 'partial' : scenario === 'task-failure' ? 'failure' : 'success');
-  }, completionDelay);
+  }, 220);
+  window.setTimeout(() => settleTask(taskId, 'success'), 950);
 }
 
+/** The generation request exactly as the console submits it to the backend. */
+interface WireGenerationInput {
+  source?: 'create' | 'remix';
+  modelId: string;
+  prompt: string;
+  resolution: string;
+  ratio: string;
+  count: number;
+  referenceAssetId?: string;
+  subjectAssetId?: string;
+  strength?: GenerationInput['strength'];
+}
+
+/**
+ * Reads a submitted request into the input the app gets back on the task, mirroring the frontend
+ * normalizer: `create` becomes the domain's `generation`, the fixed `standard` quality and the
+ * `format` pin are dropped, and the two remix image roles collapse into the ordered reference list.
+ */
+function submittedInput(wire: WireGenerationInput): GenerationInput {
+  const references = [wire.referenceAssetId, wire.subjectAssetId].filter((id): id is string => Boolean(id));
+  return {
+    prompt: wire.prompt,
+    modelId: wire.modelId,
+    resolution: wire.resolution as GenerationInput['resolution'],
+    ratio: wire.ratio as GenerationInput['ratio'],
+    count: wire.count as GenerationInput['count'],
+    source: wire.source === 'remix' ? 'remix' : 'generation',
+    ...(references.length ? { referenceAssetId: references[0], referenceAssetIds: references } : {}),
+    ...(wire.strength ? { strength: wire.strength } : {}),
+  };
+}
+
+/**
+ * Prices one generation request. The wire format pins `quality` to the `standard` tier, which the
+ * pricing table does not model, so it stays out — the same way workflow batches price.
+ */
+function priceGeneration(input: Pick<GenerationInput, 'modelId' | 'resolution' | 'count'>): number {
+  return estimateCredits({ modelId: input.modelId, resolution: input.resolution, count: input.count });
+}
+
+/** The quote as the API presents it, without the bookkeeping the double stores beside it. */
+function presentGenerationQuote(quote: MockGenerationQuote): GenerationQuote {
+  return {
+    id: quote.id,
+    input: quote.input,
+    inputHash: quote.inputHash,
+    unitCredits: quote.unitCredits,
+    totalCredits: quote.totalCredits,
+    priceVersion: quote.priceVersion,
+    createdAt: quote.createdAt,
+    expiresAt: quote.expiresAt,
+  };
+}
+
+/**
+ * Prices a generation request without charging, mirroring `POST /generation-quotes`. The stored
+ * quote carries the input it was priced against so submission charges exactly what was quoted.
+ */
+function createGenerationQuote(input: GenerationInput): MockGenerationQuote {
+  const user = sessionUser();
+  if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
+  if (!input.prompt?.trim()) throw new MockFailure(400, 'INVALID_INPUT', '请输入画面描述。');
+  const model = loadDb().models.find((item) => item.id === input.modelId);
+  if (!model || model.status !== 'available') throw new MockFailure(409, 'MODEL_UNAVAILABLE', '当前模型不可用，请选择其他模型。');
+  let totalCredits: number;
+  try {
+    totalCredits = priceGeneration(input);
+  } catch {
+    throw new MockFailure(400, 'PARAMETER_UNSUPPORTED', '当前模型不支持这组生成参数。');
+  }
+  const createdAt = new Date();
+  const quote: MockGenerationQuote = {
+    id: crypto.randomUUID(),
+    input,
+    inputHash: crypto.randomUUID(),
+    unitCredits: totalCredits / Math.max(1, input.count),
+    totalCredits,
+    priceVersion: null,
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + 300_000).toISOString(),
+    consumed: false,
+  };
+  mutateDb((draft) => {
+    draft.generationQuotes.unshift(quote);
+  });
+  return quote;
+}
+
+/**
+ * Consumes a quote and queues the task, mirroring `POST /generation-tasks` and `/remix-tasks`:
+ * the idempotency key is replayed before the quote is spent, so a retried request cannot
+ * double-charge.
+ */
+function submitGenerationTask(
+  quoteId: string,
+  input: GenerationInput,
+  idempotencyKey: string | null,
+  context?: Pick<
+    GenerationTask,
+    | 'templateId'
+    | 'templateVersion'
+    | 'remixStrength'
+    | 'toolId'
+    | 'workflowId'
+    | 'batchId'
+    | 'workflowRowId'
+    | 'workflowColumnId'
+  >,
+): GenerationTask {
+  if (!idempotencyKey || !/^[A-Za-z0-9._:-]{8,128}$/.test(idempotencyKey))
+    throw new MockFailure(400, 'INVALID_INPUT', '缺少有效的幂等键。');
+  const db = loadDb();
+  const replayed = db.generationTaskKeys.find((item) => item.id === idempotencyKey);
+  if (replayed) {
+    const task = db.tasks.find((item) => item.id === replayed.taskId);
+    if (task) return task;
+  }
+  const quote = db.generationQuotes.find((item) => item.id === quoteId);
+  if (!quote) throw new MockFailure(404, 'QUOTE_NOT_FOUND', '报价不存在，请重新报价。');
+  if (quote.consumed) throw new MockFailure(409, 'QUOTE_USED', '该报价已被使用，请重新报价。');
+  if (Date.parse(quote.expiresAt) <= Date.now()) throw new MockFailure(409, 'QUOTE_EXPIRED', '报价已过期，请重新报价。');
+  const user = sessionUser();
+  if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
+  if (user.credits < quote.totalCredits) throw new MockFailure(402, 'INSUFFICIENT_CREDITS', '积分不足，请升级套餐。');
+
+  const task = createTask(input, context, quote.totalCredits);
+  mutateDb((draft) => {
+    const stored = draft.generationQuotes.find((item) => item.id === quoteId);
+    if (stored) stored.consumed = true;
+    draft.generationTaskKeys.push({ id: idempotencyKey, taskId: task.id });
+  });
+  return task;
+}
+
+/**
+ * Queues one task and freezes its credits. `quotedCredits` is the amount a quote charged for this
+ * request; a caller coming from a quote passes it so a request that drifted from what was priced
+ * is refused, while the workflow and tool paths — which price their own children — leave it out.
+ */
 function createTask(
   input: GenerationInput,
-  scenario: string,
   context?: Pick<GenerationTask, 'templateId' | 'templateVersion' | 'remixStrength' | 'toolId' | 'workflowId' | 'batchId' | 'workflowRowId' | 'workflowColumnId'>,
+  quotedCredits?: number,
 ): GenerationTask {
   const user = sessionUser();
   if (!user) throw new MockFailure(401, 'AUTH_REQUIRED', '请先登录后再生成。');
   if (!input.prompt.trim()) throw new MockFailure(400, 'INVALID_INPUT', '请输入画面描述。');
-  if (scenario === 'server-error') throw new MockFailure(500, 'INTERNAL_ERROR', '服务暂时不可用，请稍后重试。');
-  if (scenario === 'insufficient-credits') throw new MockFailure(402, 'INSUFFICIENT_CREDITS', '积分不足，请升级套餐。');
 
   const db = loadDb();
   const model = db.models.find((item) => item.id === input.modelId);
@@ -119,15 +252,15 @@ function createTask(
 
   let estimatedCredits: number;
   try {
-    estimatedCredits = estimateCredits(input);
+    estimatedCredits = priceGeneration(input);
   } catch {
     throw new MockFailure(400, 'PARAMETER_UNSUPPORTED', '当前模型不支持这组生成参数。');
   }
+  if (quotedCredits !== undefined && quotedCredits !== estimatedCredits)
+    throw new MockFailure(409, 'QUOTE_MISMATCH', '报价与当前参数不一致，请重新报价。');
   if (user.credits < estimatedCredits) throw new MockFailure(402, 'INSUFFICIENT_CREDITS', '积分不足，请升级套餐。');
 
   const createdAtMs = Date.now();
-  const processingDelay = scenario === 'slow' ? 1200 : 220;
-  const completionDelay = scenario === 'slow' ? 3600 : 950;
   const createdAt = new Date(createdAtMs).toISOString();
   const task: GenerationTask = {
     id: `task-${crypto.randomUUID()}`,
@@ -140,9 +273,9 @@ function createTask(
     updatedAt: createdAt,
     resultAssetIds: [],
     mockLifecycle: {
-      processingAt: new Date(createdAtMs + processingDelay).toISOString(),
-      completionAt: new Date(createdAtMs + completionDelay).toISOString(),
-      outcome: scenario === 'partial-success' ? 'partial' : scenario === 'task-failure' ? 'failure' : 'success',
+      processingAt: new Date(createdAtMs + 220).toISOString(),
+      completionAt: new Date(createdAtMs + 950).toISOString(),
+      outcome: 'success',
     },
     ...context,
   };
@@ -160,7 +293,7 @@ function createTask(
       createdAt,
     });
   });
-  scheduleTask(task.id, scenario);
+  scheduleTask(task.id);
   return task;
 }
 
@@ -331,7 +464,7 @@ function submitWorkflowRun(quoteId: string, idempotencyKey: string | null, retry
   const rollback = structuredClone(db);
   let children: GenerationTask[];
   try {
-    children = jobs.map((job) => createTask(job.input, 'happy', { workflowId: quote.workflowId, batchId: runId, workflowRowId: job.target.rowKey, workflowColumnId: job.target.columnKey }));
+    children = jobs.map((job) => createTask(job.input, { workflowId: quote.workflowId, batchId: runId, workflowRowId: job.target.rowKey, workflowColumnId: job.target.columnKey }));
   } catch (error) {
     saveDb(rollback);
     if (error instanceof MockFailure) throw error;
@@ -530,11 +663,24 @@ export const handlers = [
     return unauthorized ?? ok(loadDb().tasks);
   }),
 
-  http.post(`${api}/generation-tasks`, async ({ request }) => {
-    const scenario = request.headers.get('x-mock-scenario') ?? 'happy';
+  http.post(`${api}/generation-quotes`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
     try {
-      const input = (await request.json()) as GenerationInput;
-      return ok(createTask({ ...input, source: input.source ?? 'generation' }, scenario), '任务已创建');
+      const wire = (await request.json()) as WireGenerationInput;
+      return ok(presentGenerationQuote(createGenerationQuote(submittedInput(wire))), '报价已生成');
+    } catch (error) {
+      if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
+      return fail(500, 'INTERNAL_ERROR', '生成报价失败。');
+    }
+  }),
+
+  http.post(`${api}/generation-tasks`, async ({ request }) => {
+    const unauthorized = authError();
+    if (unauthorized) return unauthorized;
+    try {
+      const { quoteId, input } = (await request.json()) as { quoteId: string; input: WireGenerationInput };
+      return ok(submitGenerationTask(quoteId, submittedInput(input), request.headers.get('Idempotency-Key')), '任务已创建');
     } catch (error) {
       if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
       return fail(500, 'INTERNAL_ERROR', '创建任务失败。');
@@ -558,13 +704,16 @@ export const handlers = [
     return task ? ok(task, '任务已取消') : fail(404, 'INVALID_INPUT', '任务不存在。');
   }),
 
-  http.post(`${api}/generation-tasks/:id/retry`, ({ params, request }) => {
+  http.post(`${api}/generation-tasks/:id/retry`, async ({ params, request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
     const original = loadDb().tasks.find((item) => item.id === params.id);
     if (!original) return fail(404, 'INVALID_INPUT', '任务不存在。');
+    if (original.status === 'queued' || original.status === 'processing') return fail(409, 'RETRY_NOT_ALLOWED', '任务还在进行中，无法重试。');
+    if (original.status === 'cancelled') return fail(409, 'RETRY_NOT_ALLOWED', '已取消的任务无法重试。');
     try {
-      return ok(createTask(original.input, request.headers.get('x-mock-scenario') ?? 'happy'), '已重新创建任务');
+      const { quoteId, input } = (await request.json()) as { quoteId: string; input: WireGenerationInput };
+      return ok(submitGenerationTask(quoteId, submittedInput(input), request.headers.get('Idempotency-Key')), '已重新创建任务');
     } catch (error) {
       if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
       return fail(500, 'INTERNAL_ERROR', '重试失败。');
@@ -575,17 +724,31 @@ export const handlers = [
     const url = new URL(request.url);
     const query = url.searchParams.get('query') ?? '';
     const category = url.searchParams.get('category') ?? '';
-    const items = loadDb().inspirations.filter((item) => (!query || textMatch(`${item.title} ${item.prompt}`, query)) && (!category || category === '全部' || item.category === category));
-    return ok(items);
+    const items = loadDb().inspirations.filter((item) => (!query || textMatch(`${item.title} ${item.prompt}`, query)) && (!category || item.category === category));
+    // The seeded catalog fits one page, so the cursor is always exhausted.
+    return ok({ items, nextCursor: null });
   }),
 
   http.post(`${api}/inspirations/:id/like`, ({ params }) => {
     if (!sessionUser()) return fail(401, 'AUTH_REQUIRED', '请先登录后再点赞。');
     const db = mutateDb((draft) => {
       const item = draft.inspirations.find((candidate) => candidate.id === params.id);
-      if (item) {
-        item.liked = !item.liked;
-        item.likes += item.liked ? 1 : -1;
+      if (item && !item.liked) {
+        item.liked = true;
+        item.likes += 1;
+      }
+    });
+    const item = db.inspirations.find((candidate) => candidate.id === params.id);
+    return item ? ok(item) : fail(404, 'INVALID_INPUT', '作品不存在。');
+  }),
+
+  http.delete(`${api}/inspirations/:id/like`, ({ params }) => {
+    if (!sessionUser()) return fail(401, 'AUTH_REQUIRED', '请先登录后再取消点赞。');
+    const db = mutateDb((draft) => {
+      const item = draft.inspirations.find((candidate) => candidate.id === params.id);
+      if (item?.liked) {
+        item.liked = false;
+        item.likes -= 1;
       }
     });
     const item = db.inspirations.find((candidate) => candidate.id === params.id);
@@ -596,7 +759,17 @@ export const handlers = [
     if (!sessionUser()) return fail(401, 'AUTH_REQUIRED', '请先登录后再收藏。');
     const db = mutateDb((draft) => {
       const item = draft.templates.find((candidate) => candidate.id === params.id);
-      if (item) item.favorite = !item.favorite;
+      if (item) item.favorite = true;
+    });
+    const item = db.templates.find((candidate) => candidate.id === params.id);
+    return item ? ok(item) : fail(404, 'TEMPLATE_UNAVAILABLE', '模板不存在。');
+  }),
+
+  http.delete(`${api}/remix-templates/:id/favorite`, ({ params }) => {
+    if (!sessionUser()) return fail(401, 'AUTH_REQUIRED', '请先登录后再取消收藏。');
+    const db = mutateDb((draft) => {
+      const item = draft.templates.find((candidate) => candidate.id === params.id);
+      if (item) item.favorite = false;
     });
     const item = db.templates.find((candidate) => candidate.id === params.id);
     return item ? ok(item) : fail(404, 'TEMPLATE_UNAVAILABLE', '模板不存在。');
@@ -613,54 +786,47 @@ export const handlers = [
     const filters = ['category', 'platform', 'industry', 'style'] as const;
     const items = loadDb().templates.filter((item) => {
       const queryMatched = !query || textMatch(`${item.title} ${item.tags.join(' ')}`, query);
-      return queryMatched && filters.every((key) => !url.searchParams.get(key) || url.searchParams.get(key) === '全部' || item[key] === url.searchParams.get(key));
+      return queryMatched && filters.every((key) => !url.searchParams.get(key) || item[key] === url.searchParams.get(key));
     });
-    return ok(items);
+    // The seeded catalog fits one page, so the cursor is always exhausted.
+    return ok({ items, nextCursor: null });
   }),
 
   http.post(`${api}/remix-references`, async ({ request }) => {
     const data = await request.formData();
     const file = data.get('file');
-    const width = Number(data.get('width'));
-    const height = Number(data.get('height'));
     if (!file || typeof file === 'string' || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return fail(400, 'ASSET_INVALID', '请上传 JPG、PNG 或 WebP 图片。');
     if (!file.size || file.size > 5 * 1024 * 1024) return fail(400, 'ASSET_INVALID', '图片大小须在 0 到 5MB 之间。');
-    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return fail(400, 'ASSET_INVALID', '图片无法读取，请重新上传。');
     const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
     const signatureValid = file.type === 'image/png' ? [137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => bytes[index] === byte)
       : file.type === 'image/jpeg' ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
       : String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP';
     if (!signatureValid) return fail(400, 'ASSET_INVALID', '图片格式或内容无效，请重新上传。');
-    return ok(saveReferenceUpload(file, width, height), '参考图已上传');
+    return ok(saveReferenceUpload(file), '参考图已上传');
   }),
 
   http.post(`${api}/remix-tasks`, async ({ request }) => {
     const unauthorized = authError();
     if (unauthorized) return unauthorized;
-    const scenario = request.headers.get('x-mock-scenario') ?? 'happy';
-    const input = (await request.json()) as RemixInput;
+    const { quoteId, input } = (await request.json()) as { quoteId: string; input: WireGenerationInput & { templateId?: string; templateVersion?: number } };
     const db = loadDb();
     const template = input.templateId ? db.templates.find((item) => item.id === input.templateId && item.status === 'active') : undefined;
     if (input.templateId && (!template || template.version !== input.templateVersion)) return fail(409, 'TEMPLATE_UNAVAILABLE', '示例已更新或不可用，请重新选择参考图。');
     const validReference = (id: string) => hasReferenceUpload(id) || db.assets.some((asset) => asset.id === id);
     if (input.referenceAssetId ? !validReference(input.referenceAssetId) : !template) return fail(400, 'ASSET_INVALID', '请上传有效的爆款参考图。');
     if (input.subjectAssetId && !validReference(input.subjectAssetId)) return fail(400, 'ASSET_INVALID', '主体素材已失效，请重新选择。');
-    if (!input.adaptation?.trim()) return fail(400, 'INVALID_INPUT', '请描述希望保留和修改的内容。');
-    if (!['similar', 'balanced', 'creative'].includes(input.strength)) return fail(400, 'INVALID_INPUT', '请选择有效的复刻强度。');
+    if (!input.prompt?.trim()) return fail(400, 'INVALID_INPUT', '请描述希望保留和修改的内容。');
+    if (!['similar', 'balanced', 'creative'].includes(input.strength ?? '')) return fail(400, 'INVALID_INPUT', '请选择有效的复刻强度。');
+    // A template-only remix has no upload, so the example itself stands in as the reference.
     const referenceAssetId = input.referenceAssetId ?? `template:${template!.id}`;
     try {
-      const generationInput: GenerationInput = {
-        prompt: input.adaptation,
-        modelId: input.modelId,
-        resolution: input.resolution,
-        quality: input.quality,
-        ratio: input.ratio,
-        count: input.count,
-        referenceAssetId,
-        referenceAssetIds: [referenceAssetId, ...(input.subjectAssetId ? [input.subjectAssetId] : [])],
-        source: 'remix',
-      };
-      return ok(createTask(generationInput, scenario, { templateId: input.templateId, templateVersion: input.templateVersion, remixStrength: input.strength }), '复刻任务已创建');
+      const task = submitGenerationTask(
+        quoteId,
+        submittedInput({ ...input, referenceAssetId }),
+        request.headers.get('Idempotency-Key'),
+        { templateId: input.templateId, templateVersion: input.templateVersion, remixStrength: input.strength },
+      );
+      return ok(task, '复刻任务已创建');
     } catch (error) {
       if (error instanceof MockFailure) return fail(error.status, error.code, error.message);
       return fail(500, 'INTERNAL_ERROR', '创建复刻任务失败。');
@@ -795,7 +961,6 @@ export const handlers = [
       return ok(
         createTask(
           { prompt: `${tool.name}：${Object.values(quote.values).join('，')}`, ...tool.defaults, source: 'tool' },
-          'happy',
           { toolId: tool.id },
         ),
         '工具任务已创建',

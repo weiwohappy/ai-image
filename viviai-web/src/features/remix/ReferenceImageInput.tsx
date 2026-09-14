@@ -36,13 +36,7 @@ export function ReferenceImageInput({ value, onChange, onBusyChange, label = '�
     setError('');
     try {
       previewUrl = URL.createObjectURL(file);
-      const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
-        image.onerror = () => reject(new Error('图片无法读取，请换一张图片重试。'));
-        image.src = previewUrl!;
-      });
-      const reference = await api.uploadRemixReference(file, dimensions);
+      const reference = await api.uploadRemixReference(file);
       if (sequence.current !== current) { URL.revokeObjectURL(previewUrl); return; }
       if (value?.previewUrl.startsWith('blob:')) URL.revokeObjectURL(value.previewUrl);
       onChange({ ...reference, previewUrl });

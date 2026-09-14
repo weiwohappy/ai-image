@@ -22,7 +22,6 @@ describe('frontend API transport', () => {
   });
 
   it('uses the configured real API origin and includes the session cookie', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -48,7 +47,6 @@ describe('frontend API transport', () => {
   });
 
   it('does not duplicate or strip an existing /api base path', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001/api');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse({ data: null, message: 'ok', requestId: 'req-api' }),
@@ -60,7 +58,6 @@ describe('frontend API transport', () => {
   });
 
   it('turns an API error envelope into an ApiError with its server code', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValue(
@@ -85,8 +82,7 @@ describe('frontend API transport', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('sends the reset-password purpose and only the file field for real uploads', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
+  it('sends the reset-password purpose and only the file field for uploads', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
       if (url.endsWith('/auth/send-code')) {
@@ -101,7 +97,7 @@ describe('frontend API transport', () => {
 
     await api.sendCode('user@example.com', 'reset-password');
     const file = new File(['bytes'], 'ref.png', { type: 'image/png' });
-    await api.uploadRemixReference(file, { width: 10, height: 20 });
+    await api.uploadRemixReference(file);
 
     const [, codeInit] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(jsonBody(codeInit)).toEqual({ email: 'user@example.com', purpose: 'reset-password' });
@@ -111,7 +107,6 @@ describe('frontend API transport', () => {
   });
 
   it('uses account-engagement paths, purpose-bound codes, multipart avatars, and redemption idempotency', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () =>
       jsonResponse({
         data: { id: 'user-1', credits: 240 },
@@ -145,7 +140,6 @@ describe('frontend API transport', () => {
   });
 
   it('creates a tool quote with the exact server payload', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse({
         data: { quoteId: 'quote-1', toolId: 'product-polish', totalCredits: 4 },
@@ -182,7 +176,6 @@ describe('frontend API transport', () => {
   });
 
   it('runs a tool from a quote with an idempotency key', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse({
         data: { id: 'task-1', input: { source: 'tool' } },
@@ -202,7 +195,6 @@ describe('frontend API transport', () => {
   });
 
   it('persists workflows through versioned server commands', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -231,7 +223,6 @@ describe('frontend API transport', () => {
   });
 
   it('quotes a workflow selection and submits it with the caller idempotency key', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
@@ -263,7 +254,6 @@ describe('frontend API transport', () => {
   });
 
   it('quotes a retry of a settled batch by run id', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       jsonResponse({ data: { quoteId: 'quote-2', submittable: true }, message: 'ok', requestId: 'req-retry-quote' }),

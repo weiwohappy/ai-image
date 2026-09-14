@@ -7,7 +7,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { api, ApiError, isRealApi } from '@/src/services/api';
+import { api, ApiError } from '@/src/services/api';
 import { queryKeys } from '@/src/services/queryKeys';
 import { consumeAuthRedirect, rememberAuthRedirect } from './authDraft';
 
@@ -71,7 +71,7 @@ export function AuthPage({ mode }: { mode: Mode }) {
   const sendCode = useMutation({
     mutationFn: () => api.sendCode(account, mode === 'forgot' ? 'reset-password' : 'register'),
     onSuccess: () => {
-      setFormError(isRealApi() ? '验证码已发送，请查收邮箱。' : '验证码已发送；演示环境请输入任意 6 位数字。');
+      setFormError('验证码已发送，请查收邮箱。');
       setCountdown(60);
     },
     onError: (error) => setFormError(error instanceof Error ? error.message : '验证码发送失败。'),

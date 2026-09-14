@@ -1,18 +1,44 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { api } from '@/src/services/api';
-import type { GenerationInput, RemixInput, WorkflowDefinition } from '@/src/types/domain';
+import type { GenerationTask, WorkflowDefinition } from '@/src/types/domain';
 import { getCredentialHash, loadDb, mutateDb, resetDb, settleTask } from './db';
 import { saveReferenceUpload } from './referenceUploads';
 import { server } from './server';
 
-const baseInput: GenerationInput = {
+/** The generation request exactly as the console submits it to the backend. */
+interface WireInput {
+  source: 'create' | 'remix';
+  prompt: string;
+  modelId: string;
+  resolution: string;
+  ratio: string;
+  format: 'png';
+  quality: 'standard';
+  count: number;
+  referenceAssetId?: string;
+  subjectAssetId?: string;
+  strength?: 'similar' | 'balanced' | 'creative';
+  templateId?: string;
+  templateVersion?: number;
+}
+
+const baseInput: WireInput = {
+  source: 'create',
   prompt: '透明香氛瓶，暖色电影光',
   modelId: 'nano-banana-2',
   resolution: '1K',
   ratio: '1:1',
+  format: 'png',
+  quality: 'standard',
   count: 1,
 };
+
+/** Quotes and submits one task the way `createGeneration` does. */
+async function generate(input: WireInput, key = 'generation-key-0001'): Promise<GenerationTask> {
+  const quote = await api.createGenerationQuote(input);
+  return api.submitGenerationTask('generation', quote.id, input, key);
+}
 
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 beforeEach(() => resetDb());
@@ -20,10 +46,11 @@ afterAll(() => server.close());
 
 describe('Mock generation state machine', () => {
   it('freezes credits when queued and creates a charged asset after success', async () => {
-    const created = await api.createGenerationTask(baseInput);
+    const created = await generate(baseInput);
 
     expect(created.status).toBe('queued');
     expect(created.estimatedCredits).toBe(4);
+    expect(created.input).toMatchObject({ source: 'generation', modelId: 'nano-banana-2', count: 1 });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 4 });
 
     settleTask(created.id, 'success');
@@ -34,8 +61,42 @@ describe('Mock generation state machine', () => {
     expect((await api.listAssets()).find((asset) => asset.id === task?.resultAssetIds[0])).toMatchObject({ source: 'generation' });
   });
 
+  it('prices without charging, then consumes the quote exactly once', async () => {
+    const quote = await api.createGenerationQuote({ ...baseInput, count: 2 });
+
+    expect(quote).toMatchObject({ unitCredits: 4, totalCredits: 8, priceVersion: null });
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
+
+    await api.submitGenerationTask('generation', quote.id, { ...baseInput, count: 2 }, 'consume-key-0001');
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1112, frozenCredits: 8 });
+    await expect(api.submitGenerationTask('generation', quote.id, { ...baseInput, count: 2 }, 'consume-key-0002')).rejects.toEqual(expect.objectContaining({ code: 'QUOTE_USED', status: 409 }));
+  });
+
+  it('replays a submission for the same idempotency key instead of charging twice', async () => {
+    const quote = await api.createGenerationQuote(baseInput);
+    const first = await api.submitGenerationTask('generation', quote.id, baseInput, 'replay-key-0001');
+    const replayed = await api.submitGenerationTask('generation', quote.id, baseInput, 'replay-key-0001');
+
+    expect(replayed.id).toBe(first.id);
+    expect(loadDb().tasks).toHaveLength(1);
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 4 });
+  });
+
+  it('refuses a submission whose input no longer prices the same as its quote', async () => {
+    const quote = await api.createGenerationQuote(baseInput);
+
+    await expect(api.submitGenerationTask('generation', quote.id, { ...baseInput, count: 2 }, 'drift-key-0001')).rejects.toEqual(expect.objectContaining({ code: 'QUOTE_MISMATCH', status: 409 }));
+    await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
+  });
+
+  it('refuses an unknown quote and a missing idempotency key', async () => {
+    await expect(api.submitGenerationTask('generation', 'quote-missing', baseInput, 'unknown-key-0001')).rejects.toEqual(expect.objectContaining({ code: 'QUOTE_NOT_FOUND', status: 404 }));
+    const quote = await api.createGenerationQuote(baseInput);
+    await expect(api.submitGenerationTask('generation', quote.id, baseInput, 'short')).rejects.toEqual(expect.objectContaining({ code: 'INVALID_INPUT', status: 400 }));
+  });
+
   it('refunds all credits on failure and records the refund', async () => {
-    const created = await api.createGenerationTask({ ...baseInput, count: 2 });
+    const created = await generate({ ...baseInput, count: 2 });
     settleTask(created.id, 'failure');
 
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
@@ -44,7 +105,7 @@ describe('Mock generation state machine', () => {
   });
 
   it('charges only successful images after partial completion', async () => {
-    const created = await api.createGenerationTask({ ...baseInput, count: 2 });
+    const created = await generate({ ...baseInput, count: 2 });
     settleTask(created.id, 'partial');
 
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1116, frozenCredits: 0 });
@@ -53,7 +114,7 @@ describe('Mock generation state machine', () => {
   });
 
   it('refunds and logs a cancellation exactly once', async () => {
-    const created = await api.createGenerationTask(baseInput);
+    const created = await generate(baseInput);
     await api.cancelGenerationTask(created.id);
     await api.cancelGenerationTask(created.id);
 
@@ -62,7 +123,7 @@ describe('Mock generation state machine', () => {
   });
 
   it('reconciles a persisted active task after its lifecycle deadline', async () => {
-    const created = await api.createGenerationTask(baseInput, 'slow');
+    const created = await generate(baseInput);
     mutateDb((draft) => {
       const task = draft.tasks.find((item) => item.id === created.id);
       if (task?.mockLifecycle) task.mockLifecycle.completionAt = new Date(Date.now() - 1000).toISOString();
@@ -73,24 +134,35 @@ describe('Mock generation state machine', () => {
   });
 
   it('migrates a legacy active task by failing it and refunding frozen credits', async () => {
-    const created = await api.createGenerationTask(baseInput, 'slow');
+    // A task written by an older version carries no lifecycle, so it is seeded directly.
     mutateDb((draft) => {
-      const task = draft.tasks.find((item) => item.id === created.id);
-      if (task) delete task.mockLifecycle;
+      draft.tasks.unshift({
+        id: 'task-legacy',
+        input: { prompt: '旧任务', modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1', count: 1, source: 'generation' },
+        status: 'processing',
+        progress: 52,
+        estimatedCredits: 4,
+        chargedCredits: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        resultAssetIds: [],
+      });
+      draft.user.credits -= 4;
+      draft.user.frozenCredits += 4;
     });
 
-    const migrated = (await api.listGenerationTasks()).find((item) => item.id === created.id);
+    const migrated = (await api.listGenerationTasks()).find((item) => item.id === 'task-legacy');
     expect(migrated).toMatchObject({ status: 'failed', errorCode: 'INTERNAL_ERROR' });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
   });
 });
 
 describe('User supplied remix reference', () => {
-  const input: RemixInput = { modelId: 'nano-banana-2', resolution: '1K', ratio: '1:1', count: 1, adaptation: '保留暖色光影，替换为我的咖啡礼盒', strength: 'balanced' };
+  const input: WireInput = { ...baseInput, source: 'remix', prompt: '保留暖色光影，替换为我的咖啡礼盒', strength: 'balanced' };
 
   it('rejects missing and unknown references without freezing credits', async () => {
-    await expect(api.createRemixTask(input)).rejects.toMatchObject({ code: 'ASSET_INVALID' });
-    await expect(api.createRemixTask({ ...input, referenceAssetId: 'missing-image' })).rejects.toMatchObject({ code: 'ASSET_INVALID' });
+    await expect(api.submitGenerationTask('remix', 'quote-missing', input, 'remix-key-0001')).rejects.toMatchObject({ code: 'ASSET_INVALID' });
+    await expect(api.submitGenerationTask('remix', 'quote-missing', { ...input, referenceAssetId: 'missing-image' }, 'remix-key-0002')).rejects.toMatchObject({ code: 'ASSET_INVALID' });
     await expect(api.getMe()).resolves.toMatchObject({ credits: 1120, frozenCredits: 0 });
     expect(loadDb().tasks).toHaveLength(0);
   });
@@ -98,12 +170,67 @@ describe('User supplied remix reference', () => {
   it('passes the uploaded reference first and the optional subject second without a template', async () => {
     const reference = saveReferenceUpload(new File(['reference'], 'reference.png', { type: 'image/png' }), 800, 600);
     const subject = saveReferenceUpload(new File(['subject'], 'subject.png', { type: 'image/png' }), 600, 600);
-    const task = await api.createRemixTask({ ...input, referenceAssetId: reference.id, subjectAssetId: subject.id });
-    expect(task.input).toMatchObject({ referenceAssetId: reference.id, referenceAssetIds: [reference.id, subject.id], source: 'remix', prompt: input.adaptation });
+    const remixInput: WireInput = { ...input, referenceAssetId: reference.id, subjectAssetId: subject.id };
+    const quote = await api.createGenerationQuote(remixInput);
+    const task = await api.submitGenerationTask('remix', quote.id, remixInput, 'remix-key-0003');
+
+    expect(task.input).toMatchObject({ referenceAssetId: reference.id, referenceAssetIds: [reference.id, subject.id], source: 'remix', prompt: input.prompt });
     expect(task.templateId).toBeUndefined();
     expect(task.remixStrength).toBe('balanced');
     settleTask(task.id, 'success');
     expect(loadDb().assets.find((asset) => asset.id === `asset-${task.id}-1`)).toMatchObject({ source: 'remix' });
+  });
+
+  it('falls back to the example itself when a remix submits no upload', async () => {
+    const templateInput: WireInput = { ...input, referenceAssetId: undefined, templateId: 'template-1', templateVersion: 1 };
+    const quote = await api.createGenerationQuote(templateInput);
+    const task = await api.submitGenerationTask('remix', quote.id, templateInput, 'remix-key-0004');
+
+    expect(task.input).toMatchObject({ referenceAssetIds: ['template:template-1'], source: 'remix' });
+    expect(task).toMatchObject({ templateId: 'template-1', templateVersion: 1 });
+  });
+});
+
+describe('Mock public catalog', () => {
+  it('pages inspirations and toggles a like only for the method that was called', async () => {
+    const page = await api.listInspirations();
+    expect(page.nextCursor).toBeNull();
+    expect(page.items).toHaveLength(12);
+
+    const target = page.items[0];
+    expect(target.liked).toBe(false);
+    await expect(api.likeInspiration(target.id)).resolves.toMatchObject({ id: target.id, liked: true, likes: target.likes + 1 });
+    // Liking twice must not count twice; only DELETE clears it.
+    await expect(api.likeInspiration(target.id)).resolves.toMatchObject({ liked: true, likes: target.likes + 1 });
+    await expect(api.unlikeInspiration(target.id)).resolves.toMatchObject({ liked: false, likes: target.likes });
+  });
+
+  it('filters inspirations by category and by text', async () => {
+    const all = await api.listInspirations();
+    const category = all.items[0].category;
+
+    const filtered = await api.listInspirations({ category });
+    expect(filtered.items.length).toBeGreaterThan(0);
+    expect(filtered.items.every((item) => item.category === category)).toBe(true);
+    expect((await api.listInspirations({ category: '全部' })).items).toHaveLength(0);
+    await expect(api.listInspirations({ query: all.items[0].title })).resolves.toMatchObject({ items: [expect.objectContaining({ id: all.items[0].id })] });
+    await expect(api.listInspirations({ query: '不会出现的画面' })).resolves.toMatchObject({ items: [] });
+  });
+
+  it('serves one template with its analysis and toggles its favorite', async () => {
+    const page = await api.listTemplates({ platform: '小红书' });
+    expect(page.nextCursor).toBeNull();
+    expect(page.items.every((item) => item.platform === '小红书')).toBe(true);
+
+    const id = page.items[0].id;
+    const detail = await api.getTemplate(id);
+    expect(detail).toMatchObject({ id, status: 'active' });
+    expect(detail.analysis.composition).toBeTruthy();
+
+    await expect(api.favoriteTemplate(id)).resolves.toMatchObject({ id, favorite: true });
+    await expect(api.favoriteTemplate(id)).resolves.toMatchObject({ id, favorite: true });
+    await expect(api.unfavoriteTemplate(id)).resolves.toMatchObject({ id, favorite: false });
+    await expect(api.getTemplate('template-missing')).rejects.toMatchObject({ code: 'TEMPLATE_UNAVAILABLE', status: 404 });
   });
 });
 

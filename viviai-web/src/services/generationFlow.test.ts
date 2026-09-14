@@ -46,7 +46,6 @@ describe('real generation flow', () => {
   });
 
   it('quotes before submitting a create task with a valid idempotency key', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(envelope(quote)).mockResolvedValueOnce(envelope(task));
 
@@ -66,7 +65,6 @@ describe('real generation flow', () => {
   });
 
   it('quotes a remix with the uploaded reference and optional subject', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     vi.stubEnv('VITE_API_BASE_URL', 'http://localhost:3001');
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(envelope(quote)).mockResolvedValueOnce(envelope({ ...task, input: { ...task.input, source: 'remix', referenceAssetId: '00000000-0000-4000-8000-000000000003', subjectAssetId: '00000000-0000-4000-8000-000000000004', strength: 'balanced' } }));
 

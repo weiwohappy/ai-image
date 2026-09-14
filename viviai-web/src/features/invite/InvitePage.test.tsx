@@ -18,7 +18,6 @@ afterAll(() => server.close());
 
 describe('invite page', () => {
   it('uses the current origin for the authenticated user invitation link', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><MemoryRouter><InvitePage /></MemoryRouter></QueryClientProvider>);
 

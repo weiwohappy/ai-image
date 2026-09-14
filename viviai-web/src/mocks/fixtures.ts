@@ -1,4 +1,6 @@
 import type {
+  GenerationInput,
+  GenerationQuote,
   GenerationTask,
   ImageAsset,
   Inspiration,
@@ -29,6 +31,9 @@ export interface MockDatabase {
   templates: ViralTemplate[];
   tools: ToolTemplate[];
   toolQuotes: MockToolQuote[];
+  generationQuotes: MockGenerationQuote[];
+  /** Idempotency keys already spent on generation submission, mapping to the task they created. */
+  generationTaskKeys: Array<{ id: string; taskId: string }>;
   workflows: Workflow[];
   workflowRuns: WorkflowRun[];
   workflowRunQuotes: MockWorkflowRunQuote[];
@@ -47,6 +52,12 @@ export interface MockDatabase {
 export interface MockToolQuote extends ToolRunQuote {
   assetIds: string[];
   values: Record<string, string>;
+  consumed: boolean;
+}
+
+/** A generation quote plus the input it was priced against, so submission charges what was quoted. */
+export interface MockGenerationQuote extends GenerationQuote {
+  input: GenerationInput;
   consumed: boolean;
 }
 
@@ -285,6 +296,8 @@ export function createSeedDb(): MockDatabase {
     templates,
     tools,
     toolQuotes: [],
+    generationQuotes: [],
+    generationTaskKeys: [],
     workflows: [],
     workflowRuns: [],
     workflowRunQuotes: [],

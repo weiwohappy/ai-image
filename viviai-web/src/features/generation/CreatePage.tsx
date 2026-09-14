@@ -7,7 +7,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 
 import { Button } from '@/components/ui/button';
 import { estimateCredits } from '@/src/lib/pricing';
-import { api, ApiError, isRealApi } from '@/src/services/api';
+import { api, ApiError } from '@/src/services/api';
 import { createGeneration } from '@/src/services/generationFlow';
 import { queryKeys } from '@/src/services/queryKeys';
 import { useSessionStore } from '@/src/stores/sessionStore';
@@ -31,7 +31,7 @@ export function CreatePage() {
   const me = useQuery({ queryKey: queryKeys.me, queryFn: api.getMe });
   const models = useQuery({ queryKey: queryKeys.models, queryFn: api.listModels });
   const { tasks, assets, cancel, retry } = useGenerationTasks();
-  const selectedModel = models.data?.find((item) => item.id === draft.modelId) ?? (isRealApi() ? models.data?.find((item) => !item.simulated) : models.data?.[0]);
+  const selectedModel = models.data?.find((item) => item.id === draft.modelId) ?? models.data?.find((item) => !item.simulated) ?? models.data?.[0];
   const selectedSpec = selectedModel?.specs?.find((spec) => spec.resolution === draft.resolution && spec.ratio === draft.ratio);
   const localEstimate = (() => {
     if (selectedSpec?.unitCredits !== undefined) return selectedSpec.unitCredits * draft.count;
@@ -63,7 +63,7 @@ export function CreatePage() {
 
   useEffect(() => {
     if (!models.data?.length || models.data.some((model) => model.id === draft.modelId)) return;
-    const first = (isRealApi() ? models.data.find((model) => !model.simulated) : undefined) ?? models.data[0];
+    const first = models.data.find((model) => !model.simulated) ?? models.data[0];
     updateDraft({ modelId: first.id, resolution: first.resolutions[0], ratio: first.ratios[0], quality: first.qualities?.[0] });
   }, [models.data, draft.modelId, updateDraft]);
 
@@ -110,10 +110,10 @@ export function CreatePage() {
 
         <aside className="flex min-h-[620px] flex-col rounded-[28px] border border-border bg-card p-5 md:p-6">
           <div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">生成设置</h2><p className="mt-1 text-xs text-muted-foreground">参数变化会实时计算积分</p></div><Button type="button" variant="ghost" size="icon" aria-label="打开高级设置" className="rounded-full"><SlidersHorizontal /></Button></div>
-          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} referencePreviewUrl={draft.referencePreviewUrl} referenceName={draft.referenceName} onReferenceChange={(referenceAssetId) => { if (draft.referencePreviewUrl?.startsWith('blob:')) URL.revokeObjectURL(draft.referencePreviewUrl); updateDraft({ referenceAssetId, referencePreviewUrl: undefined, referenceName: undefined }); }} onReferenceUpload={uploadReference} allowReference={!isRealApi()} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
+          <div className="mt-6 flex-1"><PromptComposer prompt={draft.prompt} onPromptChange={(prompt) => updateDraft({ prompt })} assets={assets.data ?? []} referenceAssetId={draft.referenceAssetId} referencePreviewUrl={draft.referencePreviewUrl} referenceName={draft.referenceName} onReferenceChange={(referenceAssetId) => { if (draft.referencePreviewUrl?.startsWith('blob:')) URL.revokeObjectURL(draft.referencePreviewUrl); updateDraft({ referenceAssetId, referencePreviewUrl: undefined, referenceName: undefined }); }} onReferenceUpload={uploadReference} allowReference={false} /><ModelParameterPanel models={models.data ?? []} draft={draft} onChange={updateDraft} /><CreditEstimator credits={estimated} available={me.data?.credits} /></div>
           {error && <div role="alert" className="mt-4 rounded-xl border border-destructive/30 bg-destructive/8 p-3 text-sm text-destructive">{error}{showPaywall && <NavLink to="/pricing" className="ml-2 font-semibold underline">查看套餐</NavLink>}</div>}
-          {isRealApi() && !models.isPending && !models.data?.length && <p role="alert" className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/8 p-3 text-sm text-amber-200">当前没有已启用并完成定价的图片模型，请先在运营平台配置模型和分辨率积分。</p>}
-          <Button type="button" size="lg" className="mt-5 h-12 w-full rounded-2xl text-sm font-bold" disabled={!draft.prompt.trim() || createTask.isPending || models.isPending || (isRealApi() && !models.data?.length)} onClick={submit}>{createTask.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始生成 <ArrowUp /></>}</Button>
+          {!models.isPending && !models.data?.length && <p role="alert" className="mt-4 rounded-xl border border-amber-300/20 bg-amber-300/8 p-3 text-sm text-amber-200">当前没有已启用并完成定价的图片模型，请先在运营平台配置模型和分辨率积分。</p>}
+          <Button type="button" size="lg" className="mt-5 h-12 w-full rounded-2xl text-sm font-bold" disabled={!draft.prompt.trim() || createTask.isPending || models.isPending || !models.data?.length} onClick={submit}>{createTask.isPending ? <><LoaderCircle className="animate-spin" />正在提交</> : <>开始生成 <ArrowUp /></>}</Button>
           <p className="mt-3 text-center text-xs text-muted-foreground">提交后进入任务队列，失败自动退回积分</p>
         </aside>
       </div>

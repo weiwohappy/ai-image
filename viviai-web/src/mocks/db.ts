@@ -42,6 +42,8 @@ export function loadDb(): MockDatabase {
   if (!memoryDb.toolQuotes) { memoryDb.toolQuotes = []; migrated = true; }
   if (!memoryDb.challenges) { memoryDb.challenges = []; migrated = true; }
   if (!memoryDb.redemptionAttempts) { memoryDb.redemptionAttempts = []; migrated = true; }
+  if (!memoryDb.generationQuotes) { memoryDb.generationQuotes = []; migrated = true; }
+  if (!memoryDb.generationTaskKeys) { memoryDb.generationTaskKeys = []; migrated = true; }
   if (!memoryDb.workflowRuns) { memoryDb.workflowRuns = []; migrated = true; }
   if (!memoryDb.workflowRunQuotes) { memoryDb.workflowRunQuotes = []; migrated = true; }
   if (!memoryDb.workflowRunKeys) { memoryDb.workflowRunKeys = []; migrated = true; }

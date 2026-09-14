@@ -53,7 +53,6 @@ describe('application routes', () => {
   });
 
   it('keeps the invite page and notification control available in real API mode', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     window.location.hash = '#/invite';
     render(<App />);
 
@@ -62,7 +61,6 @@ describe('application routes', () => {
   });
 
   it('keeps the AI tool center available in real API mode', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     window.location.hash = '#/tools';
     render(<App />);
 
@@ -71,7 +69,6 @@ describe('application routes', () => {
   });
 
   it('keeps the workflow studio available in real API mode', async () => {
-    vi.stubEnv('VITE_API_MODE', 'real');
     window.location.hash = '#/workflows';
     render(<App />);
 
