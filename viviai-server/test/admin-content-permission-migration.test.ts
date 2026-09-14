@@ -41,7 +41,10 @@ it('migrates content permissions additively and invalidates only affected admini
     for (const role of after) {
       const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
         (permission) =>
-          !['redemptions.read', 'redemptions.write', 'referrals.read'].includes(permission),
+          !['redemptions.read', 'redemptions.write', 'referrals.read'].includes(permission) &&
+          // Granted by 20260912080000_workflow_batches, later than the migration under test.
+          !permission.startsWith('workflows.') &&
+          !permission.startsWith('batches.'),
       );
       expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());
       const previous = before.find((candidate) => candidate.key === role.key)!;

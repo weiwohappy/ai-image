@@ -100,6 +100,9 @@ it('additively migrates only super permission, invalidates affected grants, pres
           !permission.startsWith('content.') &&
           !['redemptions.read', 'redemptions.write', 'referrals.read'].includes(permission) &&
           permission !== 'alerts.content.read' &&
+          // Granted by 20260912080000_workflow_batches, later than the migration under test.
+          !permission.startsWith('workflows.') &&
+          !permission.startsWith('batches.') &&
           !(role.key === 'content_operator' && permission === 'alerts.read'),
       );
       expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());

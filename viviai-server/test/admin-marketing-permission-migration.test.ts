@@ -30,7 +30,12 @@ it('migrates marketing permissions additively and invalidates only affected admi
     );
     const after = await db.database.client.adminRole.findMany({ orderBy: { key: 'asc' } });
     for (const role of after) {
-      expect([...role.permissions].sort()).toEqual([...ROLE_PERMISSIONS[role.key]!].sort());
+      // Workflow and batch grants arrive with 20260912080000_workflow_batches, later than this one.
+      const permissionsAtThisMigration = ROLE_PERMISSIONS[role.key]!.filter(
+        (permission) =>
+          !permission.startsWith('workflows.') && !permission.startsWith('batches.'),
+      );
+      expect([...role.permissions].sort()).toEqual([...permissionsAtThisMigration].sort());
       const previous = before.find((candidate) => candidate.key === role.key)!;
       expect(role.version).toBe(
         ['super_admin', 'owner'].includes(role.key) ? previous.version + 1 : previous.version,
