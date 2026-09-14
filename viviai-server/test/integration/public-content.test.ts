@@ -72,13 +72,16 @@ describe('public operational content', () => {
     status?: 'draft' | 'published' | 'offline';
     coverMediaId?: string;
     baseLikes?: number;
+    title?: string;
+    description?: string;
+    tags?: string[];
   }) {
     return database.database.client.inspiration.create({
       data: {
         id: input.id,
         externalId: input.externalId,
-        title: `Title ${input.externalId}`,
-        description: 'private description',
+        title: input.title ?? `Title ${input.externalId}`,
+        description: input.description ?? 'private description',
         category: input.category,
         creatorName: 'Public creator',
         sourceType: 'platform',
@@ -86,7 +89,7 @@ describe('public operational content', () => {
         sourceUrl: 'https://source.example/private-path',
         editorialLabel: 'Internal editorial label',
         baseLikes: input.baseLikes ?? 0,
-        tags: ['safe-tag'],
+        tags: input.tags ?? ['safe-tag'],
         defaultPrompt: `Prompt ${input.externalId}`,
         defaultModelId: 'gemini-3.1-flash-image',
         defaultOutputSpecId: 'png-1k-1x1-v1',
@@ -439,6 +442,92 @@ describe('public operational content', () => {
       forgedErrors.push(publicError);
     }
     expect(new Set(forgedErrors.map((error) => JSON.stringify(error))).size).toBe(1);
+  });
+
+  it('searches catalog title, description and exact tags without breaking the keyset cursor', async () => {
+    const rows = [
+      {
+        id: uuid('40'),
+        externalId: 'inspiration-search-a',
+        title: 'Amber bottle study',
+        description: 'warm gradient backdrop',
+        tags: ['glass'],
+        sortOrder: 0,
+      },
+      {
+        id: uuid('41'),
+        externalId: 'inspiration-search-c',
+        title: 'Copper tray study',
+        description: 'matte metal finish',
+        tags: ['metal'],
+        sortOrder: 1,
+      },
+      {
+        id: uuid('42'),
+        externalId: 'inspiration-search-b',
+        title: 'Silver bottle study',
+        description: 'cool gradient backdrop',
+        tags: ['glass'],
+        sortOrder: 2,
+      },
+      {
+        id: uuid('43'),
+        externalId: 'inspiration-search-d',
+        title: 'Neutral object',
+        description: 'brushed aluminium finish',
+        tags: ['stone'],
+        sortOrder: 3,
+      },
+    ];
+    for (const row of rows) await createInspiration({ ...row, category: 'searchable' });
+
+    const ids = (response: { body: { data: { items: Array<{ id: string }> } } }) =>
+      response.body.data.items.map((item) => item.id);
+    const search = (query: string) =>
+      get(`/inspirations?category=searchable&query=${encodeURIComponent(query)}`).expect(200);
+
+    expect(ids(await get('/inspirations?category=searchable').expect(200))).toEqual(
+      rows.map((row) => row.externalId),
+    );
+    // Title text is matched case-insensitively, descriptions are searchable, tags compare exactly.
+    expect(ids(await search('AMBER'))).toEqual(['inspiration-search-a']);
+    expect(ids(await search('aluminium'))).toEqual(['inspiration-search-d']);
+    expect(ids(await search('metal'))).toEqual(['inspiration-search-c']);
+    // A tag prefix must not leak the rest of its category, and nothing matches an absent term.
+    expect(ids(await search('glas'))).toEqual([]);
+    expect(ids(await search('porcelain'))).toEqual([]);
+
+    // The keyset cursor and the search clause are ANDed: the page after the first match must
+    // skip inspiration-search-c, which sits between the two 'bottle' rows but does not match.
+    const firstPage = await get(
+      '/inspirations?category=searchable&query=bottle&limit=1',
+    ).expect(200);
+    expect(ids(firstPage)).toEqual(['inspiration-search-a']);
+    const cursor = firstPage.body.data.nextCursor as string;
+    expect(cursor).toBeTruthy();
+    const secondPage = await get(
+      `/inspirations?category=searchable&query=bottle&limit=1&cursor=${encodeURIComponent(cursor)}`,
+    ).expect(200);
+    expect(ids(secondPage)).toEqual(['inspiration-search-b']);
+    expect(secondPage.body.data.nextCursor).toBeNull();
+
+    // A cursor is bound to the term that minted it, so replayed results stay consistent.
+    await get(
+      `/inspirations?category=searchable&limit=1&cursor=${encodeURIComponent(cursor)}`,
+    ).expect(400);
+    await get(
+      `/inspirations?category=searchable&query=bottles&limit=1&cursor=${encodeURIComponent(cursor)}`,
+    ).expect(400);
+    await get('/inspirations?category=searchable&query=').expect(400);
+    await get(`/inspirations?category=searchable&query=${'x'.repeat(161)}`).expect(400);
+
+    const templates = await get('/remix-templates?query=contrast').expect(200);
+    expect(templates.body.data.items.map((item: { id: string }) => item.id)).toEqual([
+      'template-main',
+    ]);
+    // Offline copy stays invisible even when the search term only appears inside it.
+    const offlineOnly = await get('/remix-templates?query=hidden').expect(200);
+    expect(offlineOnly.body.data.items).toEqual([]);
   });
 
   it('maps template and tool JSON into exact frontend contracts and hides offline detail', async () => {

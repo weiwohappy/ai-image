@@ -47,7 +47,9 @@ export class PublicContentController {
   ) {
     setPersonalizedCacheHeaders(response);
     const input = parseInput(
-      z.object({ ...pageShape, category: filterValue.optional() }).strict(),
+      z
+        .object({ ...pageShape, category: filterValue.optional(), query: filterValue.optional() })
+        .strict(),
       query,
     );
     return this.content.listInspirations(
@@ -55,6 +57,7 @@ export class PublicContentController {
         limit: input.limit ?? 50,
         ...(input.cursor ? { cursor: input.cursor } : {}),
         ...(input.category ? { category: input.category } : {}),
+        ...(input.query ? { query: input.query } : {}),
       },
       request.userId,
     );
@@ -88,6 +91,7 @@ export class PublicContentController {
           platform: filterValue.optional(),
           industry: filterValue.optional(),
           style: filterValue.optional(),
+          query: filterValue.optional(),
         })
         .strict(),
       query,
@@ -100,6 +104,7 @@ export class PublicContentController {
         ...(input.platform ? { platform: input.platform } : {}),
         ...(input.industry ? { industry: input.industry } : {}),
         ...(input.style ? { style: input.style } : {}),
+        ...(input.query ? { query: input.query } : {}),
       },
       request.userId,
     );

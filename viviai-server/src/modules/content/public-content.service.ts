@@ -16,8 +16,14 @@ import {
 
 type CatalogKind = 'inspirations' | 'remix-templates' | 'tools';
 type PageInput = { limit: number; cursor?: string };
-type InspirationFilters = { category?: string };
-type RemixFilters = { category?: string; platform?: string; industry?: string; style?: string };
+type InspirationFilters = { category?: string; query?: string };
+type RemixFilters = {
+  category?: string;
+  platform?: string;
+  industry?: string;
+  style?: string;
+  query?: string;
+};
 type ToolFilters = { category?: string };
 
 const cursorSchema = z
@@ -57,7 +63,7 @@ export class PublicContentService {
   ) {}
 
   async listInspirations(input: PageInput & InspirationFilters, userId?: string) {
-    const filter = filterDigest({ category: input.category });
+    const filter = filterDigest({ category: input.category, query: input.query });
     const after = input.cursor
       ? await this.inspirationAnchor(
           decodeCursor(input.cursor, 'inspirations', filter, this.config.contentCursorSecret),
@@ -67,6 +73,7 @@ export class PublicContentService {
       where: {
         status: 'published',
         ...(input.category ? { category: input.category } : {}),
+        ...(input.query ? { AND: searchClauses(input.query) } : {}),
         ...(after ? afterWhere(after) : {}),
       },
       orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
@@ -89,6 +96,7 @@ export class PublicContentService {
       platform: input.platform,
       industry: input.industry,
       style: input.style,
+      query: input.query,
     });
     const after = input.cursor
       ? await this.templateAnchor(
@@ -102,6 +110,7 @@ export class PublicContentService {
         ...(input.platform ? { platform: input.platform } : {}),
         ...(input.industry ? { industry: input.industry } : {}),
         ...(input.style ? { style: input.style } : {}),
+        ...(input.query ? { AND: searchClauses(input.query) } : {}),
         ...(after ? afterWhere(after) : {}),
       },
       orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
@@ -351,6 +360,22 @@ function afterWhere(anchor: { id: string; sortOrder: number }) {
       { sortOrder: anchor.sortOrder, id: { gt: anchor.id } },
     ],
   };
+}
+
+// Search matches the copy an editor writes in the console — title, description and tags — since
+// that is where category, platform and style words actually appear. Tags compare exactly: prefix
+// matching on an array would let one broad term drag in unrelated categories. Returned as AND
+// clauses so a caller can combine them with the keyset `OR` from afterWhere().
+function searchClauses(query: string) {
+  return [
+    {
+      OR: [
+        { title: { contains: query, mode: 'insensitive' as const } },
+        { description: { contains: query, mode: 'insensitive' as const } },
+        { tags: { has: query } },
+      ],
+    },
+  ];
 }
 
 function page<Row extends CursorRow, Output>(
