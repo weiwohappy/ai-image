@@ -24,6 +24,7 @@ import { safeRoute } from './format';
 import { ResourcePage } from './ResourcePage';
 import { DashboardPage } from './DashboardPage';
 import { DetailPage } from './DetailPage';
+import { BatchOperations } from './batches/BatchOperations';
 import { useAdminQuery } from './useQuery';
 import { TeamPage } from './team/TeamPage';
 import { RolesPage } from './team/RolesPage';
@@ -93,6 +94,8 @@ export function ConsoleShell({
   const allowed = permission && actor.permissions.includes(permission);
   const operationRoute = root === '/content' || root === '/marketing';
   const detail = !operationRoute && pathname.split('/').length > 2;
+  // A batch detail carries the operator's disposal controls, so it is not the generic record view.
+  const batchDetail = /^\/batches\/([0-9a-fA-F-]{36})$/.exec(pathname)?.[1];
   const team = !detail && (root === '/administrators' || root === '/roles');
   const pricing = root === '/model-pricing';
   return (
@@ -176,6 +179,15 @@ export function ConsoleShell({
               <h2>当前账号无权查看此页面</h2>
               <p>请从左侧已授权的菜单继续操作。</p>
             </section>
+          ) : batchDetail ? (
+            <BatchOperations
+              key={path}
+              batchId={batchDetail}
+              actor={actor}
+              client={client}
+              writeEnabled={teamWritesEnabled}
+              onChanged={() => void onPermissionsChanged()}
+            />
           ) : detail ? (
             <DetailPage key={path} path={path} client={client} permissions={actor.permissions} />
           ) : root === '/dashboard' ? (
@@ -299,7 +311,7 @@ function TeamNavigation({
   return (
     <SidebarContent>
       <nav aria-label="运营导航">
-        {['工作台', '业务查询', '模型运行', '内容运营', '营销运营', '团队安全'].map(
+        {['工作台', '业务查询', '模型运行', '任务运营', '内容运营', '营销运营', '团队安全'].map(
           (group) =>
             items.some((item) => item.group === group) && (
               <SidebarGroup key={group}>

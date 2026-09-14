@@ -12,25 +12,6 @@ import type { AdminTable } from './contracts';
 import { formatValue, safeRoute } from './format';
 import { routePermission } from './navigation';
 
-const statusLabels: Record<string, string> = {
-  queued: '排队中',
-  running: '执行中',
-  succeeded: '已成功',
-  failed: '失败',
-  cancelled: '已取消',
-  unknown: '结果未知',
-  active: '有效',
-  disabled: '已停用',
-  pending: '待处理',
-  paid: '已支付',
-  unpaid: '未支付',
-  closed: '已关闭',
-  expired: '已过期',
-  enabled: '已启用',
-  open: '待处理',
-  resolved: '已解除',
-  pending_mfa: '待绑定 MFA',
-};
 export function Notices({ items }: { items: string[] }) {
   return items.length ? (
     <div className="notices">
@@ -93,7 +74,7 @@ export function DataTable({
                         <span
                           className={`status-pill status-${String(value).replace(/[^a-z]/g, '')}`}
                         >
-                          {statusLabels[String(value)] ?? text}
+                          {text}
                         </span>
                       ) : (
                         text

@@ -2,6 +2,7 @@ import type { AdminActor } from './contracts';
 import {
   Bell,
   BookImage,
+  Boxes,
   CreditCard,
   Images,
   KeyRound,
@@ -16,6 +17,7 @@ import {
   UserRoundPlus,
   Users,
   WandSparkles,
+  Workflow,
 } from 'lucide-react';
 export const navigation = [
   {
@@ -62,6 +64,20 @@ export const navigation = [
     icon: Network,
   },
   { path: '/alerts', label: '运行告警', permission: 'alerts.read', group: '模型运行', icon: Bell },
+  {
+    path: '/workflows',
+    label: '工作流',
+    permission: 'workflows.read',
+    group: '任务运营',
+    icon: Workflow,
+  },
+  {
+    path: '/batches',
+    label: '批量任务',
+    permission: 'batches.read',
+    group: '任务运营',
+    icon: Boxes,
+  },
   {
     path: '/content/inspirations',
     label: '灵感库',

@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
-import { DatabaseService } from '../../shared/database/database.service.js';
+import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
 import { CatalogService } from '../catalog/catalog.service.js';
 import { digest, PRODUCT_ID } from '../catalog/input-schema.js';
@@ -45,7 +45,8 @@ export class WorkflowQuoteService {
    */
   async quote(userId: string, raw: unknown) {
     const retry = retrySchema.safeParse(raw);
-    if (retry.success) return this.quoteRetry(userId, retry.data.retryRunId);
+    if (retry.success)
+      return this.db.transaction((tx) => this.quoteRetryIn(tx, userId, retry.data.retryRunId));
 
     const parsed = selectionSchema.safeParse(raw);
     if (!parsed.success)
@@ -74,16 +75,20 @@ export class WorkflowQuoteService {
     }
 
     if (issues.length) return this.rejected(workflow.id, workflow.version, issues);
-    return this.record(userId, workflow.id, workflow.version, usable);
+    return this.db.transaction((tx) =>
+      this.recordIn(tx, userId, workflow.id, workflow.version, usable),
+    );
   }
 
   /**
-   * Prices only the failed, retryable columns of a settled batch. The run's own
+   * Prices only the failed, retryable columns of a settled batch, on the caller's
+   * transaction: an operator retry records its quote and starts the run together,
+   * so an abandoned retry never leaves a priced quote behind. The run's own
    * workflow snapshot is used so a retry reproduces the quoted version, and a
    * completed run with nothing left to retry yields an empty, unsubmittable quote.
    */
-  private async quoteRetry(userId: string, runId: string) {
-    const run = await this.db.client.workflowRun.findFirst({
+  async quoteRetryIn(tx: DbTransaction, userId: string, runId: string) {
+    const run = await tx.workflowRun.findFirst({
       where: { id: runId, userId },
       include: { items: true },
     });
@@ -92,7 +97,9 @@ export class WorkflowQuoteService {
       throw new AppError(409, 'RUN_NOT_SETTLED', 'This batch is still running');
     const snapshot = readRunSnapshot(run.workflowSnapshot);
 
-    const targets = run.items.filter((item) => item.status === 'failed' && isRetryable(item.errorCode));
+    const targets = run.items.filter(
+      (item) => item.status === 'failed' && isRetryable(item.errorCode),
+    );
     if (!targets.length) return this.rejected(snapshot.workflowId, snapshot.workflowVersion, []);
 
     const tools = await this.loadTools(snapshot.columns);
@@ -118,7 +125,10 @@ export class WorkflowQuoteService {
     const wanted = new Set(targets.map((item) => `${item.rowKey}:${item.columnKey}`));
     const selected = usable.filter((item) => wanted.has(`${item.rowKey}:${item.columnId}`));
     const missing = targets.filter(
-      (item) => !selected.some((entry) => entry.rowKey === item.rowKey && entry.columnId === item.columnKey),
+      (item) =>
+        !selected.some(
+          (entry) => entry.rowKey === item.rowKey && entry.columnId === item.columnKey,
+        ),
     );
     for (const item of missing)
       if (!issues.some((issue) => issue.rowKey === item.rowKey && issue.columnId === item.columnKey))
@@ -130,78 +140,74 @@ export class WorkflowQuoteService {
         });
 
     if (issues.length) return this.rejected(snapshot.workflowId, snapshot.workflowVersion, issues);
-    return this.record(userId, snapshot.workflowId, snapshot.workflowVersion, selected);
+    return this.recordIn(tx, userId, snapshot.workflowId, snapshot.workflowVersion, selected);
   }
 
-  private async record(
+  private async recordIn(
+    tx: DbTransaction,
     userId: string,
     workflowId: string,
     workflowVersion: number,
     items: CompiledWorkflowItem[],
   ) {
-    const record = await this.db.transaction(async (tx) => {
-      const quoted: QuotedItem[] = [];
-      for (const item of items) {
-        const quote = await this.catalog.createQuoteIn(tx, userId, item.generationInput, {
-          type: 'workflow',
-          id: workflowId,
-          version: workflowVersion,
-          snapshot: item.originSnapshot,
-        });
-        quoted.push({
-          ...item,
-          quoteId: quote.id,
-          inputHash: quote.inputHash,
-          unitCredits: quote.unitCredits,
-          totalCredits: quote.totalCredits,
-          createdAt: quote.createdAt,
-          expiresAt: quote.expiresAt,
-        });
-      }
-      const aggregate = await tx.workflowRunQuote.create({
-        data: {
-          userId,
-          workflowId,
-          inputHash: digest({
-            workflowId,
-            workflowVersion,
-            items: quoted.map((item) => ({
-              rowKey: item.rowKey,
-              columnKey: item.columnId,
-              inputHash: item.inputHash,
-            })),
-          }),
-          workflowVersion,
-          totalCredits: quoted.reduce((sum, item) => sum + BigInt(item.totalCredits), 0n),
-          expiresAt: new Date(
-            Math.min(...quoted.map((item) => Date.parse(item.expiresAt))),
-          ),
-          items: {
-            create: quoted.map((item) => ({
-              rowKey: item.rowKey,
-              columnKey: item.columnId,
-              normalizedInput: item.generationInput,
-              originSnapshot: item.originSnapshot,
-              unitCredits: BigInt(item.unitCredits),
-              totalCredits: BigInt(item.totalCredits),
-              generationQuoteId: item.quoteId,
-            })),
-          },
-        },
-        select: { id: true, totalCredits: true, createdAt: true, expiresAt: true },
+    const quoted: QuotedItem[] = [];
+    for (const item of items) {
+      const quote = await this.catalog.createQuoteIn(tx, userId, item.generationInput, {
+        type: 'workflow',
+        id: workflowId,
+        version: workflowVersion,
+        snapshot: item.originSnapshot,
       });
-      return { aggregate, quoted };
+      quoted.push({
+        ...item,
+        quoteId: quote.id,
+        inputHash: quote.inputHash,
+        unitCredits: quote.unitCredits,
+        totalCredits: quote.totalCredits,
+        createdAt: quote.createdAt,
+        expiresAt: quote.expiresAt,
+      });
+    }
+    const aggregate = await tx.workflowRunQuote.create({
+      data: {
+        userId,
+        workflowId,
+        inputHash: digest({
+          workflowId,
+          workflowVersion,
+          items: quoted.map((item) => ({
+            rowKey: item.rowKey,
+            columnKey: item.columnId,
+            inputHash: item.inputHash,
+          })),
+        }),
+        workflowVersion,
+        totalCredits: quoted.reduce((sum, item) => sum + BigInt(item.totalCredits), 0n),
+        expiresAt: new Date(Math.min(...quoted.map((item) => Date.parse(item.expiresAt)))),
+        items: {
+          create: quoted.map((item) => ({
+            rowKey: item.rowKey,
+            columnKey: item.columnId,
+            normalizedInput: item.generationInput,
+            originSnapshot: item.originSnapshot,
+            unitCredits: BigInt(item.unitCredits),
+            totalCredits: BigInt(item.totalCredits),
+            generationQuoteId: item.quoteId,
+          })),
+        },
+      },
+      select: { id: true, totalCredits: true, createdAt: true, expiresAt: true },
     });
 
     return {
-      quoteId: record.aggregate.id,
+      quoteId: aggregate.id,
       workflowId,
       workflowVersion,
       submittable: true,
-      totalCredits: Number(record.aggregate.totalCredits),
-      createdAt: record.aggregate.createdAt.toISOString(),
-      expiresAt: record.aggregate.expiresAt.toISOString(),
-      items: record.quoted.map(presentQuoted),
+      totalCredits: Number(aggregate.totalCredits),
+      createdAt: aggregate.createdAt.toISOString(),
+      expiresAt: aggregate.expiresAt.toISOString(),
+      items: quoted.map(presentQuoted),
     };
   }
 

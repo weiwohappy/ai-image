@@ -32,6 +32,10 @@ const reasons: Record<string, string> = {
   ADMIN_INVITATION_EXISTS: '该邮箱已有邀请，请在邀请列表中处理',
   ADMIN_ACCOUNT_EXISTS: '该邮箱已有成员账号，请在成员列表中查找',
   ADMIN_INVALID_RESET: '重置链接无效、已使用或已过期，请联系管理员重新生成',
+  BATCH_NOT_FOUND: '批次不存在或不可访问，请刷新列表',
+  BATCH_NOT_QUEUED: '批次已开始执行，无法取消',
+  BATCH_NOT_SETTLED: '批次尚未结束，无法重试',
+  NO_RETRYABLE_FAILURES: '批次没有可重试的失败项',
 };
 export function reasonText(code?: string | null) {
   return code ? (reasons[code] ?? '当前状态下不可执行此操作') : '当前账号没有此操作权限';

@@ -27,8 +27,11 @@ import { AdminContentCommands } from './content/command.service.js';
 import { AdminContentPublishValidator } from './content/publish-validator.js';
 import { AdminMarketingController } from './marketing/marketing.controller.js';
 import { AdminMarketingCommands, AdminMarketingService } from './marketing/marketing.service.js';
+import { AdminBatchCommands } from './workflow/batch-commands.service.js';
+import { AdminWorkflowController } from './workflow/workflow-admin.controller.js';
+import { WorkflowModule } from '../workflow/workflow.module.js';
 @Module({
-  imports: [AssetsModule],
+  imports: [AssetsModule, WorkflowModule],
   controllers: [
     AdminModelPricingController,
     AdminAuthController,
@@ -39,6 +42,7 @@ import { AdminMarketingCommands, AdminMarketingService } from './marketing/marke
     AdminProviderVerificationController,
     AdminContentController,
     AdminMarketingController,
+    AdminWorkflowController,
   ],
   providers: [
     AdminModelPricingService,
@@ -60,6 +64,7 @@ import { AdminMarketingCommands, AdminMarketingService } from './marketing/marke
     AdminContentPublishValidator,
     AdminMarketingCommands,
     AdminMarketingService,
+    AdminBatchCommands,
   ],
 })
 export class AdminModule {}

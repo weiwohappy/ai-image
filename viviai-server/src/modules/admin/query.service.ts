@@ -10,7 +10,22 @@ import { SIMULATED_PROFILES } from '../providers/provider-config.js';
 import { budgetKey } from '../providers/accounting.js';
 import { requirePermission } from './permissions.js';
 import { parse } from './auth.controller.js';
-import type { AdminActor, AdminDetail, AdminTable, Cell, Column, Dashboard } from './contracts.js';
+import {
+  RUN_ACTIVE,
+  RUN_TERMINAL,
+  presentRun,
+  type RunRecord,
+} from '../workflow/batch-projection.service.js';
+import type {
+  AdminActor,
+  AdminDetail,
+  AdminTable,
+  BatchAction,
+  BatchDetail,
+  Cell,
+  Column,
+  Dashboard,
+} from './contracts.js';
 import { label } from './presentation.js';
 
 const uuid = z.uuid();
@@ -21,6 +36,50 @@ export function id(value: string) {
 const missing = () => new AppError(404, 'ADMIN_NOT_FOUND', 'Resource not found');
 const bad = () => new AppError(400, 'ADMIN_INVALID_QUERY', 'Invalid query');
 const orderBy = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
+const WORKFLOW_STATUSES = ['active', 'archived'];
+const RUN_STATUSES: string[] = [...RUN_ACTIVE, ...RUN_TERMINAL];
+const REDACTION_NOTICE = ['Prompts, cell contents and asset references are excluded.'];
+
+/** Counts the stored columns without ever reading a prompt, tool value or cell. */
+function columnStats(columns: unknown) {
+  const list = Array.isArray(columns) ? columns : [];
+  const types = list.map((column) =>
+    column && typeof column === 'object' ? (column as { type?: unknown }).type : undefined,
+  );
+  return {
+    columnCount: list.length,
+    // Output columns are the ones that produce images: generations and published tools.
+    generationColumnCount: types.filter((type) => type === 'generation' || type === 'tool').length,
+  };
+}
+
+/**
+ * Whether an administrator may dispose of a batch, and if not, which rule stops
+ * it. Cancellation is restricted to a batch nothing has started on; a retry needs
+ * a settled batch that still holds a system failure worth repeating.
+ */
+function batchActions(
+  batch: { status: string; items: Array<{ status: string; retryable: boolean }> },
+  permissions: string[],
+): BatchAction[] {
+  if (!permissions.includes('batches.manage'))
+    return [
+      { action: 'cancel', allowed: false, reasonCode: 'ADMIN_FORBIDDEN' },
+      { action: 'retryFailed', allowed: false, reasonCode: 'ADMIN_FORBIDDEN' },
+    ];
+  const queued = batch.status === 'queued';
+  const settled = RUN_TERMINAL.includes(batch.status);
+  const retryable = batch.items.some((item) => item.status === 'failed' && item.retryable);
+  return [
+    { action: 'cancel', allowed: queued, reasonCode: queued ? null : 'BATCH_NOT_QUEUED' },
+    {
+      action: 'retryFailed',
+      allowed: settled && retryable,
+      reasonCode: settled ? (retryable ? null : 'NO_RETRYABLE_FAILURES') : 'BATCH_NOT_SETTLED',
+    },
+  ];
+}
+
 export function maskEmail(email: string) {
   const [name, domain] = email.split('@');
   return `${name?.slice(0, 1) ?? ''}***@${domain ?? '***'}`;
@@ -46,7 +105,7 @@ function cols(...keys: string[]): Column[] {
   return keys.map((key) => ({
     key,
     label: label(key),
-    ...(['status', 'acceptance', 'billing', 'certainty'].includes(key)
+    ...(['status', 'batchStatus', 'acceptance', 'billing', 'certainty'].includes(key)
       ? { kind: 'status' as const }
       : {}),
     ...([
@@ -58,6 +117,7 @@ function cols(...keys: string[]): Column[] {
       'lastSeenAt',
       'acceptedAt',
       'deliveredAt',
+      'updatedAt',
     ].includes(key)
       ? { kind: 'datetime' as const }
       : {}),
@@ -70,6 +130,8 @@ function cols(...keys: string[]): Column[] {
       'revoked',
       'credits',
       'unitCredits',
+      'estimatedCredits',
+      'chargedCredits',
       'availableDelta',
       'heldDelta',
       'consumedDelta',
@@ -1017,6 +1079,217 @@ export class AdminQueryService {
       next(rows, q),
       ['Alert rules and notifications are unavailable in increment A.'],
     );
+  }
+  async workflows(actor: AdminActor, raw: unknown): Promise<AdminTable> {
+    requirePermission(actor, 'workflows.read');
+    const q = query(raw, ['q', 'userId', 'status', 'from', 'to']);
+    if (q.status && !WORKFLOW_STATUSES.includes(q.status)) throw bad();
+    const rows = await this.db.client.workflow.findMany({
+      ...pageArgs(q),
+      where: {
+        ...exact(q.q),
+        ...dateWhere(q),
+        ...(q.userId ? { userId: q.userId } : {}),
+        ...(q.status ? { archivedAt: q.status === 'archived' ? { not: null } : null } : {}),
+      },
+      select: {
+        id: true,
+        userId: true,
+        name: true,
+        version: true,
+        columns: true,
+        createdAt: true,
+        updatedAt: true,
+        archivedAt: true,
+        _count: { select: { rows: true } },
+      },
+    });
+    return table(
+      'Workflows',
+      cols(
+        'id',
+        'name',
+        'userId',
+        'version',
+        'columnCount',
+        'generationColumnCount',
+        'rowCount',
+        'status',
+        'updatedAt',
+      ),
+      rows.slice(0, q.limit).map((row) => ({
+        id: row.id,
+        name: row.name,
+        userId: row.userId,
+        version: row.version,
+        ...columnStats(row.columns),
+        rowCount: row._count.rows,
+        status: row.archivedAt ? 'archived' : 'active',
+        updatedAt: row.updatedAt.toISOString(),
+      })),
+      next(rows, q),
+      ['Prompts, cell contents and asset references are excluded.'],
+    );
+  }
+  async workflow(actor: AdminActor, workflowId: string): Promise<AdminDetail> {
+    // A malformed identifier is indistinguishable from an absent workflow.
+    if (!uuid.safeParse(workflowId).success) throw missing();
+    const row = (await this.workflows(actor, { q: workflowId })).rows[0];
+    if (!row) throw missing();
+    const stored = await this.db.client.workflow.findUniqueOrThrow({
+      where: { id: workflowId },
+      select: { columns: true },
+    });
+    // Only the shape of each output column is published: never its prompt or tool values.
+    const columns = (Array.isArray(stored.columns) ? stored.columns : [])
+      .filter(
+        (column): column is Prisma.JsonObject =>
+          !!column && typeof column === 'object' && !Array.isArray(column),
+      )
+      .map((column) => ({
+        id: String(column.id ?? ''),
+        name: String(column.name ?? ''),
+        type: String(column.type ?? ''),
+        modelId: column.type === 'generation' ? String(column.modelId ?? '') : null,
+      }))
+      .slice(0, 40);
+    return detail('Workflow', row, [
+      table('Output columns', cols('id', 'name', 'type', 'modelId'), columns),
+    ]);
+  }
+  async batches(actor: AdminActor, raw: unknown): Promise<AdminTable> {
+    requirePermission(actor, 'batches.read');
+    const q = query(raw, ['q', 'userId', 'status', 'from', 'to']);
+    if (q.status && !RUN_STATUSES.includes(q.status)) throw bad();
+    const rows = await this.db.client.workflowRun.findMany({
+      ...pageArgs(q),
+      where: {
+        ...exact(q.q),
+        ...dateWhere(q),
+        ...(q.userId ? { userId: q.userId } : {}),
+        // A batch carries exactly one status, so this is an equality rather than a containment.
+        ...(q.status ? { status: q.status } : {}),
+      },
+      select: {
+        id: true,
+        userId: true,
+        workflowId: true,
+        workflowSnapshot: true,
+        cancelRequested: true,
+        retryOfRunId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+    const projected = await this.projectRuns(rows.slice(0, q.limit));
+    return table(
+      'Batches',
+      cols(
+        'id',
+        'workflowName',
+        'userId',
+        'status',
+        'totalCount',
+        'succeededCount',
+        'failedCount',
+        'cancelledCount',
+        'estimatedCredits',
+        'chargedCredits',
+        'retryOfRunId',
+        'createdAt',
+        'updatedAt',
+      ),
+      projected.map(({ run, batch }) => ({
+        id: batch.id,
+        workflowName: batch.workflowName,
+        userId: run.userId,
+        status: batch.status,
+        totalCount: batch.totalCount,
+        succeededCount: batch.succeededCount,
+        failedCount: batch.failedCount,
+        cancelledCount: batch.cancelledCount,
+        estimatedCredits: batch.estimatedCredits,
+        chargedCredits: batch.chargedCredits,
+        retryOfRunId: batch.retryOfRunId,
+        createdAt: batch.createdAt,
+        updatedAt: batch.updatedAt,
+      })),
+      next(rows, q),
+      REDACTION_NOTICE,
+    );
+  }
+  async batch(
+    actor: AdminActor,
+    runId: string,
+    permissions: string[] = [],
+  ): Promise<BatchDetail> {
+    requirePermission(actor, 'batches.read');
+    // A malformed identifier is indistinguishable from an absent batch.
+    if (!uuid.safeParse(runId).success) throw missing();
+    const run = await this.db.client.workflowRun.findUnique({
+      where: { id: runId },
+      include: { retries: { select: { id: true } } },
+    });
+    if (!run) throw missing();
+    const [projected] = await this.projectRuns([run]);
+    if (!projected) throw missing();
+    const { batch } = projected;
+    return {
+      ...detail(
+        'Batch',
+        {
+          id: batch.id,
+          batchStatus: batch.status,
+          workflowName: batch.workflowName,
+          workflowVersion: batch.workflowVersion,
+          userId: run.userId,
+          totalCount: batch.totalCount,
+          succeededCount: batch.succeededCount,
+          failedCount: batch.failedCount,
+          cancelledCount: batch.cancelledCount,
+          estimatedCredits: batch.estimatedCredits,
+          chargedCredits: batch.chargedCredits,
+          cancelRequested: batch.cancelRequested,
+          retryOfRunId: batch.retryOfRunId,
+          retryRunIds: batch.retryRunIds.join(', ') || null,
+          createdAt: batch.createdAt,
+          updatedAt: batch.updatedAt,
+        },
+        [
+          table(
+            'Batch items',
+            cols('rowKey', 'columnKey', 'columnName', 'status', 'errorCode', 'retryable'),
+            batch.items.map((item) => ({
+              id: item.id,
+              rowKey: item.rowKey,
+              columnKey: item.columnKey,
+              columnName: item.columnName ?? item.columnKey,
+              status: item.status,
+              errorCode: item.errorCode,
+              retryable: item.retryable,
+            })),
+          ),
+        ],
+        REDACTION_NOTICE,
+      ),
+      actions: batchActions(batch, permissions),
+    };
+  }
+  /** Runs the same projection the customer view uses, so admin reads cannot leak more. */
+  private async projectRuns<T extends RunRecord>(runs: T[]): Promise<Array<{ run: T; batch: ReturnType<typeof presentRun> }>> {
+    const items = runs.length
+      ? await this.db.client.workflowRunItem.findMany({
+          where: { runId: { in: runs.map((run) => run.id) } },
+          include: { generationJob: { include: { items: true } } },
+        })
+      : [];
+    return runs.map((run) => ({
+      run,
+      batch: presentRun(
+        run,
+        items.filter((item) => item.runId === run.id),
+      ),
+    }));
   }
   private async refreshAlerts() {
     // A single projection lock serializes scans and resolution; business rows are read only.

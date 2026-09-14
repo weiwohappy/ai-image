@@ -18,7 +18,7 @@ export function isRetryable(errorCode: string | null): boolean {
   return !errorCode || !NOT_RETRYABLE.includes(errorCode);
 }
 
-interface RunItemRecord {
+export interface RunItemRecord {
   id: string;
   rowKey: string;
   columnKey: string;
@@ -176,7 +176,7 @@ function deriveStatus(counts: Omit<RunCounts, 'status'>): string {
   return succeededCount > 0 ? 'partial' : 'failed';
 }
 
-interface RunRecord {
+export interface RunRecord {
   id: string;
   workflowId: string | null;
   workflowSnapshot: unknown;

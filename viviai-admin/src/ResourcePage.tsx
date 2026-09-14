@@ -74,6 +74,24 @@ const routeFilters: Record<string, FilterConfig> = {
       ['disabled', '未启用'],
     ],
   },
+  '/workflows': {
+    statuses: [
+      ['active', '有效'],
+      ['archived', '已归档'],
+    ],
+  },
+  '/batches': {
+    dated: true,
+    user: true,
+    statuses: [
+      ['queued', '排队中'],
+      ['processing', '处理中'],
+      ['succeeded', '已成功'],
+      ['partial', '部分成功'],
+      ['failed', '失败'],
+      ['cancelled', '已取消'],
+    ],
+  },
   '/provider-accounts': {},
   '/alerts': {
     dated: true,
@@ -147,7 +165,9 @@ function ResourceQuery({
     `${path}?limit=30${filters}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
     revision,
   );
-  const detailResource = ['/users', '/orders', '/jobs', '/models'].includes(path)
+  const detailResource = ['/users', '/orders', '/jobs', '/models', '/workflows', '/batches'].includes(
+    path,
+  )
     ? path
     : undefined;
   const statuses = (filterConfig.statuses ?? []).map(([value, label]) => ({ value, label }));

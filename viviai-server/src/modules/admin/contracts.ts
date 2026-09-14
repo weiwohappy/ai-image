@@ -22,6 +22,15 @@ export interface AdminDetail {
   notices: string[];
   sensitive?: { jobId: string; assetIds: string[] };
 }
+/** An operation an administrator may attempt on a batch, and the rule that blocks it. */
+export interface BatchAction {
+  action: 'cancel' | 'retryFailed';
+  allowed: boolean;
+  reasonCode: string | null;
+}
+export interface BatchDetail extends AdminDetail {
+  actions: BatchAction[];
+}
 export interface AdminActor {
   id: string;
   email: string;
