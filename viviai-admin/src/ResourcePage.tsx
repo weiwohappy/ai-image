@@ -104,6 +104,10 @@ const routeFilters: Record<string, FilterConfig> = {
       ['overdue_reservation', '积分冻结超时'],
       ['missing_materialization', '图片入库异常'],
       ['budget_80_percent', '成本预算预警'],
+      ['content_publish_failed', '内容发布失败'],
+      ['notification_missing', '终态任务缺少通知'],
+      ['redemption_count_mismatch', '兑换码计数异常'],
+      ['batch_high_failure', '批次失败率过高'],
     ],
   },
   '/audit-events': {

@@ -34,7 +34,7 @@ describe('admin workflow batch reads and batch operations', () => {
     cookie: string,
     path: string,
     input: Record<string, unknown> = {},
-    key = randomUUID(),
+    key: string = randomUUID(),
   ) => {
     const pending = request(app.getHttpServer())
       [method](`/api/admin${path}`)

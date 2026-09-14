@@ -39,6 +39,15 @@ const orderBy = [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
 const WORKFLOW_STATUSES = ['active', 'archived'];
 const RUN_STATUSES: string[] = [...RUN_ACTIVE, ...RUN_TERMINAL];
 const REDACTION_NOTICE = ['Prompts, cell contents and asset references are excluded.'];
+/**
+ * Alert kinds whose resource is a generation job. Every other kind points at a different record,
+ * so the legacy job column is only filled where it is actually a job.
+ */
+const JOB_ALERT_KINDS = new Set([
+  'overdue_reservation',
+  'missing_materialization',
+  'notification_missing',
+]);
 
 /** Counts the stored columns without ever reading a prompt, tool value or cell. */
 function columnStats(columns: unknown) {
@@ -1055,7 +1064,7 @@ export class AdminQueryService {
       cols(
         'id',
         'category',
-        'kind',
+        'kindLabel',
         'resourceId',
         'jobId',
         'attemptId',
@@ -1067,9 +1076,12 @@ export class AdminQueryService {
       rows.slice(0, q.limit).map((r) => ({
         id: r.id,
         category: r.category,
+        // The machine code stays in the payload because the source filter and operator runbooks
+        // address it; the console renders the localized label beside it.
         kind: r.kind,
+        kindLabel: label(r.kind),
         resourceId: r.resourceId,
-        jobId: r.category === 'service' ? r.resourceId : null,
+        jobId: JOB_ALERT_KINDS.has(r.kind) ? r.resourceId : null,
         attemptId: r.kind === 'unknown_attempt' ? r.resourceId : null,
         contentMediaId: r.category === 'content' ? r.resourceId : null,
         firstSeenAt: r.firstSeenAt.toISOString(),
@@ -1298,10 +1310,23 @@ export class AdminQueryService {
       const schema = new URL(this.config.databaseUrl).searchParams.get('schema') ?? 'public';
       await tx.$executeRaw`SELECT set_config('search_path', ${`"${schema.replaceAll('"', '""')}"`}, true)`;
       const now = new Date();
+      // Boundaries are computed here so every projection in this refresh shares one instant.
+      const recentPublishSince = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      const settledBefore = new Date(now.getTime() - 10 * 60 * 1000);
       // INSERT SELECT keeps projection refresh bounded in memory and never copies raw payloads.
       await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'unknown:' || id::text, 'model', 'unknown_attempt', id::text, ${now}, ${now}, false, ${now} FROM "ProviderAttempt" WHERE "slotActive" AND ("unknownSlot" OR status='unknown') ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
       await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'overdue:' || r.id::text, 'service', 'overdue_reservation', r."jobId"::text, ${now}, ${now}, false, ${now} FROM "CreditReservation" r JOIN "GenerationJob" j ON j.id=r."jobId" WHERE r.status='held' AND j."deliveryDeadlineAt" < ${now} ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
       await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'materialization:' || i.id::text, 'service', 'missing_materialization', i."jobId"::text, ${now}, ${now}, false, ${now} FROM "GenerationItem" i LEFT JOIN assets a ON a.id=i."resultAssetId" WHERE (i.status='succeeded' AND (a.id IS NULL OR a.status <> 'ready' OR a.deleted_at IS NOT NULL)) OR (i.status='materializing' AND i."nextRunAt" < ${now} AND (i."leaseUntil" IS NULL OR i."leaseUntil" < ${now})) ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
+      // A denied publish stays actionable until the same resource publishes successfully; the
+      // scan window keeps a long-lived audit table from being walked on every alert refresh.
+      await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'content-publish:' || e.id::text, 'service', 'content_publish_failed', e."resourceId", ${now}, ${now}, false, ${now} FROM "AdminAuditEvent" e WHERE e.outcome='denied' AND e.action LIKE 'content.%.publish' AND e."resourceId" IS NOT NULL AND e."createdAt" > ${recentPublishSince} AND NOT EXISTS (SELECT 1 FROM "AdminAuditEvent" later WHERE later.action=e.action AND later."resourceId"=e."resourceId" AND later.outcome='allowed' AND later."createdAt" > e."createdAt") ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
+      // Only jobs whose items all ended, past the grace period the settlement notification needs.
+      await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'notification-missing:' || t."jobId"::text, 'service', 'notification_missing', t."jobId"::text, ${now}, ${now}, false, ${now} FROM (SELECT i."jobId" AS "jobId", max(i."updatedAt") AS "terminalAt" FROM "GenerationItem" i WHERE i.status IN ('succeeded','failed','cancelled') GROUP BY i."jobId") t WHERE t."terminalAt" < ${settledBefore} AND NOT EXISTS (SELECT 1 FROM "GenerationItem" open WHERE open."jobId"=t."jobId" AND open.status NOT IN ('succeeded','failed','cancelled')) AND NOT EXISTS (SELECT 1 FROM notifications n WHERE n.event_key='generation-terminal:' || t."jobId"::text) ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
+      // The counter an operator acts on must still agree with the claims that were actually taken.
+      await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'redemption-count:' || c.id::text, 'service', 'redemption_count_mismatch', c.id::text, ${now}, ${now}, false, ${now} FROM "redemption_codes" c WHERE c."used_count" <> (SELECT count(*) FROM "redemption_claims" cl WHERE cl."code_id"=c.id) ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
+      // A settled batch that lost at least half of at least four rows; a retry is the remedy, so
+      // the original stops alerting as soon as one exists.
+      await tx.$executeRaw`INSERT INTO "AdminAlert" (id,"sourceKey",category,kind,"resourceId","firstSeenAt","lastSeenAt",resolved,"createdAt") SELECT gen_random_uuid(), 'batch-failure:' || r.id::text, 'service', 'batch_high_failure', r.id::text, ${now}, ${now}, false, ${now} FROM "WorkflowRun" r WHERE r.status IN ('succeeded','partial','failed','cancelled') AND r."totalCount" >= 4 AND r."failedCount" * 2 >= r."totalCount" AND NOT EXISTS (SELECT 1 FROM "WorkflowRun" retry WHERE retry."retryOfRunId"=r.id) ON CONFLICT ("sourceKey") DO UPDATE SET "lastSeenAt"=EXCLUDED."lastSeenAt", resolved=false`;
       const scopeLimits = new Map<string, bigint>();
       for (const [provider, a] of Object.entries(this.config.officialImages?.accounts ?? {}))
         if (a) scopeLimits.set(`official-usd-${provider}-${a.scope}`, BigInt(a.dailyBudgetMicros));
