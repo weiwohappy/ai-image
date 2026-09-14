@@ -108,6 +108,7 @@ model Notification {
   title     String
   body      String
   action    Json?
+  eventKey  String?   @unique @map("event_key")
   readAt    DateTime? @map("read_at") @db.Timestamptz(6)
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)

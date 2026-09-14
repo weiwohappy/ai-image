@@ -9,13 +9,17 @@ import { recordCost, releaseConfirmedSlot } from '../providers/accounting.js';
 import type { CompletedResult, NormalizedImageRequest } from '../providers/contracts.js';
 import { TERMINAL } from './job-serializer.js';
 import { recordLifecycle } from '../admin/lifecycle.js';
+import { NotificationService } from '../engagement/notification.service.js';
 
 export class SettlementService {
+  private readonly notifications: NotificationService;
   constructor(
     private readonly db: DatabaseService,
     private readonly wallet: WalletService,
     private readonly store: ObjectStore,
-  ) {}
+  ) {
+    this.notifications = new NotificationService(db);
+  }
   async fail(tx: DbTransaction, itemId: string, code: string, cancelled = false, now = new Date()) {
     const item = await tx.generationItem.findUniqueOrThrow({
       where: { id: itemId },
@@ -34,6 +38,29 @@ export class SettlementService {
         leaseUntil: null,
         fence: { increment: 1 },
       },
+    });
+    await this.notifyIfTerminal(tx, item.job.userId, item.job.id);
+  }
+  private async notifyIfTerminal(tx: DbTransaction, userId: string, jobId: string) {
+    const items = await tx.generationItem.findMany({
+      where: { jobId },
+      select: { status: true },
+    });
+    if (items.length === 0 || items.some((item) => !TERMINAL.includes(item.status))) return;
+    const successes = items.filter((item) => item.status === 'succeeded').length;
+    const message =
+      successes === items.length
+        ? { title: '任务完成', body: '图片已全部生成。' }
+        : successes > 0
+          ? { title: '任务完成', body: '图片部分生成成功。' }
+          : items.every((item) => item.status === 'cancelled')
+            ? { title: '任务已取消', body: '任务已取消。' }
+            : { title: '任务失败', body: '图片生成失败。' };
+    await this.notifications.createOnce(tx, `generation-terminal:${jobId}`, {
+      userId,
+      type: 'task',
+      ...message,
+      action: { href: '/tasks', jobId },
     });
   }
   async complete(attempt: ProviderAttempt, fence: number, result: CompletedResult) {
@@ -139,6 +166,7 @@ export class SettlementService {
           where: { id: attempt.id },
           data: { status: 'completed', stagedKey: objectKey },
         });
+        await this.notifyIfTerminal(tx, attempt.userId, item.job.id);
       });
     } catch {
       // Recover a persisted output locally, or query the same simulated attempt.

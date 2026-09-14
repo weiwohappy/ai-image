@@ -48,6 +48,23 @@ export class NotificationService {
     return tx.notification.create({ data: input });
   }
 
+  createOnce(
+    tx: DbTransaction,
+    eventKey: string,
+    input: {
+      userId: string;
+      type: string;
+      title: string;
+      body: string;
+      action?: Prisma.InputJsonValue;
+    },
+  ) {
+    return tx.notification.createMany({
+      data: [{ eventKey, ...input }],
+      skipDuplicates: true,
+    });
+  }
+
   async list(userId: string) {
     const rows = await this.db.client.notification.findMany({
       where: { userId },
