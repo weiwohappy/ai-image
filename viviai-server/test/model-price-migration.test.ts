@@ -147,7 +147,15 @@ it('additively migrates only super permission, invalidates affected grants, pres
     }
     expect(await db.database.client.modelCreditPrice.count()).toBe(0);
     expect(
-      await db.database.client.generationQuote.findUniqueOrThrow({ where: { id: quoteId } }),
+      await db.database.client.generationQuote.findUniqueOrThrow({
+        where: { id: quoteId },
+        select: {
+          creditPriceSnapshot: true,
+          unitCredits: true,
+          totalCredits: true,
+          execution: true,
+        },
+      }),
     ).toMatchObject({
       creditPriceSnapshot: null,
       unitCredits: 123n,
@@ -156,7 +164,7 @@ it('additively migrates only super permission, invalidates affected grants, pres
     });
     const job = await db.database.client.generationJob.findUniqueOrThrow({
       where: { id: jobId },
-      include: { items: true },
+      select: { creditPriceSnapshot: true, items: true },
     });
     expect(job.creditPriceSnapshot).toBeNull();
     expect(job.items[0]).toMatchObject({ unitCredits: 123n, status: 'failed' });

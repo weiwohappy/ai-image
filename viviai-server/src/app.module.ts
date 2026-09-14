@@ -12,6 +12,7 @@ import { AdminModule } from './modules/admin/admin.module.js';
 import { AccountModule } from './modules/account/account.module.js';
 import { EngagementModule } from './modules/engagement/engagement.module.js';
 import { ContentModule } from './modules/content/content.module.js';
+import { ToolExecutionModule } from './modules/tool-execution/tool-execution.module.js';
 export { APP_CONFIG } from './shared/infrastructure.module.js';
 
 @Controller()
@@ -54,6 +55,7 @@ export class AppModule {
         AccountModule,
         EngagementModule,
         ContentModule,
+        ToolExecutionModule,
       ],
       controllers: [HealthController],
       exports: [InfrastructureModule, IdentityModule, AssetsModule],

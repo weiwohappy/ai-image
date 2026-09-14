@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppConfig } from '../../config.js';
+import type { Prisma } from '../../generated/prisma/client.js';
 import { APP_CONFIG } from '../../shared/infrastructure.module.js';
 import { DatabaseService, type DbTransaction } from '../../shared/database/database.service.js';
 import { AppError } from '../../shared/http/errors.js';
@@ -9,6 +10,46 @@ import { OFFICIAL_MODELS, officialSpecs } from '../providers/official-models.js'
 import { officialSnapshot } from '../providers/official-config.js';
 import { thirdPartyImageSnapshot } from '../providers/third-party-config.js';
 import { activeCreditPrice } from './credit-pricing.js';
+
+export interface QuoteOrigin {
+  type: 'tool' | 'workflow';
+  id: string;
+  version: number;
+  snapshot: Prisma.InputJsonValue;
+}
+export type QuoteOriginIdentity = Pick<QuoteOrigin, 'type' | 'id' | 'version'>;
+
+export function quoteHash(input: GenerationInput, images: unknown, origin?: QuoteOrigin): string {
+  return digest({
+    input,
+    images,
+    ...(origin
+      ? {
+          origin: {
+            type: origin.type,
+            id: origin.id,
+            version: origin.version,
+            snapshot: origin.snapshot,
+          },
+        }
+      : {}),
+  });
+}
+
+export function originOf(quote: {
+  originType: string | null;
+  originId: string | null;
+  originVersion: number | null;
+  originSnapshot: Prisma.JsonValue | null;
+}): QuoteOrigin | undefined {
+  if (quote.originType !== 'tool' && quote.originType !== 'workflow') return undefined;
+  return {
+    type: quote.originType,
+    id: quote.originId!,
+    version: quote.originVersion!,
+    snapshot: quote.originSnapshot as unknown as Prisma.InputJsonValue,
+  };
+}
 
 export function resolveImageExecution(
   config: Pick<AppConfig, 'officialImages' | 'thirdPartyImages'>,
@@ -133,8 +174,11 @@ export class CatalogService {
     }
     return images;
   }
-  async quote(userId: string, raw: unknown) {
-    const input = normalizeInput(raw);
+  quote(userId: string, raw: unknown) {
+    return this.createQuote(userId, raw);
+  }
+  async createQuote(userId: string, rawInput: unknown, origin?: QuoteOrigin) {
+    const input = normalizeInput(rawInput);
     const record = await this.db.transaction(async (tx) => {
       const price =
         input.modelId === PRODUCT_ID
@@ -148,19 +192,24 @@ export class CatalogService {
         data: {
           userId,
           input,
-          inputHash: digest({ input, images }),
+          inputHash: quoteHash(input, images, origin),
           productVersion: input.modelId,
           ...(price ? { creditPriceSnapshot: price } : {}),
           ...(execution
-            ? {
-                execution:
-                  execution as unknown as import('../../generated/prisma/client.js').Prisma.InputJsonValue,
-              }
+            ? { execution: execution as unknown as Prisma.InputJsonValue }
             : {}),
           unitCredits,
           totalCredits: BigInt(input.count) * unitCredits,
           createdAt,
           expiresAt: new Date(createdAt.getTime() + 300_000),
+          ...(origin
+            ? {
+                originType: origin.type,
+                originId: origin.id,
+                originVersion: origin.version,
+                originSnapshot: origin.snapshot,
+              }
+            : {}),
         },
       });
     });
