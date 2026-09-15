@@ -105,9 +105,9 @@ describe('scoped administrator read models', () => {
     expect((await get('administrators', system)).status).toBe(200);
     expect((await get('roles', system)).status).toBe(200);
   });
-  it('shows all five model definitions as disabled without claiming live verification', async () => {
+  it('shows all seven model definitions as disabled without claiming live verification', async () => {
     const response = await get('models');
-    expect(response.body.data.rows).toHaveLength(5);
+    expect(response.body.data.rows).toHaveLength(7);
     expect(response.body.data.rows.every((r: { enabled: boolean }) => r.enabled === false)).toBe(
       true,
     );

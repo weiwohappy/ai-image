@@ -1,5 +1,5 @@
-// Verified 2026-09-09: ai.google.dev/gemini-api/docs/image-generation,
-// .../models/gemini-3.1-flash-lite-image and OpenAI image-generation guide.
+// Verified 2026-09-09, OpenAI 2.5 family re-verified 2026-09-15: ai.google.dev/gemini-api/docs/image-generation,
+// developers.openai.com/api/docs/guides/image-generation, .../models/gpt-image-2.5-sunburst.
 // Product presets are a reviewed subset, never a Cartesian product of enums.
 export const OFFICIAL_MODELS = [
   { id: 'gemini-2.5-flash-image', name: 'Nano Banana', provider: 'google', maxImages: 2 },
@@ -12,12 +12,22 @@ export const OFFICIAL_MODELS = [
   { id: 'gemini-3.1-flash-image', name: 'Nano Banana 2', provider: 'google', maxImages: 2 },
   { id: 'gemini-3-pro-image', name: 'Nano Banana Pro', provider: 'google', maxImages: 2 },
   { id: 'gpt-image-2', name: 'GPT Image 2', provider: 'openai', maxImages: 2 },
+  // OpenAI splits this generation into a fast tier and a capability tier; there is no bare
+  // `gpt-image-2.5` API id. Both speak the Images REST contract and reuse the reviewed
+  // preset table below, so only these two lines are new.
+  { id: 'gpt-image-2.5-flare', name: 'GPT Image 2.5-极速', provider: 'openai', maxImages: 2 },
+  { id: 'gpt-image-2.5-sunburst', name: 'GPT Image 2.5-精细', provider: 'openai', maxImages: 2 },
 ] as const;
 export type OfficialModelId = (typeof OFFICIAL_MODELS)[number]['id'];
 export const OFFICIAL_PROTOCOLS = {
   google: 'google-interactions-v1',
   openai: 'openai-images-v1',
 } as const;
+// Which models a transport contract can actually carry. Derived rather than hand-written so
+// that adding a model to OFFICIAL_MODELS is the only edit required; a second list would drift.
+export const OPENAI_IMAGES_MODEL_IDS: readonly string[] = OFFICIAL_MODELS.filter(
+  (model) => OFFICIAL_PROTOCOLS[model.provider] === OFFICIAL_PROTOCOLS.openai,
+).map((model) => model.id);
 export interface OfficialOutputSpec {
   id: string;
   resolution: string;
@@ -90,7 +100,7 @@ export function officialSpecs(modelId: string): OfficialOutputSpec[] {
     return [spec('1K', '1:1', '1024x1024')];
   if (modelId === 'gemini-2.5-flash-image')
     return legacyRows.map(([ratio, size]) => spec('1K', ratio, size!));
-  if (modelId === 'gpt-image-2')
+  if (OPENAI_IMAGES_MODEL_IDS.includes(modelId))
     return openaiRows.flatMap(([ratio, ...sizes]) =>
       sizes.map((size, i) => spec(['1K', '2K', '4K'][i]!, ratio, size)),
     );

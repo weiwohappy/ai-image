@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OFFICIAL_MODELS,
   OFFICIAL_PROTOCOLS,
+  OPENAI_IMAGES_MODEL_IDS,
   officialSpecs,
   getOfficialOutputSpec,
 } from '../src/modules/providers/official-models.js';
@@ -40,8 +41,8 @@ export const fixtureConfig = () => ({
 });
 
 describe('official model specifications and fail-closed configuration', () => {
-  it('contains five distinct exact IDs, and published model-specific dimensions', () => {
-    expect(OFFICIAL_MODELS.map((m) => m.id)).toHaveLength(5);
+  it('contains seven distinct exact IDs, and published model-specific dimensions', () => {
+    expect(OFFICIAL_MODELS.map((m) => m.id)).toHaveLength(7);
     expect(
       officialSpecs('gemini-3.1-flash-image').find(
         (s) => s.resolution === '2K' && s.ratio === '16:9',
@@ -69,7 +70,29 @@ describe('official model specifications and fail-closed configuration', () => {
       expect(spec.width * spec.height).toBeLessThanOrEqual(8294400);
       expect(Math.max(spec.width, spec.height)).toBeLessThanOrEqual(3840);
     }
+    // Both 2.5 IDs reuse the reviewed GPT Image 2 preset table verbatim, so the
+    // div16 / aspect / pixel-bound loop above covers them by construction.
+    for (const id of ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst'] as const) {
+      expect(officialSpecs(id)).toEqual(officialSpecs('gpt-image-2'));
+    }
+    expect(
+      OFFICIAL_MODELS.filter((m) => m.provider === 'openai').map((m) => [m.id, m.name]),
+    ).toEqual([
+      ['gpt-image-2', 'GPT Image 2'],
+      ['gpt-image-2.5-flare', 'GPT Image 2.5-极速'],
+      ['gpt-image-2.5-sunburst', 'GPT Image 2.5-精细'],
+    ]);
     expect(getOfficialOutputSpec('gpt-image-2', 'arbitrary')).toBeUndefined();
+  });
+  it('derives the OpenAI Images model list from the protocol map, not a second hand-written list', () => {
+    expect(OPENAI_IMAGES_MODEL_IDS).toEqual([
+      'gpt-image-2',
+      'gpt-image-2.5-flare',
+      'gpt-image-2.5-sunburst',
+    ]);
+    // A derived ID that has no specs would be advertised by the gate and then fail at
+    // execution. Every member must be servable.
+    for (const id of OPENAI_IMAGES_MODEL_IDS) expect(officialSpecs(id).length).toBeGreaterThan(0);
   });
   it('accepts resolution × ratio only when the model has that reviewed combination', () => {
     expect(
@@ -188,5 +211,26 @@ describe('official model specifications and fail-closed configuration', () => {
       ),
     ).toBeNull();
     expect(actualCost(pricing, [{ ...lines[0], quantity: '1.5' }], true)).toBeNull();
+  });
+  it('accepts one entry per catalog model, so the catalog size does not cap official configuration', () => {
+    const base = fixtureConfig();
+    const account = base.accounts.openai;
+    const rates = { ...base.models[0]!.pricing.rates, thought_tokens: '5000000' };
+    const settings = {
+      revision: 'offline-seven',
+      accounts: { google: { ...account, scope: 'test-google' }, openai: account },
+      models: OFFICIAL_MODELS.map((definition) => ({
+        modelId: definition.id,
+        enabledResolutions: ['1K'],
+        reserveCostMicros: '1000000',
+        pricing: { ...base.models[0]!.pricing, rates },
+      })),
+    };
+    const loaded = loadOfficialConfig({
+      OFFICIAL_IMAGE_MODELS_JSON: JSON.stringify(settings),
+      OPENAI_API_KEY: 'offline-key',
+      GEMINI_API_KEY: 'offline-key',
+    });
+    expect(loaded.models.map((m) => m.modelId)).toEqual(OFFICIAL_MODELS.map((d) => d.id));
   });
 });

@@ -51,7 +51,7 @@ const schema = z
   .object({
     revision: id,
     accounts: z.object({ google: account.optional(), openai: account.optional() }).strict(),
-    models: z.array(model).max(5),
+    models: z.array(model).max(OFFICIAL_MODELS.length),
   })
   .strict();
 export type OfficialSettings = z.infer<typeof schema>;
