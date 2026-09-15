@@ -52,7 +52,7 @@ SUB2API_DAILY_BUDGET_MICROS=0
 SUB2API_IMAGE_MODELS_JSON='{"revision":"sub2api-images-v2","models":[{"modelId":"gpt-image-2","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}},{"modelId":"gpt-image-2.5-flare","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}},{"modelId":"gpt-image-2.5-sunburst","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}}]}'
 ```
 
-服务启动时会复用 `SUB2API_*` 的地址、凭据、预算和并发配置。`POST /api/admin/provider-accounts/sub2api/verify-image` 只请求 `/v1/models`，确认配置中每个型号 ID 都已列出，不会调用生图接口；实际生图仍需先完成小额联调和账单核对。第三方图片配置使用与官方相同的审核规格和积分定价，未配置数据库售价的分辨率不会出现在目录。
+服务启动时会复用 `SUB2API_*` 的地址、凭据、预算和并发配置。每个型号的 `reserveCostMicros` 不得大于 `SUB2API_DAILY_BUDGET_MICROS`（默认 `0`），否则启动校验直接拒绝；按实际额度调高预算后再启用图片渠道。`POST /api/admin/provider-accounts/sub2api/verify-image` 只请求 `/v1/models`，确认配置中每个型号 ID 都已列出，不会调用生图接口；实际生图仍需先完成小额联调和账单核对。第三方图片配置使用与官方相同的审核规格和积分定价，未配置数据库售价的分辨率不会出现在目录。
 
 `npm run verify:sub2api` 先请求 `/v1/models`，要求精确模型 ID 存在，再发送 `max_tokens=8`、`stream=false` 的最小 `/v1/chat/completions` 探针。输出只包含渠道、地址、模型和安全状态，不打印 Key 或上游响应正文。401/403、404、429、超时和畸形响应均返回稳定的安全错误。关闭 `SUB2API_ENABLED` 时不会要求 Key；启用但缺少 Key、模型或非法地址时服务启动即拒绝。
 
