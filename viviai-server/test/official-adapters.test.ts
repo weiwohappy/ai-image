@@ -84,7 +84,7 @@ function request(
       width: 1024,
       height: 1024,
       format: 'png',
-      ...(upstreamModelId === 'gpt-image-2' ? { quality: 'medium' as const } : {}),
+      ...(upstreamModelId.startsWith('gpt-image-') ? { quality: 'medium' as const } : {}),
       allowedNativeDimensions: [{ width: 1024, height: 1024 }],
     },
     count: 1,
@@ -522,6 +522,49 @@ describe('Google Interactions REST adapter', () => {
 });
 
 describe('OpenAI Images REST adapter', () => {
+  it('sends the selected model ID upstream instead of the adapter default', async () => {
+    const http = fakeFetch((_url, init) => {
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        model: 'gpt-image-2.5-sunburst',
+        size: '1024x1024',
+        quality: 'medium',
+        output_format: 'png',
+      });
+      return jsonResponse(openaiSuccess(squarePng));
+    });
+    const provider = new OpenAIImageProvider(new PrivateStore(), 'openai-secret', http.fetcher);
+
+    const completed = await outputBytes(
+      await provider.submit(request('gpt-image-2.5-sunburst'), context()),
+    );
+
+    expect(http.calls).toHaveLength(1);
+    expect(completed.bytes).toEqual(squarePng);
+  });
+
+  it('rejects a Google-protocol model ID before any network call', async () => {
+    const http = fakeFetch(() => jsonResponse(openaiSuccess(squarePng)));
+    const provider = new OpenAIImageProvider(new PrivateStore(), 'openai-secret', http.fetcher);
+    // Supply the quality field explicitly: without it the quality guard would reject first and
+    // this test would stop proving anything about the model-ID allow-list.
+    const wrongProtocol = request('gemini-3.1-flash-image', {
+      output: {
+        width: 1024,
+        height: 1024,
+        format: 'png',
+        quality: 'medium',
+        allowedNativeDimensions: [{ width: 1024, height: 1024 }],
+      },
+    });
+
+    expect(() => provider.validate(wrongProtocol)).toThrow(/unsupported model/i);
+    expect(await provider.submit(wrongProtocol, context())).toMatchObject({
+      kind: 'rejected',
+      failure: { code: 'unsupported' },
+    });
+    expect(http.calls).toHaveLength(0);
+  });
+
   it('uses JSON generations with the reviewed model and output preset', async () => {
     const http = fakeFetch((_url, init) => {
       expect(new Headers(init.headers).get('authorization')).toBe('Bearer openai-secret');

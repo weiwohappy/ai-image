@@ -1,5 +1,5 @@
 import type { ObjectStore } from '../../assets/object-store.js';
-import { OFFICIAL_PROTOCOLS } from '../official-models.js';
+import { OFFICIAL_PROTOCOLS, OPENAI_IMAGES_MODEL_IDS } from '../official-models.js';
 import type {
   NormalizedImageRequest,
   ProviderAdapter,
@@ -28,7 +28,6 @@ import {
   validateOfficialRequest,
 } from './common.js';
 
-const OPENAI_MODEL = ['gpt-image-2'] as const;
 const OPENAI_GENERATIONS_URL = 'https://api.openai.com/v1/images/generations';
 const OPENAI_EDITS_URL = 'https://api.openai.com/v1/images/edits';
 
@@ -67,15 +66,17 @@ export class OpenAIImageProvider implements ProviderAdapter {
   }
 
   validate(request: NormalizedImageRequest, _context?: ProviderContext) {
-    if (request.output.quality !== 'medium') throw new Error('GPT Image 2 uses medium quality');
-    validateOfficialRequest(request, OPENAI_MODEL, 2);
+    if (request.output.quality !== 'medium')
+      throw new Error('The OpenAI Images contract requires medium quality');
+    validateOfficialRequest(request, OPENAI_IMAGES_MODEL_IDS, 2);
   }
 
   async submit(request: NormalizedImageRequest, context: ProviderContext): Promise<SubmitResult> {
     let spec;
     try {
-      if (request.output.quality !== 'medium') throw new Error('GPT Image 2 uses medium quality');
-      spec = validateOfficialRequest(request, OPENAI_MODEL, 2);
+      if (request.output.quality !== 'medium')
+        throw new Error('The OpenAI Images contract requires medium quality');
+      spec = validateOfficialRequest(request, OPENAI_IMAGES_MODEL_IDS, 2);
     } catch {
       return rejectedFailure('unsupported', 'Unsupported official image parameters');
     }
@@ -85,7 +86,7 @@ export class OpenAIImageProvider implements ProviderAdapter {
     if (!inputs) return rejectedFailure('invalid_input', 'Reference integrity check failed');
     const prompt = promptWithImageLabels(request.prompt, inputs);
     const fields = {
-      model: 'gpt-image-2',
+      model: request.upstreamModelId,
       prompt,
       n: 1,
       size: `${spec.width}x${spec.height}`,
