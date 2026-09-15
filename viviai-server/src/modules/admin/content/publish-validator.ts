@@ -8,7 +8,7 @@ import { APP_CONFIG } from '../../../shared/infrastructure.module.js';
 import { ASSET_STORE } from '../../assets/assets.service.js';
 import type { ObjectStore } from '../../assets/object-store.js';
 import { activeCreditPrice } from '../../catalog/credit-pricing.js';
-import { resolveImageExecution } from '../../catalog/catalog.service.js';
+import { resolveImageExecution } from '../../providers/image-execution.js';
 import {
   inspirationInputSchema,
   remixTemplateInputSchema,

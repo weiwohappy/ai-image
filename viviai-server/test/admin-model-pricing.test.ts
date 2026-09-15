@@ -8,6 +8,8 @@ import { ROLE_PERMISSIONS, validPermissionSet } from '../src/modules/admin/permi
 import { vi } from 'vitest';
 import { AdminAuthService } from '../src/modules/admin/auth.service.js';
 import { AdminModelPricingService } from '../src/modules/admin/model-pricing/service.js';
+import { loadThirdPartyImageConfig } from '../src/modules/providers/third-party-config.js';
+import { OPENAI_IMAGES_MODEL_IDS } from '../src/modules/providers/official-models.js';
 import pg from 'pg';
 
 describe('admin model credit prices', () => {
@@ -311,5 +313,75 @@ describe('admin model credit prices', () => {
     }
     expect(new Set(ids).size).toBe(3);
     expect(cursor).toBeNull();
+  });
+});
+
+// The operator console and the public catalog must agree on what can be served. Availability is a
+// property of model + specification + whichever channel is enabled, never of one channel alone.
+describe('admin model credit prices with the third-party channel enabled', () => {
+  let f: Awaited<ReturnType<typeof teamFixture>>;
+  beforeAll(async () => {
+    f = await teamFixture({
+      thirdPartyImages: loadThirdPartyImageConfig({
+        NODE_ENV: 'development',
+        SUB2API_ENABLED: 'true',
+        SUB2API_BASE_URL: 'http://localhost:8080',
+        SUB2API_API_KEY: 'do-not-print',
+        SUB2API_MODEL_ID: 'gpt-5.6',
+        SUB2API_DAILY_BUDGET_MICROS: '10000000',
+        SUB2API_IMAGE_MODELS_JSON: JSON.stringify({
+          revision: 'pricing-v1',
+          models: OPENAI_IMAGES_MODEL_IDS.map((modelId) => ({
+            modelId,
+            enabledResolutions: ['1K'],
+            reserveCostMicros: '1000000',
+            pricing: {
+              version: 'pricing-cost-v1',
+              currency: 'USD',
+              rates: {
+                input_text_tokens: '1',
+                input_image_tokens: '1',
+                output_image_tokens: '1',
+              },
+            },
+          })),
+        }),
+      }),
+    });
+  });
+  afterAll(async () => {
+    await f?.close();
+  });
+  it('reports models that only the third-party channel serves as runtime available', async () => {
+    for (const modelId of OPENAI_IMAGES_MODEL_IDS) {
+      const path = `/model-pricing/${modelId}/1K`;
+      expect((await f.call('get', f.superAdmin.cookie, path)).body.data, modelId).toMatchObject({
+        runtimeAvailable: true,
+        availabilityReason: 'unpriced',
+      });
+      const body = {
+        unitCredits: 120,
+        enabled: true,
+        expectedVersion: 0,
+        reason: '测试第三方渠道模型积分定价',
+      };
+      expect((await f.call('put', f.superAdmin.cookie, path, body)).status, modelId).toBe(200);
+      expect((await f.call('get', f.superAdmin.cookie, path)).body.data, modelId).toMatchObject({
+        unitCredits: 120,
+        enabled: true,
+        version: 1,
+        runtimeAvailable: true,
+        availabilityReason: 'available',
+      });
+    }
+    // The third-party channel carries the OpenAI Images protocol only, so a Google model stays
+    // unavailable: availability follows the protocol the model needs, not "any channel is up".
+    for (const modelId of ['gemini-2.5-flash-image', 'gemini-3-pro-image']) {
+      expect(
+        (await f.call('get', f.superAdmin.cookie, `/model-pricing/${modelId}/1K`)).body.data
+          .runtimeAvailable,
+        modelId,
+      ).toBe(false);
+    }
   });
 });

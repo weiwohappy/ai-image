@@ -7,8 +7,7 @@ import { AppError } from '../../shared/http/errors.js';
 import { safeInteger } from '../../shared/database/locks.js';
 import { digest, normalizeInput, PRODUCT_ID, type GenerationInput } from './input-schema.js';
 import { OFFICIAL_MODELS, officialSpecs } from '../providers/official-models.js';
-import { officialSnapshot } from '../providers/official-config.js';
-import { thirdPartyImageSnapshot } from '../providers/third-party-config.js';
+import { resolveImageExecution } from '../providers/image-execution.js';
 import { activeCreditPrice } from './credit-pricing.js';
 
 export interface QuoteOrigin {
@@ -51,18 +50,6 @@ export function originOf(quote: {
   };
 }
 
-export function resolveImageExecution(
-  config: Pick<AppConfig, 'officialImages' | 'thirdPartyImages'>,
-  modelId: string,
-  resolution: string,
-  ratio: string,
-) {
-  return (
-    officialSnapshot(config.officialImages, modelId, resolution, ratio) ??
-    thirdPartyImageSnapshot(config.thirdPartyImages, modelId, resolution, ratio)
-  );
-}
-
 @Injectable()
 export class CatalogService {
   constructor(
@@ -97,13 +84,7 @@ export class CatalogService {
           (p) => p.modelId === definition.id && p.resolution === s.resolution,
         );
         return price &&
-          (officialSnapshot(this.config.officialImages, definition.id, s.resolution, s.ratio) ??
-            thirdPartyImageSnapshot(
-              this.config.thirdPartyImages,
-              definition.id,
-              s.resolution,
-              s.ratio,
-            ))
+          resolveImageExecution(this.config, definition.id, s.resolution, s.ratio)
           ? [{ ...s, unitCredits: price.unitCredits }]
           : [];
       });

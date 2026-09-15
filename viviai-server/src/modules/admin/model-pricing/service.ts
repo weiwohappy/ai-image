@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ModelCreditPrice } from '../../../generated/prisma/client.js';
 import { lockCreditPrice } from '../../catalog/credit-pricing.js';
 import { OFFICIAL_MODELS, officialSpecs } from '../../providers/official-models.js';
-import { officialSnapshot } from '../../providers/official-config.js';
+import { resolveImageExecution } from '../../providers/image-execution.js';
 import type { AdminContext } from '../auth.service.js';
 import { parse } from '../auth.controller.js';
 import { requirePermission } from '../permissions.js';
@@ -22,8 +22,10 @@ export class AdminModelPricingService {
   ): ModelPriceRow {
     const definition = OFFICIAL_MODELS.find((m) => m.id === modelId)!;
     const specs = officialSpecs(modelId).filter((s) => s.resolution === resolution);
+    // Availability is decided by the same judgment the public catalog publishes from, so a model
+    // whose only enabled channel is third-party is not reported here as runtime unavailable.
     const runtimeAvailable = specs.some(
-      (s) => !!officialSnapshot(this.commands.config.officialImages, modelId, resolution, s.ratio),
+      (s) => !!resolveImageExecution(this.commands.config, modelId, resolution, s.ratio),
     );
     const reasonCode = !teamWritesEnabled(this.commands.config, context.requestIp)
       ? 'ADMIN_TEAM_WRITES_DISABLED'
