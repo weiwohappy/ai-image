@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { OFFICIAL_MODELS, officialSpecs, type OfficialModelId } from './official-models.js';
+import {
+  OFFICIAL_MODELS,
+  OFFICIAL_PROTOCOLS,
+  OPENAI_IMAGES_MODEL_IDS,
+  officialSpecs,
+  type OfficialModelId,
+} from './official-models.js';
 import type { PriceSnapshot } from './pricing.js';
 
 const identifier = z.string().regex(/^[a-zA-Z0-9._-]{1,120}$/);
@@ -19,7 +25,9 @@ export interface ThirdPartyProviderConfig {
 }
 
 export interface ThirdPartyImageModelConfig {
-  readonly modelId: 'gpt-image-2';
+  // Widened from the literal 'gpt-image-2': the schema admits every model whose transport
+  // contract is OpenAI Images. The runtime gate in thirdPartyImageSnapshot re-checks it.
+  readonly modelId: string;
   readonly enabledResolutions: readonly string[];
   readonly reserveCostMicros: string;
   readonly pricing: PriceSnapshot;
@@ -88,10 +96,11 @@ const imageSchema = z
       .array(
         z
           .object({
-            // Sub2API is currently wired to the OpenAI Images contract. Gemini/Nano Banana
-            // remains on the official Google Interactions adapter until a third-party contract
-            // is explicitly verified; accepting that ID here would produce a false capability.
-            modelId: z.literal('gpt-image-2'),
+            // Sub2API is wired to the OpenAI Images contract, so it carries exactly the models
+            // whose protocol is openai-images-v1. Gemini/Nano Banana needs the Google
+            // Interactions contract unless a third-party contract is separately verified;
+            // accepting that ID here would produce a false capability.
+            modelId: z.enum([...OPENAI_IMAGES_MODEL_IDS]),
             enabledResolutions: z
               .array(z.string())
               .min(1)
@@ -260,7 +269,8 @@ export function thirdPartyImageSnapshot(
   );
   if (!config || !model || !output || !model.enabledResolutions.includes(resolution)) return;
   const definition = OFFICIAL_MODELS.find((item) => item.id === modelId);
-  if (!definition || definition.id !== 'gpt-image-2') return;
+  // Gate on the protocol the model needs, not on one hard-coded model ID.
+  if (!definition || OFFICIAL_PROTOCOLS[definition.provider] !== OFFICIAL_PROTOCOLS.openai) return;
   const revision = createHash('sha256')
     .update(
       JSON.stringify({

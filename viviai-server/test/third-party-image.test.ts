@@ -3,6 +3,7 @@ import {
   loadThirdPartyImageConfig,
   thirdPartyImageSnapshot,
 } from '../src/modules/providers/third-party-config.js';
+import { OPENAI_IMAGES_MODEL_IDS } from '../src/modules/providers/official-models.js';
 import { OpenAIImageProvider } from '../src/modules/providers/official/openai.js';
 import type { ObjectStore } from '../src/modules/assets/object-store.js';
 import type {
@@ -123,6 +124,59 @@ describe('Sub2API third-party image channel', () => {
         SUB2API_IMAGE_MODELS_JSON: JSON.stringify(invalid),
       }),
     ).toThrow(/SUB2API_IMAGE_MODELS_JSON/i);
+  });
+
+  it('accepts every OpenAI Images model and still refuses a Google-protocol model', () => {
+    const config = loadThirdPartyImageConfig({
+      ...baseEnv,
+      SUB2API_IMAGE_MODELS_JSON: JSON.stringify({
+        revision: 'sub2api-image-v2',
+        models: OPENAI_IMAGES_MODEL_IDS.map((modelId) => ({
+          modelId,
+          enabledResolutions: ['1K', '2K'],
+          reserveCostMicros: '1000000',
+          pricing: {
+            version: 'sub2api-cost-v1',
+            currency: 'USD',
+            rates: {
+              input_text_tokens: '5000000',
+              input_image_tokens: '10000000',
+              output_image_tokens: '30000000',
+              output_text_tokens: '5000000',
+            },
+          },
+        })),
+      }),
+    })!;
+    expect(config.models.map((model) => model.modelId)).toEqual([...OPENAI_IMAGES_MODEL_IDS]);
+    expect(thirdPartyImageSnapshot(config, 'gpt-image-2.5-sunburst', '2K', '16:9')).toMatchObject({
+      provider: 'openai',
+      protocol: 'openai-images-third-party-v1',
+      upstreamModelId: 'gpt-image-2.5-sunburst',
+      width: 2048,
+      height: 1152,
+      reserveCostMicros: '1000000',
+    });
+    // Refusal is about the protocol the model needs, not about the channel it was asked for.
+    expect(thirdPartyImageSnapshot(config, 'gemini-3.1-flash-image', '1K', '1:1')).toBeUndefined();
+    const forged = JSON.parse(baseEnv.SUB2API_IMAGE_MODELS_JSON);
+    forged.models[0].modelId = 'gemini-3.1-flash-image';
+    expect(() =>
+      loadThirdPartyImageConfig({
+        ...baseEnv,
+        SUB2API_IMAGE_MODELS_JSON: JSON.stringify(forged),
+      }),
+    ).toThrow(/SUB2API_IMAGE_MODELS_JSON/i);
+  });
+
+  it('keeps the runtime gate closed even if a Google-protocol model reaches the config object', () => {
+    const config = loadThirdPartyImageConfig(baseEnv)!;
+    // Shape-bypass on purpose: the schema is the first gate, this asserts the second one.
+    const forged = {
+      ...config,
+      models: [...config.models, { ...config.models[0]!, modelId: 'gemini-3.1-flash-image' }],
+    };
+    expect(thirdPartyImageSnapshot(forged, 'gemini-3.1-flash-image', '1K', '1:1')).toBeUndefined();
   });
 
   it('maps GPT Image 2 generation to the configured Sub2API base URL without a live call', async () => {
