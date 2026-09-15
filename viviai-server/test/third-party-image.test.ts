@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   loadThirdPartyImageConfig,
   thirdPartyImageSnapshot,
+  validateThirdPartyImageConfig,
 } from '../src/modules/providers/third-party-config.js';
 import { OPENAI_IMAGES_MODEL_IDS } from '../src/modules/providers/official-models.js';
 import { OpenAIImageProvider } from '../src/modules/providers/official/openai.js';
@@ -170,6 +171,21 @@ describe('Sub2API third-party image channel', () => {
       models: [...config.models, { ...config.models[0]!, modelId: 'gemini-3.1-flash-image' }],
     };
     expect(thirdPartyImageSnapshot(forged, 'gemini-3.1-flash-image', '1K', '1:1')).toBeUndefined();
+  });
+
+  it('refuses a model whose reserveCostMicros exceeds the configured daily budget', () => {
+    // baseEnv keeps the budget far above every reserve, so raise this model's reserve past it.
+    // The budget ceiling lives only in validateThirdPartyImageConfig; loadThirdPartyImageConfig
+    // accepts the same config, which is why this test validates after loading.
+    const overBudget = JSON.parse(baseEnv.SUB2API_IMAGE_MODELS_JSON);
+    overBudget.models[0].reserveCostMicros = '10000001';
+    const config = loadThirdPartyImageConfig({
+      ...baseEnv,
+      SUB2API_IMAGE_MODELS_JSON: JSON.stringify(overBudget),
+    })!;
+    expect(() => validateThirdPartyImageConfig(config)).toThrow(
+      /Sub2API image reserve exceeds the configured daily budget/i,
+    );
   });
 
   it('maps GPT Image 2 generation to the configured Sub2API base URL without a live call', async () => {

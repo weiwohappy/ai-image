@@ -26,7 +26,7 @@ Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536�
 
 已发现的官方文档差异：Lite 模型页写 `1024px`，Interactions 的 image_size 枚举只有 `512/1K/2K/4K`，模型枚举也尚未列 Lite。因此 Lite 代码按图像指南给出的精确型号接入，但省略可选 image_size（固定 1K），仅指定方形并验证返回 1024×1024；真实端点可用性列为必测，不声称已经打通。Interactions 输出 mime_type 枚举只列 JPEG，故 Google 请求省略 mime_type，要求 inline，接受明确标注且真实格式匹配的 PNG/JPEG/WebP；落盘转 PNG，不缩放。OpenAI 仍显式请求 PNG。
 
-依据：[Google 生成指南](https://ai.google.dev/gemini-api/docs/image-generation)、[Lite 模型页](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image)、[OpenAI 生成接口](https://developers.openai.com/api/reference/typescript/resources/images/methods/generate)、[GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)、[GPT-Image-2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)。Google 部分核验日期 2026-09-09，OpenAI 2.5 部分核验日期 2026-09-15。
+依据：[Google 生成指南](https://ai.google.dev/gemini-api/docs/image-generation)、[Lite 模型页](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image)、[OpenAI 生成接口](https://developers.openai.com/api/reference/typescript/resources/images/methods/generate)、[GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)、[GPT-Image-2.5 Flare](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare)、[GPT-Image-2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)。Google 部分核验日期 2026-09-09，OpenAI 2.5 部分核验日期 2026-09-15。
 
 ## 配置（之后提供 Key 时再启用）
 

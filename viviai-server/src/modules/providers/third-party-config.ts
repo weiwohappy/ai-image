@@ -289,6 +289,8 @@ export function thirdPartyImageSnapshot(
     protocol: 'openai-images-third-party-v1',
     channelId: `third-party-${config.id}-${modelId}-${output.id}-${revision}`,
     revision,
+    // Safe: the protocol gate above already restricted modelId to a catalog id whose
+    // protocol is OpenAI Images, i.e. an OfficialModelId.
     upstreamModelId: modelId as OfficialModelId,
     provider: 'openai' as const,
     credentialVersion: config.credentialVersion,

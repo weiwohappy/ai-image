@@ -1,5 +1,6 @@
 // Verified 2026-09-09, OpenAI 2.5 family re-verified 2026-09-15: ai.google.dev/gemini-api/docs/image-generation,
-// developers.openai.com/api/docs/guides/image-generation, .../models/gpt-image-2.5-sunburst.
+// developers.openai.com/api/docs/guides/image-generation, .../models/gpt-image-2.5-flare,
+// .../models/gpt-image-2.5-sunburst.
 // Product presets are a reviewed subset, never a Cartesian product of enums.
 export const OFFICIAL_MODELS = [
   { id: 'gemini-2.5-flash-image', name: 'Nano Banana', provider: 'google', maxImages: 2 },
