@@ -1,2 +1,11 @@
 .worktrees/
 
+server.pid
+server-instance-id
+server-info
+server.log
+.DS_Store
+.last-port
+.last-token
+
+.superpowers

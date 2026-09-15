@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1600" viewBox="0 0 1600 1600">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#161612" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="productA" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5b477"/>
+      <stop offset="1" stop-color="#a75168"/>
+    </linearGradient>
+    <linearGradient id="productB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe0a3"/>
+      <stop offset="1" stop-color="#d36e54"/>
+    </linearGradient>
+    <linearGradient id="productC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#56d3c4"/>
+      <stop offset="1" stop-color="#37639f"/>
+    </linearGradient>
+    <style>
+      text{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}
+      .h1{font-size:48px;font-weight:800;letter-spacing:-1px;fill:#171714}
+      .lead{font-size:20px;fill:#686860}
+      .option-title{font-size:28px;font-weight:800;fill:#191916}
+      .option-sub{font-size:17px;fill:#77776f}
+      .tag{font-size:15px;font-weight:700;fill:#4c47c9}
+      .screen-title{font-size:24px;font-weight:800}
+      .nav{font-size:14px}
+      .eyebrow{font-size:13px;font-weight:800;letter-spacing:1.5px}
+      .panel-title{font-size:20px;font-weight:800}
+      .copy{font-size:14px}
+      .micro{font-size:12px}
+      .note-h{font-size:15px;font-weight:800;fill:#24241f}
+      .note{font-size:14px;fill:#696961}
+    </style>
+  </defs>
+
+  <rect width="1600" height="2120" fill="#ecece8"/>
+  <text x="70" y="82" class="h1">AI 生图平台 · 视觉方向参考</text>
+  <text x="70" y="120" class="lead">三套方案均覆盖图片生成、爆款复刻、资产与任务流程；先选择产品气质，再细化页面。</text>
+
+  <!-- A -->
+  <g id="option-a" display="none" transform="translate(70 170)" filter="url(#shadow)">
+    <rect width="1460" height="590" rx="28" fill="#ffffff"/>
+    <rect x="24" y="20" width="42" height="42" rx="12" fill="#171714"/>
+    <text x="45" y="49" text-anchor="middle" font-size="22" font-weight="800" fill="#fff">A</text>
+    <text x="82" y="44" class="option-title">Midnight Studio · 深色创作工作台</text>
+    <text x="82" y="69" class="option-sub">推荐：专业、聚焦，最适合高频生图和长时间创作</text>
+    <rect x="1295" y="25" width="130" height="32" rx="16" fill="#e9e8ff"/>
+    <text x="1360" y="47" text-anchor="middle" class="tag">推荐方向</text>
+
+    <g transform="translate(24 94)">
+      <rect width="1412" height="400" rx="20" fill="#121310"/>
+      <path d="M20 0h106v400H20Q0 400 0 380V20Q0 0 20 0" fill="#1a1b17"/>
+      <rect x="35" y="25" width="50" height="50" rx="15" fill="#d8ff52"/>
+      <text x="60" y="59" text-anchor="middle" font-size="25" font-weight="900" fill="#111">M</text>
+      <rect x="18" y="97" width="84" height="44" rx="12" fill="#d8ff52"/>
+      <text x="60" y="124" text-anchor="middle" class="nav" font-weight="800" fill="#10110e">生成</text>
+      <text x="60" y="177" text-anchor="middle" class="nav" fill="#a9aa9d">爆款复刻</text>
+      <text x="60" y="228" text-anchor="middle" class="nav" fill="#a9aa9d">资产</text>
+      <text x="60" y="279" text-anchor="middle" class="nav" fill="#a9aa9d">工具</text>
+      <text x="60" y="330" text-anchor="middle" class="nav" fill="#a9aa9d">工作流</text>
+      <circle cx="60" cy="367" r="17" fill="#f0a360"/>
+
+      <text x="156" y="52" class="screen-title" fill="#f3f4eb">创作工作台</text>
+      <rect x="1105" y="24" width="140" height="32" rx="16" fill="#24251f"/>
+      <text x="1175" y="45" text-anchor="middle" class="micro" fill="#c9cabc">Nano Banana 2</text>
+      <rect x="1256" y="24" width="124" height="32" rx="16" fill="#24251f"/>
+      <text x="1318" y="45" text-anchor="middle" class="micro" fill="#c9cabc">1,120 积分</text>
+
+      <rect x="146" y="76" width="780" height="296" rx="18" fill="#1b1c18" stroke="#303128"/>
+      <text x="170" y="108" class="eyebrow" fill="#d8ff52">CREATE WITH INTENT</text>
+      <text x="170" y="142" class="panel-title" fill="#f3f4eb">把想法变成可用视觉</text>
+      <text x="170" y="166" class="copy" fill="#85877c">描述画面，或从爆款参考开始创作。</text>
+      <rect x="170" y="188" width="732" height="66" rx="12" fill="#11120f" stroke="#383a30"/>
+      <text x="190" y="222" class="copy" fill="#c7c8bc">一款透明香氛瓶，暖色电影光，电商主视觉……</text>
+      <text x="170" y="286" class="micro" fill="#8b8d82">1:1   ·   2K   ·   2 张</text>
+      <rect x="780" y="267" width="122" height="38" rx="10" fill="#d8ff52"/>
+      <text x="841" y="291" text-anchor="middle" class="micro" font-weight="800" fill="#111">开始生成</text>
+      <g transform="translate(170 318)">
+        <rect width="222" height="35" rx="11" fill="#ef9f64"/><rect x="240" width="222" height="35" rx="11" fill="#7c68db"/><rect x="480" width="222" height="35" rx="11" fill="#5d836d"/>
+      </g>
+
+      <rect x="946" y="76" width="434" height="296" rx="18" fill="#1b1c18" stroke="#303128"/>
+      <text x="970" y="108" class="eyebrow" fill="#d8ff52">VIRAL REMIX</text>
+      <text x="970" y="142" class="panel-title" fill="#f3f4eb">爆款复刻</text>
+      <rect x="970" y="162" width="386" height="103" rx="13" fill="#7757d7"/>
+      <circle cx="1279" cy="240" r="58" fill="none" stroke="#ffffff" stroke-opacity=".82" stroke-width="20"/>
+      <rect x="986" y="177" width="80" height="26" rx="7" fill="#fff" fill-opacity=".88"/>
+      <text x="1026" y="195" text-anchor="middle" class="micro" font-weight="800" fill="#20201d">爆款参考</text>
+      <rect x="970" y="279" width="386" height="48" rx="11" fill="none" stroke="#4a4c40" stroke-dasharray="6 6"/>
+      <text x="1163" y="308" text-anchor="middle" class="micro" fill="#999b8e">＋ 上传你的商品图</text>
+      <rect x="970" y="338" width="186" height="24" rx="8" fill="#272822"/><rect x="1170" y="338" width="186" height="24" rx="8" fill="#272822"/>
+      <text x="1063" y="355" text-anchor="middle" class="micro" fill="#c7c8bc">平衡复刻</text><text x="1263" y="355" text-anchor="middle" class="micro" fill="#c7c8bc">2K</text>
+    </g>
+
+    <g transform="translate(40 530)">
+      <text x="0" y="0" class="note-h">优势</text><text x="0" y="24" class="note">图像突出、聚焦生成、夜间创作舒适</text>
+      <text x="470" y="0" class="note-h">品牌感</text><text x="470" y="24" class="note">专业、克制、创作者工具</text>
+      <text x="930" y="0" class="note-h">适合</text><text x="930" y="24" class="note">生图工作台与高频付费用户</text>
+    </g>
+  </g>
+
+  <!-- B -->
+  <g id="option-b" transform="translate(70 170)" filter="url(#shadow)">
+    <rect width="1460" height="590" rx="28" fill="#ffffff"/>
+    <rect x="24" y="20" width="42" height="42" rx="12" fill="#171714"/>
+    <text x="45" y="49" text-anchor="middle" font-size="22" font-weight="800" fill="#fff">B</text>
+    <text x="82" y="44" class="option-title">Editorial Gallery · 浅色灵感画廊</text>
+    <text x="82" y="69" class="option-sub">内容先行，适合新用户发现模板、浏览灵感和快速做同款</text>
+    <rect x="1295" y="25" width="130" height="32" rx="16" fill="#f9e8df"/>
+    <text x="1360" y="47" text-anchor="middle" font-size="15" font-weight="700" fill="#b6503b">增长友好</text>
+
+    <g transform="translate(24 94)">
+      <rect width="1412" height="400" rx="20" fill="#f6f2e9"/>
+      <path d="M20 0h106v400H20Q0 400 0 380V20Q0 0 20 0" fill="#fffdf8"/>
+      <circle cx="60" cy="50" r="25" fill="#165e54"/>
+      <text x="60" y="59" text-anchor="middle" font-size="25" font-weight="900" fill="#fff">M</text>
+      <text x="60" y="119" text-anchor="middle" class="nav" fill="#657069">生成</text>
+      <rect x="18" y="145" width="84" height="44" rx="12" fill="#dceae5"/>
+      <text x="60" y="172" text-anchor="middle" class="nav" font-weight="800" fill="#165e54">灵感</text>
+      <text x="60" y="222" text-anchor="middle" class="nav" fill="#657069">爆款复刻</text>
+      <text x="60" y="273" text-anchor="middle" class="nav" fill="#657069">资产</text>
+      <text x="60" y="324" text-anchor="middle" class="nav" fill="#657069">工具</text>
+      <circle cx="60" cy="367" r="17" fill="#d6654d"/>
+
+      <text x="156" y="52" class="screen-title" fill="#1d241f">今日灵感</text>
+      <rect x="1120" y="24" width="80" height="32" rx="16" fill="#fff" stroke="#ded9cd"/><rect x="1210" y="24" width="70" height="32" rx="16" fill="#fff" stroke="#ded9cd"/><rect x="1290" y="24" width="90" height="32" rx="16" fill="#fff" stroke="#ded9cd"/>
+      <text x="1160" y="45" text-anchor="middle" class="micro" fill="#486057">电商视觉</text><text x="1245" y="45" text-anchor="middle" class="micro" fill="#486057">海报</text><text x="1335" y="45" text-anchor="middle" class="micro" fill="#486057">人物写真</text>
+
+      <rect x="146" y="76" width="465" height="296" rx="18" fill="#fffdf8" stroke="#ded9cd"/>
+      <text x="170" y="108" class="eyebrow" fill="#cf5c41">CURATED DAILY</text>
+      <text x="170" y="142" class="panel-title" fill="#1d241f">精选爆款模板</text>
+      <rect x="170" y="162" width="417" height="124" rx="13" fill="url(#productB)"/>
+      <circle cx="507" cy="258" r="64" fill="none" stroke="#fff" stroke-opacity=".85" stroke-width="22"/>
+      <rect x="184" y="176" width="80" height="26" rx="7" fill="#fff" fill-opacity=".9"/>
+      <text x="224" y="194" text-anchor="middle" class="micro" font-weight="800" fill="#20201d">爆款参考</text>
+      <text x="170" y="323" class="micro" fill="#766f64">近期热门   ·   2.4k 次复刻</text>
+      <rect x="465" y="304" width="122" height="38" rx="10" fill="#165e54"/>
+      <text x="526" y="328" text-anchor="middle" class="micro" font-weight="800" fill="#fff">复刻这张</text>
+
+      <rect x="631" y="76" width="749" height="296" rx="18" fill="#fffdf8" stroke="#ded9cd"/>
+      <text x="655" y="108" class="eyebrow" fill="#cf5c41">EXPLORE</text>
+      <text x="655" y="142" class="panel-title" fill="#1d241f">从好作品开始</text>
+      <g transform="translate(655 160)">
+        <rect width="220" height="105" rx="12" fill="#f1bf63"/><rect x="238" width="220" height="105" rx="12" fill="#d97962"/><rect x="476" width="220" height="105" rx="12" fill="#5c8f83"/>
+        <g fill="#fff" fill-opacity=".88"><rect x="87" y="22" width="46" height="69" rx="16"/><rect x="325" y="22" width="46" height="69" rx="16"/><rect x="563" y="22" width="46" height="69" rx="16"/></g>
+      </g>
+      <rect x="655" y="282" width="696" height="46" rx="12" fill="#f6f2e9" stroke="#ded9cd"/>
+      <text x="675" y="311" class="copy" fill="#786f61">搜索商品、行业或视觉风格……</text>
+      <text x="655" y="353" class="micro" fill="#786f61">平台精选 · 每日更新</text>
+      <rect x="1240" y="337" width="111" height="28" rx="9" fill="#165e54"/>
+      <text x="1296" y="356" text-anchor="middle" class="micro" font-weight="800" fill="#fff">查看全部</text>
+    </g>
+
+    <g transform="translate(40 530)">
+      <text x="0" y="0" class="note-h">优势</text><text x="0" y="24" class="note">上手快，模板发现到复刻路径短</text>
+      <text x="470" y="0" class="note-h">品牌感</text><text x="470" y="24" class="note">温暖、编辑感、内容社区</text>
+      <text x="930" y="0" class="note-h">适合</text><text x="930" y="24" class="note">获客首页与爆款模板广场</text>
+    </g>
+  </g>
+
+  <!-- C -->
+  <g id="option-c" display="none" transform="translate(70 1430)" filter="url(#shadow)">
+    <rect width="1460" height="590" rx="28" fill="#ffffff"/>
+    <rect x="24" y="20" width="42" height="42" rx="12" fill="#171714"/>
+    <text x="45" y="49" text-anchor="middle" font-size="22" font-weight="800" fill="#fff">C</text>
+    <text x="82" y="44" class="option-title">Commerce OS · 电商效率中台</text>
+    <text x="82" y="69" class="option-sub">信息密度高，强调批量、任务队列、资产复用与团队生产</text>
+    <rect x="1295" y="25" width="130" height="32" rx="16" fill="#dff7f4"/>
+    <text x="1360" y="47" text-anchor="middle" font-size="15" font-weight="700" fill="#167f77">B 端效率</text>
+
+    <g transform="translate(24 94)">
+      <rect width="1412" height="400" rx="20" fill="#ecf0f4"/>
+      <path d="M20 0h222v400H20Q0 400 0 380V20Q0 0 20 0" fill="#11253b"/>
+      <rect x="28" y="23" width="48" height="48" rx="14" fill="#ff6d55"/>
+      <text x="52" y="56" text-anchor="middle" font-size="23" font-weight="900" fill="#fff">M</text>
+      <text x="90" y="53" font-size="18" font-weight="800" fill="#fff">Commerce AI</text>
+      <rect x="18" y="92" width="206" height="44" rx="10" fill="#1e3a55"/>
+      <rect x="18" y="92" width="4" height="44" rx="2" fill="#43d1c5"/>
+      <text x="38" y="119" class="nav" font-weight="800" fill="#fff">✦  图片生成</text>
+      <text x="38" y="169" class="nav" fill="#a9bac9">▦  爆款复刻</text>
+      <text x="38" y="219" class="nav" fill="#a9bac9">□  商品资产</text>
+      <text x="38" y="269" class="nav" fill="#a9bac9">⌁  批量工作流</text>
+      <text x="38" y="319" class="nav" fill="#a9bac9">◎  任务中心</text>
+      <circle cx="52" cy="366" r="17" fill="#43d1c5"/>
+
+      <text x="272" y="52" class="screen-title" fill="#15202d">商品视觉生产</text>
+      <rect x="1110" y="24" width="132" height="32" rx="16" fill="#fff" stroke="#ccd6df"/><rect x="1252" y="24" width="128" height="32" rx="16" fill="#fff" stroke="#ccd6df"/>
+      <text x="1176" y="45" text-anchor="middle" class="micro" fill="#476078">4 个任务进行中</text><text x="1316" y="45" text-anchor="middle" class="micro" fill="#476078">工作室版</text>
+
+      <rect x="262" y="76" width="780" height="296" rx="18" fill="#fff" stroke="#d3dce4"/>
+      <text x="286" y="108" class="eyebrow" fill="#ef5f49">PRODUCTION QUEUE</text>
+      <text x="286" y="142" class="panel-title" fill="#15202d">从参考到成品，一次配置</text>
+      <g transform="translate(286 160)">
+        <rect width="160" height="32" rx="8" fill="#edf2f5"/><rect x="172" width="160" height="32" rx="8" fill="#edf2f5"/><rect x="344" width="160" height="32" rx="8" fill="#edf2f5"/>
+        <text x="80" y="21" text-anchor="middle" class="micro" fill="#4b6074">参考图 ✓</text><text x="252" y="21" text-anchor="middle" class="micro" fill="#4b6074">商品图 ✓</text><text x="424" y="21" text-anchor="middle" class="micro" fill="#4b6074">平衡复刻</text>
+      </g>
+      <rect x="286" y="206" width="732" height="58" rx="11" fill="#f3f6f8" stroke="#d5dde4"/>
+      <text x="306" y="239" class="copy" fill="#4b6074">保留俯拍构图和留白，将主体替换为新品咖啡礼盒……</text>
+      <g transform="translate(286 278)"><rect width="170" height="47" rx="10" fill="#43c7bc"/><rect x="184" width="170" height="47" rx="10" fill="#ff8b67"/><rect x="368" width="170" height="47" rx="10" fill="#4d78b8"/></g>
+      <text x="286" y="350" class="micro" fill="#60758a">预计 39 积分 · 3 张</text>
+      <rect x="851" y="332" width="167" height="34" rx="9" fill="#ff6d55"/>
+      <text x="935" y="354" text-anchor="middle" class="micro" font-weight="800" fill="#fff">加入任务队列</text>
+
+      <rect x="1062" y="76" width="318" height="296" rx="18" fill="#fff" stroke="#d3dce4"/>
+      <text x="1086" y="108" class="eyebrow" fill="#ef5f49">INSPECTOR</text>
+      <text x="1086" y="142" class="panel-title" fill="#15202d">生成设置</text>
+      <rect x="1086" y="162" width="270" height="102" rx="13" fill="url(#productC)"/>
+      <circle cx="1305" cy="239" r="54" fill="none" stroke="#fff" stroke-opacity=".8" stroke-width="18"/>
+      <g transform="translate(1086 281)"><rect width="128" height="32" rx="8" fill="#edf2f5"/><rect x="142" width="128" height="32" rx="8" fill="#edf2f5"/><rect y="44" width="128" height="32" rx="8" fill="#edf2f5"/><rect x="142" y="44" width="128" height="32" rx="8" fill="#edf2f5"/>
+        <text x="64" y="21" text-anchor="middle" class="micro" fill="#4b6074">NB 2</text><text x="206" y="21" text-anchor="middle" class="micro" fill="#4b6074">2K</text><text x="64" y="65" text-anchor="middle" class="micro" fill="#4b6074">1:1</text><text x="206" y="65" text-anchor="middle" class="micro" fill="#4b6074">3 张</text>
+      </g>
+    </g>
+
+    <g transform="translate(40 530)">
+      <text x="0" y="0" class="note-h">优势</text><text x="0" y="24" class="note">状态清晰，适合复杂任务和多人协作</text>
+      <text x="470" y="0" class="note-h">品牌感</text><text x="470" y="24" class="note">可靠、理性、企业软件</text>
+      <text x="930" y="0" class="note-h">适合</text><text x="930" y="24" class="note">电商团队、批量生产与工作流</text>
+    </g>
+  </g>
+
+  <text x="800" y="2080" text-anchor="middle" font-size="17" fill="#77776f">建议以 A 为主工作台，以 B 的灵感广场承接获客；C 可作为后续企业版演进方向。</text>
+</svg>
