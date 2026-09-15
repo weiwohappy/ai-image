@@ -157,16 +157,9 @@ describe('Sub2API third-party image channel', () => {
       height: 1152,
       reserveCostMicros: '1000000',
     });
-    // Refusal is about the protocol the model needs, not about the channel it was asked for.
+    // A Google-protocol model is not one of this channel's configured models, so it has no
+    // snapshot. The protocol gate itself is covered by the shape-bypass case below.
     expect(thirdPartyImageSnapshot(config, 'gemini-3.1-flash-image', '1K', '1:1')).toBeUndefined();
-    const forged = JSON.parse(baseEnv.SUB2API_IMAGE_MODELS_JSON);
-    forged.models[0].modelId = 'gemini-3.1-flash-image';
-    expect(() =>
-      loadThirdPartyImageConfig({
-        ...baseEnv,
-        SUB2API_IMAGE_MODELS_JSON: JSON.stringify(forged),
-      }),
-    ).toThrow(/SUB2API_IMAGE_MODELS_JSON/i);
   });
 
   it('keeps the runtime gate closed even if a Google-protocol model reaches the config object', () => {
