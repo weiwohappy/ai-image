@@ -85,7 +85,7 @@ NODE_ENV=development npm run admin:bootstrap -- revoke-account --input=/absolute
 | `/administrators`          | q=精确管理员 UUID/邮箱；status；from/to                                               |
 | `/roles`                   | q=精确角色名                                                                          |
 
-`/dashboard` 不接受筛选。详情为 `/users/:id`、`/orders/:id`、`/jobs/:id`、`/attempts/:id`、`/models/:id`。模型规格表列键为 `id,resolution,ratio,width,height,enabled,credits`。目录包含全部五个定义；禁用规格不显示有效售价，不宣称已通过线上验证。供应商账号使用运行时实际 quotaScope/budgetScope，同账号多个模型与规格不重复累加限额；余额字段明确 null。告警重算用单个事务和投影锁串行化，仅改告警投影，不修改业务状态。
+`/dashboard` 不接受筛选。详情为 `/users/:id`、`/orders/:id`、`/jobs/:id`、`/attempts/:id`、`/models/:id`。模型规格表列键为 `id,resolution,ratio,width,height,enabled,credits`。目录包含全部七个定义；禁用规格不显示有效售价，不宣称已通过线上验证。供应商账号使用运行时实际 quotaScope/budgetScope，同账号多个模型与规格不重复累加限额；余额字段明确 null。告警重算用单个事务和投影锁串行化，仅改告警投影，不修改业务状态。
 
 ## 敏感内容与审计
 

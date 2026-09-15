@@ -2,7 +2,7 @@
 
 本轮交付代码和离线测试，不需要 Key。默认关闭官方调用，没有执行真实付费请求。前端创作页仍为 Mock，本轮实现后端 API；后续单独切换前端真实接口。
 
-支持官方 ID：`gemini-2.5-flash-image`、`gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image`、`gpt-image-2`。官方通道不使用订阅账号代理或隐式型号升级；第三方 Sub2API 仅作为显式、独立的 OpenAI-compatible 渠道。
+支持官方 ID：`gemini-2.5-flash-image`、`gemini-3.1-flash-lite-image`、`gemini-3.1-flash-image`、`gemini-3-pro-image`、`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`。官方通道不使用订阅账号代理或隐式型号升级；第三方 Sub2API 作为显式、独立的 OpenAI Images 渠道，承载协议为 `openai-images-v1` 的全部型号。注意 `gpt-image-2.5` 本身不是合法 API ID：该代拆为 `-flare`（极速）与 `-sunburst`（精细）两个 ID。
 
 ## 尺寸选择
 
@@ -15,8 +15,10 @@
 | Nano Banana 2      | 0.5K / 1K / 2K / 4K         | 下述 10 种常用比例                 |
 | Nano Banana Pro    | 1K / 2K / 4K                | 下述 10 种常用比例                 |
 | GPT Image 2        | 产品预设 1K / 2K；4K 横竖屏 | 1K/2K 10 种；4K 仅 16:9、9:16      |
+| GPT Image 2.5 极速 | 产品预设 1K / 2K；4K 横竖屏 | 1K/2K 10 种；4K 仅 16:9、9:16      |
+| GPT Image 2.5 精细 | 产品预设 1K / 2K；4K 横竖屏 | 1K/2K 10 种；4K 仅 16:9、9:16      |
 
-常用比例：1:1、2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9。Google 的精确像素表与 OpenAI 合法预设维护于 `src/modules/providers/official-models.ts`。GPT Image 2 的 4K 是 3840×2160 或 2160×3840，不支持 4096 方图；OpenAI 将超过 2560×1440 的尺寸标为实验性，联调时需重点验证。
+常用比例：1:1、2:3、3:2、3:4、4:3、4:5、5:4、9:16、16:9、21:9。Google 的精确像素表与 OpenAI 合法预设维护于 `src/modules/providers/official-models.ts`。GPT Image 2 的 4K 是 3840×2160 或 2160×3840，不支持 4096 方图；OpenAI 将超过 2560×1440 的尺寸标为实验性，联调时需重点验证。两个 2.5 型号的尺寸约束与 GPT Image 2 逐条相同（边长 16 的倍数、宽高比 1:3–3:1、任一边 ≤3840、总像素 655,360–8,294,400），复用同一张预设表。
 
 Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536；以官方表格为准，不自行重算“更标准”的比例。Lite 官方只明确了 1K 方图像素，不能直接套用 Flash/Pro 表格。
 
@@ -24,13 +26,13 @@ Google 多数表格比例对应近似像素比，例如 2K 16:9 为 2752×1536�
 
 已发现的官方文档差异：Lite 模型页写 `1024px`，Interactions 的 image_size 枚举只有 `512/1K/2K/4K`，模型枚举也尚未列 Lite。因此 Lite 代码按图像指南给出的精确型号接入，但省略可选 image_size（固定 1K），仅指定方形并验证返回 1024×1024；真实端点可用性列为必测，不声称已经打通。Interactions 输出 mime_type 枚举只列 JPEG，故 Google 请求省略 mime_type，要求 inline，接受明确标注且真实格式匹配的 PNG/JPEG/WebP；落盘转 PNG，不缩放。OpenAI 仍显式请求 PNG。
 
-依据：[Google 生成指南](https://ai.google.dev/gemini-api/docs/image-generation)、[Lite 模型页](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image)、[OpenAI 生成接口](https://developers.openai.com/api/reference/typescript/resources/images/methods/generate)、[GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)。核验日期 2026-09-09。
+依据：[Google 生成指南](https://ai.google.dev/gemini-api/docs/image-generation)、[Lite 模型页](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite-image)、[OpenAI 生成接口](https://developers.openai.com/api/reference/typescript/resources/images/methods/generate)、[GPT Image 2](https://developers.openai.com/api/docs/models/gpt-image-2)、[GPT-Image-2.5 Sunburst](https://developers.openai.com/api/docs/models/gpt-image-2.5-sunburst)。Google 部分核验日期 2026-09-09，OpenAI 2.5 部分核验日期 2026-09-15。
 
 ## 配置（之后提供 Key 时再启用）
 
 ## 第三方 OpenAI 兼容渠道（Sub2API）
 
-Sub2API 不属于官方 Google/OpenAI 账号，也不改变官方图片模型的固定端点；它作为可替换的第三方 OpenAI 兼容渠道配置。开发环境示例使用 `http://localhost:8080`，程序会规范化为 `http://localhost:8080/v1`；生产环境必须使用 HTTPS。聊天渠道和图片渠道共用账号边界，但分别配置模型与协议。当前第三方图片协议只接入 OpenAI Images 兼容的 `gpt-image-2`；Nano Banana 仍走官方 Google Interactions，除非未来第三方明确提供并通过单独协议验收。
+Sub2API 不属于官方 Google/OpenAI 账号，也不改变官方图片模型的固定端点；它作为可替换的第三方 OpenAI 兼容渠道配置。开发环境示例使用 `http://localhost:8080`，程序会规范化为 `http://localhost:8080/v1`；生产环境必须使用 HTTPS。聊天渠道和图片渠道共用账号边界，但分别配置模型与协议。第三方图片渠道承载的是"协议为 OpenAI Images"的型号，而不是某一个固定型号：`gpt-image-2`、`gpt-image-2.5-flare`、`gpt-image-2.5-sunburst` 均在列；Nano Banana 需要 Google Interactions 协议，仍走官方 Google 通道，除非未来第三方明确提供并通过单独协议验收。
 
 ```bash
 SUB2API_ENABLED=true
@@ -44,13 +46,13 @@ SUB2API_MAX_UNKNOWN=1
 SUB2API_DAILY_BUDGET_MICROS=0
 ```
 
-如需将 GPT Image 2 作为第三方图片渠道，增加服务端配置（不要把价格示例直接用于生产）：
+如需把 OpenAI 协议型号作为第三方图片渠道，增加服务端配置（以下为占位值，不要把示例价格直接用于生产）：
 
 ```bash
-SUB2API_IMAGE_MODELS_JSON='{"revision":"sub2api-images-v1","models":[{"modelId":"gpt-image-2","enabledResolutions":["1K","2K","4K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}}]}'
+SUB2API_IMAGE_MODELS_JSON='{"revision":"sub2api-images-v2","models":[{"modelId":"gpt-image-2","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}},{"modelId":"gpt-image-2.5-flare","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}},{"modelId":"gpt-image-2.5-sunburst","enabledResolutions":["1K","2K"],"reserveCostMicros":"1000000","pricing":{"version":"provider-cost-v1","currency":"USD","rates":{"input_text_tokens":"<per-million-micro-usd>","input_image_tokens":"<per-million-micro-usd>","output_image_tokens":"<per-million-micro-usd>"}}}]}'
 ```
 
-服务启动时会复用 `SUB2API_*` 的地址、凭据、预算和并发配置。`POST /api/admin/provider-accounts/sub2api/verify-image` 只请求 `/v1/models`，确认精确的 `gpt-image-2` 已列出，不会调用生图接口；实际生图仍需先完成小额联调和账单核对。第三方图片配置使用与官方相同的审核规格和积分定价，未配置数据库售价的分辨率不会出现在目录。
+服务启动时会复用 `SUB2API_*` 的地址、凭据、预算和并发配置。`POST /api/admin/provider-accounts/sub2api/verify-image` 只请求 `/v1/models`，确认配置中每个型号 ID 都已列出，不会调用生图接口；实际生图仍需先完成小额联调和账单核对。第三方图片配置使用与官方相同的审核规格和积分定价，未配置数据库售价的分辨率不会出现在目录。
 
 `npm run verify:sub2api` 先请求 `/v1/models`，要求精确模型 ID 存在，再发送 `max_tokens=8`、`stream=false` 的最小 `/v1/chat/completions` 探针。输出只包含渠道、地址、模型和安全状态，不打印 Key 或上游响应正文。401/403、404、429、超时和畸形响应均返回稳定的安全错误。关闭 `SUB2API_ENABLED` 时不会要求 Key；启用但缺少 Key、模型或非法地址时服务启动即拒绝。
 
@@ -101,7 +103,7 @@ HTTP 单次最长 180 秒，不自动重试，租约为 210 秒。每个任务 1
 
 ## 后续真实联调清单
 
-1. 安全配置 Key，确认官方账号/地区/组织验证与五款型号实际权限；未开通则保持关闭。
+1. 安全配置 Key，确认官方账号/地区/组织验证与七款型号实际权限；未开通则保持关闭。
 2. 审核实时采购价、USD/人民币换算、支付成本、退款和毛利，填写版本化价格与售卖积分；官方接口按用量采购，不沿用网页会员价格。
 3. 每型号先小额验证 1K 文生图与参考图编辑，再逐个验证比例和高分辨率、实际图片头部尺寸、Google 标记和 GPT 质量。
 4. 核对真实 usage 分项与供应商账单，特别是思考 token、输出图片 token、缺失 usage 和输入图片费用；离线样例不能替代账单证据。

@@ -1,6 +1,6 @@
 # VIVIAI 后端
 
-这是可本地运行的后端闭环：真实账号、私有图片、报价、积分账本、任务、Outbox、Redis Worker、两个模拟提供方及五款官方图片模型适配器。创作前端现在支持可配置的 Mock / 真实 API 模式；付款页已独立连接后端，支付默认关闭。微信/支付宝说明见 [PAYMENTS.md](PAYMENTS.md)，官方模型配置及尺寸矩阵见 [OFFICIAL_MODELS.md](OFFICIAL_MODELS.md)。
+这是可本地运行的后端闭环：真实账号、私有图片、报价、积分账本、任务、Outbox、Redis Worker、两个模拟提供方及七款官方图片模型适配器。创作前端现在支持可配置的 Mock / 真实 API 模式；付款页已独立连接后端，支付默认关闭。微信/支付宝说明见 [PAYMENTS.md](PAYMENTS.md)，官方模型配置及尺寸矩阵见 [OFFICIAL_MODELS.md](OFFICIAL_MODELS.md)。
 
 **当前不是生产就绪版本。** 官方模型和支付默认关闭，测试不调用付费 API，真实 Key、模型账户权限和账单仍待联调。测试通过不代表已完成生产验收。
 
@@ -16,7 +16,7 @@
 | 多渠道网关                              | 统一协议、精确型号/尺寸过滤、账号共享预算与配额；官方 Google / OpenAI、Sub2API 第三方 OpenAI 兼容渠道及模拟渠道 |
 | 恢复                                    | 防重复派发、持久化上游尝试、查询、存储重试、超时退款、队列丢失恢复                                              |
 | 微信 Native / 支付宝电脑网站支付        | 代码已接入，默认关闭；无商户凭据，未做真实联调                                                                  |
-| 真实模型 API                            | 五款型号代码已实现，默认关闭；真实 Key 与账单联调后补                                                           |
+| 真实模型 API                            | 七款型号代码已实现，默认关闭；真实 Key 与账单联调后补                                                           |
 | 订阅周期、现金退款、社区、工作流运行    | 未实现，属于后续阶段                                                                                            |
 
 默认仅开放 `simulation-image-v1`，展示为“模拟图片（非 AI）”：1024 × 1024 PNG，每张 30 测试积分，1–4 张。输出图上也标注 SIMULATION / NOT AI GENERATED。模拟成本只是测试单位，不能用于实际采购成本或利润测算。官方型号须配置凭据、规格售价与采购价格后才出现在目录。
@@ -166,4 +166,4 @@ Docker 镜像/Compose 和真实 S3/SMTP 未完成运行验收；目前验证的�
 
 本地存储只适用于受信任的开发目录，不能防御能任意修改该目录的其它本机进程。当前不执行图片物理清理，长期使用前需补充保留策略、备份与容量治理。列表暂为有界最新记录，不是完整分页后台。
 
-下一步应完成真实渠道/账单验收及运营对账能力。Sub2API 等第三方 OpenAI 兼容聊天/图片渠道通过 `SUB2API_*` 服务端环境变量配置：聊天可用 `npm run verify:sub2api` 做 `/v1/models` + `/v1/chat/completions` 最小验证，图片后台验证只检查 `/v1/models` 中的精确 `gpt-image-2`，不会自动产生图片费用。Nano Banana 仍需官方 Google Key 和官方 Interactions 配置；密钥不进 JSON、前端或 Git。真实前端使用 `viviai-web/.env.local` 的 `VITE_API_MODE=real`，请求顺序和 Mock-only 页面边界见前端 README；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。
+下一步应完成真实渠道/账单验收及运营对账能力。Sub2API 等第三方 OpenAI 兼容聊天/图片渠道通过 `SUB2API_*` 服务端环境变量配置：聊天可用 `npm run verify:sub2api` 做 `/v1/models` + `/v1/chat/completions` 最小验证，图片后台验证只检查 `/v1/models` 中的每个已配置型号 ID，不会自动产生图片费用。Nano Banana 仍需官方 Google Key 和官方 Interactions 配置；密钥不进 JSON、前端或 Git。真实前端使用 `viviai-web/.env.local` 的 `VITE_API_MODE=real`，请求顺序和 Mock-only 页面边界见前端 README；旧 Mock 的模型/价格和匿名上传行为不能直接视为后端合约。
