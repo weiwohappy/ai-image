@@ -83,8 +83,7 @@ export class CatalogService {
         const price = prices.find(
           (p) => p.modelId === definition.id && p.resolution === s.resolution,
         );
-        return price &&
-          resolveImageExecution(this.config, definition.id, s.resolution, s.ratio)
+        return price && resolveImageExecution(this.config, definition.id, s.resolution, s.ratio)
           ? [{ ...s, unitCredits: price.unitCredits }]
           : [];
       });

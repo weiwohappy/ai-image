@@ -499,9 +499,9 @@ describe('public operational content', () => {
 
     // The keyset cursor and the search clause are ANDed: the page after the first match must
     // skip inspiration-search-c, which sits between the two 'bottle' rows but does not match.
-    const firstPage = await get(
-      '/inspirations?category=searchable&query=bottle&limit=1',
-    ).expect(200);
+    const firstPage = await get('/inspirations?category=searchable&query=bottle&limit=1').expect(
+      200,
+    );
     expect(ids(firstPage)).toEqual(['inspiration-search-a']);
     const cursor = firstPage.body.data.nextCursor as string;
     expect(cursor).toBeTruthy();
